@@ -763,6 +763,15 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_include_directories(relative_mouse_touch_test PRIVATE src)
   add_test(NAME relative_mouse_touch_test COMMAND relative_mouse_touch_test)
 
+  add_executable(title_patches_test
+      tests/title_patches_test.cpp
+      src/title_patches.cpp)
+  target_include_directories(title_patches_test PRIVATE
+      src
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
+      ${CMAKE_CURRENT_SOURCE_DIR}/../external/arm-recomp-core/common)
+  add_test(NAME title_patches_test COMMAND title_patches_test)
+
   add_executable(perf_governor_test
       tests/perf_governor_test.cpp
       src/perf_governor.cpp)

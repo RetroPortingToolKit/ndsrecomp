@@ -1,6 +1,7 @@
 #include "title_patches.h"
 
 #include <cmath>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -23,8 +24,11 @@ constexpr double kFix12One = 4096.0;
 // AMHE0's native touch-look routine consumes these signed, per-frame fields.
 // Feeding deltas here while holding the stylus at center preserves the game
 // path but removes the finite physical touchscreen edge.
+constexpr uint32_t kMphUs10PlayerPosition = 0x020D9CB8u;
 constexpr uint32_t kMphUs10AimX = 0x020DE526u;
 constexpr uint32_t kMphUs10AimY = 0x020DE52Eu;
+constexpr uint32_t kMphUs10AimStride = 0x48u;
+constexpr uint8_t kMphUs10MaxPlayerPosition = 3u;
 constexpr uint32_t kMphOverlay0Identity = 0x02102228u;
 constexpr uint32_t kMphOverlay0IdentityValue = 0xE59F106Cu;
 constexpr uint32_t kMphFrontendMenuList = 0x0214C7E0u;
@@ -83,6 +87,22 @@ bool read_main_ram_word(uint32_t addr, uint32_t* out) {
     if (!out || !read_main_ram32(addr, &value)) return false;
     *out = static_cast<uint32_t>(value);
     return true;
+}
+
+bool read_main_ram8(uint32_t addr, uint8_t* out) {
+    if (!out || addr < kMainRamBase) return false;
+    BusRegion main_ram{};
+    if (!bus_get_region("mainram", &main_ram)) return false;
+    const uint32_t offset = addr - kMainRamBase;
+    if (offset >= main_ram.len) return false;
+    *out = main_ram.ptr[offset];
+    return true;
+}
+
+uint16_t clamp_signed16_bits(int32_t value) {
+    return static_cast<uint16_t>(
+        std::clamp(value, static_cast<int32_t>(INT16_MIN),
+                   static_cast<int32_t>(INT16_MAX)));
 }
 
 // ARM data-processing immediates are an 8-bit value rotated right by an even
@@ -263,10 +283,19 @@ void nds_title_patches_set_mph_adaptive(bool enabled) {
 
 bool nds_title_patches_apply_mph_mouse_delta(int32_t dx, int32_t dy) {
     if (!g_mph_mouse_aim || (dx == 0 && dy == 0)) return false;
+    uint8_t player_position = 0;
+    if (!read_main_ram8(kMphUs10PlayerPosition, &player_position) ||
+        player_position > kMphUs10MaxPlayerPosition) {
+        return false;
+    }
+    const uint32_t player_aim_offset =
+        static_cast<uint32_t>(player_position) * kMphUs10AimStride;
     if (dx != 0)
-        bus_write_u32_slow(kMphUs10AimX, static_cast<uint32_t>(dx));
+        bus_write_u16_slow(kMphUs10AimX + player_aim_offset,
+                           clamp_signed16_bits(dx));
     if (dy != 0)
-        bus_write_u32_slow(kMphUs10AimY, static_cast<uint32_t>(dy));
+        bus_write_u16_slow(kMphUs10AimY + player_aim_offset,
+                           clamp_signed16_bits(dy));
     return true;
 }
 
