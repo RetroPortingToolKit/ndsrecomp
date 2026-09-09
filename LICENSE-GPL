@@ -698,9 +698,9 @@ the other two licenses applies to it:
 - `oracle/patches/` — patch context against melonDS, intended solely for that
   GPL-covered build.
 
-The project's own contributions to those files are copyright © 2026 Matthew
-Stanley and are offered under GPL-3.0-or-later. Vendored upstream code remains
-copyright its own authors.
+The project's own contributions to those files are copyright
+© 2026 Matthew Stanley and are offered under GPL-3.0-or-later. Vendored
+upstream code remains copyright its own authors.
 
 Because `nds_runner` compiles and links this code, the `nds_runner` executable
 is a combined work distributable only under GPL-3.0-or-later, and any binary
