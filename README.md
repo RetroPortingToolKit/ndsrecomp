@@ -1,5 +1,7 @@
 # ndsrecomp
 
+> ℹ️ **Note from mstan:** This repo and I are now part of [RetroPortingToolkit](https://retroportingtoolkit.com/). I remain a primary maintainer of ndsrecomp alongside the team. [More info](https://1379.tech/forming-a-collective-retro-porting-toolkit/).
+
 > ## Status: very early pre-alpha (v0.6.10)
 >
 > This is an experimental developer snapshot, not a ready-to-use emulator or
@@ -292,10 +294,23 @@ data, generated recompiled code, or binary embedding those materials. The
 checked-in showcase images are manually selected demonstration screenshots;
 do not add raw captures, save files, generated banks, or dumped game material.
 
-The original code in this repository is released under the MIT License; see
-[`LICENSE`](LICENSE). This grant covers only the project's own source. Ported
-components and the optional oracle retain their own terms and are **not**
-relicensed by it; see
+The original code in this repository is released under the **PolyForm
+Noncommercial License 1.0.0**; see [`LICENSE`](LICENSE). Commits and releases
+made before that change remain available under the MIT License they were
+published under.
+
+Two exceptions sit inside the project's own source, both driven by the vendored
+melonDS device models:
+
+- `runner/src/`, `recompiler/armv4t/`, `recompiler/support/`, and `oracle/`
+  stay under the **MIT License**; see [`LICENSE-MIT`](LICENSE-MIT). They link
+  GPL-3.0-or-later code, so `nds_runner` and `ndsref` are combined works
+  distributable only under GPL-3.0-or-later, and GPL-3.0 does not permit a
+  noncommercial condition on any part of them.
+- The `arm-recomp-core` and `freebios` submodules carry their own licenses.
+
+Neither grant covers third-party code. Ported components and the optional
+oracle retain their own terms and are **not** relicensed; see
 [`THIRD_PARTY_ATTRIBUTION.md`](THIRD_PARTY_ATTRIBUTION.md) for provenance and
 licensing boundaries.
 

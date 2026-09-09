@@ -8,16 +8,27 @@ it is not a legal guarantee of non-infringement.
 
 Except for the items described below, the tracked implementation and
 documentation are copyright © 2026 Matthew Stanley and contributors and are
-licensed under the MIT License; see [`LICENSE`](LICENSE).
+licensed under the **PolyForm Noncommercial License 1.0.0**; see
+[`LICENSE`](LICENSE). Commits and releases published before that change remain
+available under the MIT License they carried at the time.
 
-The MIT grant covers this project's own source. It does not and cannot relicense
-the third-party code described below, and it does not make every build artifact
-redistributable under MIT terms. In particular, the native runner links vendored
-melonDS sources, so the `nds_runner` **executable** is a combined work whose
-distribution must comply with GPL-3.0-or-later — see
-[melonDS vendored GPU3D (runner)](#melonds-vendored-gpu3d-runner) below. The
-recompiler, the generated banks, and all `ndsref`-independent tooling stay
-outside that boundary and are distributable under MIT alone.
+Four trees of the project's own source are an **exception** and stay under the
+**MIT License** (see [`LICENSE-MIT`](LICENSE-MIT)): `runner/src/`,
+`recompiler/armv4t/`, `recompiler/support/`, and `oracle/`. Everything in them
+compiles into `nds_runner` or `ndsref`, which link vendored melonDS sources and
+are therefore combined works distributable only under GPL-3.0-or-later — see
+[melonDS vendored GPU3D (runner)](#melonds-vendored-gpu3d-runner) below.
+GPL-3.0 §7 does not permit a noncommercial field-of-use condition to be
+attached to any part of such a work, so the project's own code inside that
+boundary must keep a GPL-compatible license. The shared
+`external/arm-recomp-core` and `third_party/freebios` submodules are separate
+repositories under their own terms, and are MIT for the same reason.
+
+Neither grant relicenses the third-party code described below, and neither
+makes every build artifact redistributable under its own terms. The recompiler,
+the function finder, the generated banks, and all `ndsref`-independent tooling
+stay outside the GPL boundary and are distributable under the PolyForm terms
+alone.
 
 ## gbarecomp
 
@@ -36,8 +47,11 @@ and dispatch behavior. Upstream `gbarecomp` remains available under the PolyForm
 Noncommercial terms; see the
 [official license text](https://polyformproject.org/licenses/noncommercial/1.0.0/).
 Because both repositories share one copyright owner, the ported portions as they
-exist *here* are offered under this repository's MIT grant; the upstream project's
-own terms are unaffected, and this statement does not relicense upstream.
+exist *here* are offered under this repository's own terms — PolyForm
+Noncommercial 1.0.0, matching upstream, except for the `recompiler/armv4t/`
+portion, which is MIT because it links into the GPL-covered runner. The
+upstream project's own terms are unaffected, and this statement does not
+relicense upstream.
 
 ## melonDS optional oracle
 

@@ -26,9 +26,12 @@ binaries stays clean.
    melonDS Wi-Fi device model (2026-08, ADR
    `docs/adr-melonds-wifi-vendoring.md`). Both are vendored into
    `runner/vendor/melonds/` and linked, so **`nds_runner` is a combined work
-   that must be distributed under GPL-3.0-or-later**. The recompiler, the
-   generated banks, and all `ndsref`-independent tooling stay outside that
-   boundary and remain MIT.
+   that must be distributed under GPL-3.0-or-later**. The project's own code
+   inside that boundary — `runner/src/`, `recompiler/armv4t/`,
+   `recompiler/support/`, `oracle/` — stays MIT for GPL compatibility. The
+   recompiler, the function finder, the generated banks, and all
+   `ndsref`-independent tooling stay outside that boundary and are under
+   PolyForm Noncommercial 1.0.0; see `LICENSE` and `LICENSE-MIT`.
 
    Anything vendored under this exception must carry a GPLv3 §5(a) change
    notice for every file we modify; see
