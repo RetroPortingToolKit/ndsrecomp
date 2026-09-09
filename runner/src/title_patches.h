@@ -22,6 +22,8 @@ void nds_title_patches_set_mph_adventure_wide(bool enabled,
                                               uint16_t adaptive_width);
 void nds_title_patches_set_mph_adaptive(bool enabled);
 bool nds_title_patches_apply_mph_mouse_delta(int32_t dx, int32_t dy);
+bool nds_title_patches_mph_local_morph_ball();
+bool nds_title_patches_request_mph_weapon(uint8_t weapon_index);
 bool nds_title_patches_mph_adaptive_centered_native();
 NdsTitlePatchDebugState nds_title_patches_debug_state();
 void nds_title_patches_start_frame();

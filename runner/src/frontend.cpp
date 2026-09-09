@@ -266,7 +266,6 @@ namespace {
 
 constexpr int kScreenWidth = 256;
 constexpr int kScreenHeight = 192;
-constexpr uint32_t kMphUs10MorphState = 0x020DA818u;
 
 enum class MphPrimeInputKind : uint8_t {
     None,
@@ -587,26 +586,37 @@ void start_mph_touch_action(MphPrimeAction action,
             tap(185, 141);
             break;
         case MphPrimeAction::Beam:
-            tap(85, 32);
+            if (nds_title_patches_request_mph_weapon(0))
+                sequence.start({up, {128, 96, true, 2}});
             break;
         case MphPrimeAction::Missile:
-            tap(125, 32);
+            if (nds_title_patches_request_mph_weapon(2))
+                sequence.start({up, {128, 96, true, 2}});
             break;
         case MphPrimeAction::Weapon1:
-        case MphPrimeAction::Weapon2:
-        case MphPrimeAction::Weapon3:
-        case MphPrimeAction::Weapon4:
-        case MphPrimeAction::Weapon5:
-        case MphPrimeAction::Weapon6: {
-            const unsigned index =
-                static_cast<unsigned>(action) -
-                static_cast<unsigned>(MphPrimeAction::Weapon1);
-            const uint16_t x = static_cast<uint16_t>(93 + 25 * index);
-            const uint16_t y = static_cast<uint16_t>(48 + 25 * index);
-            sequence.start({up, {232, 34, true, 2}, {x, y, true, 2},
-                            {0, 0, false, 2}});
+            if (nds_title_patches_request_mph_weapon(7))
+                sequence.start({up, {128, 96, true, 2}});
             break;
-        }
+        case MphPrimeAction::Weapon2:
+            if (nds_title_patches_request_mph_weapon(6))
+                sequence.start({up, {128, 96, true, 2}});
+            break;
+        case MphPrimeAction::Weapon3:
+            if (nds_title_patches_request_mph_weapon(5))
+                sequence.start({up, {128, 96, true, 2}});
+            break;
+        case MphPrimeAction::Weapon4:
+            if (nds_title_patches_request_mph_weapon(4))
+                sequence.start({up, {128, 96, true, 2}});
+            break;
+        case MphPrimeAction::Weapon5:
+            if (nds_title_patches_request_mph_weapon(3))
+                sequence.start({up, {128, 96, true, 2}});
+            break;
+        case MphPrimeAction::Weapon6:
+            if (nds_title_patches_request_mph_weapon(1))
+                sequence.start({up, {128, 96, true, 2}});
+            break;
         default:
             break;
     }
@@ -3335,7 +3345,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
 
         if ((relative_mouse.captured() || mph_prime_pad_engaged) &&
             options.relative_mouse_direct_aim &&
-            !mph_prime_virtual_stylus && !mph_touch_sequence.active() &&
+            !mph_prime_virtual_stylus &&
             (relative_delta_x != 0 || relative_delta_y != 0 ||
              mph_pad_frame_x != 0 || mph_pad_frame_y != 0)) {
             // AMHE0 consumes signed per-frame aim deltas. Keep the native
@@ -3377,9 +3387,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
                     static_cast<uint16_t>(std::lround(mph_virtual_y)),
                     touch_down);
             } else {
-                const bool in_ball =
-                    bus_read_u8_slow(kMphUs10MorphState) == 0x02u;
-                if (in_ball)
+                if (nds_title_patches_mph_local_morph_ball())
                     nds_set_touch(0, 0, false);
                 else
                     nds_set_touch(128, 96, true);

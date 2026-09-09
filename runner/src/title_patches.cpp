@@ -25,8 +25,15 @@ constexpr double kFix12One = 4096.0;
 // Feeding deltas here while holding the stylus at center preserves the game
 // path but removes the finite physical touchscreen edge.
 constexpr uint32_t kMphUs10PlayerPosition = 0x020D9CB8u;
+constexpr uint32_t kMphUs10MorphState = 0x020DA818u;
+constexpr uint32_t kMphUs10JumpFlag = 0x020DABD9u;
+constexpr uint32_t kMphUs10WeaponChange = 0x020DABDBu;
+constexpr uint32_t kMphUs10SelectedWeapon = 0x020DABE3u;
+constexpr uint32_t kMphUs10GameMode = 0x020E78FCu;
+constexpr uint32_t kMphUs10MapOrUserActionPaused = 0x020FB458u;
 constexpr uint32_t kMphUs10AimX = 0x020DE526u;
 constexpr uint32_t kMphUs10AimY = 0x020DE52Eu;
+constexpr uint32_t kMphUs10MorphStride = 0xF30u;
 constexpr uint32_t kMphUs10AimStride = 0x48u;
 constexpr uint8_t kMphUs10MaxPlayerPosition = 3u;
 constexpr uint32_t kMphOverlay0Identity = 0x02102228u;
@@ -63,6 +70,10 @@ bool g_logged_sm64ds_clipper = false;
 bool g_mph_adventure_wide = false;
 uint16_t g_mph_adventure_width = 0;
 uint32_t g_mph_wide_words[kMphWideSiteCount] = {};
+uint32_t g_mph_jump_restore_addr = 0;
+uint8_t g_mph_jump_restore_value = 0;
+uint8_t g_mph_jump_restore_player_position = 0;
+uint8_t g_mph_jump_restore_frames = 0;
 bool g_mph_wide_active = false;
 bool g_logged_mph_wide_active = false;
 bool g_logged_mph_wide_lost = false;
@@ -97,6 +108,23 @@ bool read_main_ram8(uint32_t addr, uint8_t* out) {
     if (offset >= main_ram.len) return false;
     *out = main_ram.ptr[offset];
     return true;
+}
+
+bool mph_local_player_position(uint8_t* out) {
+    uint8_t player_position = 0;
+    if (!read_main_ram8(kMphUs10PlayerPosition, &player_position) ||
+        player_position > kMphUs10MaxPlayerPosition) {
+        return false;
+    }
+    if (out) *out = player_position;
+    return true;
+}
+
+void cancel_mph_jump_restore() {
+    g_mph_jump_restore_addr = 0;
+    g_mph_jump_restore_value = 0;
+    g_mph_jump_restore_player_position = 0;
+    g_mph_jump_restore_frames = 0;
 }
 
 uint16_t clamp_signed16_bits(int32_t value) {
@@ -243,6 +271,7 @@ void nds_title_patches_set_sm64ds_adaptive(bool enabled) {
 
 void nds_title_patches_set_mph_mouse_aim(bool enabled) {
     g_mph_mouse_aim = enabled;
+    if (!enabled) cancel_mph_jump_restore();
 }
 
 void nds_title_patches_set_mph_adventure_wide(bool enabled,
@@ -284,8 +313,7 @@ void nds_title_patches_set_mph_adaptive(bool enabled) {
 bool nds_title_patches_apply_mph_mouse_delta(int32_t dx, int32_t dy) {
     if (!g_mph_mouse_aim || (dx == 0 && dy == 0)) return false;
     uint8_t player_position = 0;
-    if (!read_main_ram8(kMphUs10PlayerPosition, &player_position) ||
-        player_position > kMphUs10MaxPlayerPosition) {
+    if (!mph_local_player_position(&player_position)) {
         return false;
     }
     const uint32_t player_aim_offset =
@@ -296,6 +324,68 @@ bool nds_title_patches_apply_mph_mouse_delta(int32_t dx, int32_t dy) {
     if (dy != 0)
         bus_write_u16_slow(kMphUs10AimY + player_aim_offset,
                            clamp_signed16_bits(dy));
+    return true;
+}
+
+bool nds_title_patches_mph_local_morph_ball() {
+    if (!g_mph_mouse_aim) return false;
+    uint8_t player_position = 0;
+    if (!mph_local_player_position(&player_position)) {
+        return false;
+    }
+    uint8_t morph_state = 0;
+    return read_main_ram8(
+               kMphUs10MorphState +
+                   static_cast<uint32_t>(player_position) * kMphUs10MorphStride,
+               &morph_state) &&
+           morph_state == 0x02u;
+}
+
+bool nds_title_patches_request_mph_weapon(uint8_t weapon_index) {
+    if (!g_mph_mouse_aim || weapon_index > 8u) return false;
+    uint8_t player_position = 0;
+    if (!mph_local_player_position(&player_position)) return false;
+    uint8_t game_mode = 0;
+    uint8_t map_paused = 0;
+    if (read_main_ram8(kMphUs10GameMode, &game_mode) && game_mode == 0x02u &&
+        read_main_ram8(kMphUs10MapOrUserActionPaused, &map_paused) &&
+        map_paused == 0x01u) {
+        return false;
+    }
+
+    const uint32_t player_offset =
+        static_cast<uint32_t>(player_position) * kMphUs10MorphStride;
+    const uint32_t selected_weapon_addr =
+        kMphUs10SelectedWeapon + player_offset;
+    const uint32_t weapon_change_addr = kMphUs10WeaponChange + player_offset;
+    const uint32_t jump_flag_addr = kMphUs10JumpFlag + player_offset;
+    uint8_t selected_weapon = 0;
+    uint8_t weapon_change = 0;
+    uint8_t jump_flag = 0;
+    if (!read_main_ram8(selected_weapon_addr, &selected_weapon) ||
+        !read_main_ram8(weapon_change_addr, &weapon_change) ||
+        !read_main_ram8(jump_flag_addr, &jump_flag)) {
+        return false;
+    }
+    if (selected_weapon == weapon_index) return false;
+
+    const bool is_transforming = (jump_flag & 0x10u) != 0;
+    const uint8_t original_jump_low = jump_flag & 0x0Fu;
+    const bool needs_jump_restore =
+        !is_transforming && original_jump_low == 0 &&
+        !nds_title_patches_mph_local_morph_ball();
+    if (needs_jump_restore) {
+        bus_write_u8_slow(jump_flag_addr,
+                          static_cast<uint8_t>((jump_flag & 0xF0u) | 0x01u));
+        g_mph_jump_restore_addr = jump_flag_addr;
+        g_mph_jump_restore_value = original_jump_low;
+        g_mph_jump_restore_player_position = player_position;
+        g_mph_jump_restore_frames = 4;
+    }
+
+    bus_write_u8_slow(weapon_change_addr,
+                      static_cast<uint8_t>((weapon_change & 0xF0u) | 0x0Bu));
+    bus_write_u8_slow(selected_weapon_addr, weapon_index);
     return true;
 }
 
@@ -324,6 +414,31 @@ void nds_title_patches_start_frame() {
     // Keep this title-specific scene decision on the same frame boundary.
     g_mph_adaptive_centered_native =
         g_mph_adaptive && mph_briefing_active();
+    if (!g_mph_mouse_aim) cancel_mph_jump_restore();
+    if (g_mph_jump_restore_frames != 0) {
+        uint8_t player_position = 0;
+        uint8_t jump_flag = 0;
+        const uint32_t expected_addr =
+            kMphUs10JumpFlag +
+            static_cast<uint32_t>(g_mph_jump_restore_player_position) *
+                kMphUs10MorphStride;
+        if (!mph_local_player_position(&player_position) ||
+            player_position != g_mph_jump_restore_player_position ||
+            g_mph_jump_restore_addr != expected_addr ||
+            !read_main_ram8(g_mph_jump_restore_addr, &jump_flag) ||
+            (jump_flag & 0x10u) != 0 || (jump_flag & 0x0Fu) != 0x01u) {
+            cancel_mph_jump_restore();
+        } else {
+            --g_mph_jump_restore_frames;
+            if (g_mph_jump_restore_frames == 0) {
+                bus_write_u8_slow(
+                    g_mph_jump_restore_addr,
+                    static_cast<uint8_t>((jump_flag & 0xF0u) |
+                                         (g_mph_jump_restore_value & 0x0Fu)));
+                cancel_mph_jump_restore();
+            }
+        }
+    }
     if (g_sm64ds_adaptive) patch_sm64ds_clipper();
     if (g_mph_adventure_wide) patch_mph_adventure_wide();
 }
