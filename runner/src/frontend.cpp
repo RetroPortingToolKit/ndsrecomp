@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <string>
@@ -167,6 +169,7 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame) {
 #else
 #include <SDL.h>
 #endif
+#include "recomp_runtime_ui.h"
 
 namespace {
 
@@ -1125,6 +1128,194 @@ uint64_t framebuffer_rgb_fnv(int screen) {
     return hash;
 }
 
+constexpr const char* kRuntimeMouseSensitivityKey =
+    "input.mouse_sensitivity";
+constexpr const char* kRuntimeResumeKey = "system.resume";
+constexpr const char* kRuntimeQuitKey = "system.quit";
+
+struct RuntimeMenuState {
+    NdsFrontendOptions* options = nullptr;
+    bool* running = nullptr;
+    bool close_requested = false;
+};
+
+bool save_runtime_mouse_sensitivity(const std::string& path, uint16_t value) {
+    if (path.empty()) return false;
+    std::filesystem::path settings(path);
+    std::error_code error;
+    if (!settings.parent_path().empty()) {
+        std::filesystem::create_directories(settings.parent_path(), error);
+        if (error) return false;
+    }
+
+    std::vector<std::string> lines;
+    bool found = false;
+    bool saw_version = false;
+    {
+        std::ifstream in(settings);
+        std::string line;
+        while (std::getline(in, line)) {
+            const size_t equals = line.find('=');
+            if (equals != std::string::npos) {
+                const std::string key = line.substr(0, equals);
+                if (key == "settings_version") saw_version = true;
+                if (key == "mouse_sensitivity") {
+                    line = "mouse_sensitivity=" + std::to_string(value);
+                    found = true;
+                }
+            }
+            lines.push_back(line);
+        }
+    }
+    if (!saw_version)
+        lines.insert(lines.begin(), "settings_version=12");
+    if (!found)
+        lines.push_back("mouse_sensitivity=" + std::to_string(value));
+
+    std::ofstream out(settings, std::ios::trunc);
+    if (!out) return false;
+    for (const std::string& line : lines)
+        out << line << '\n';
+    return static_cast<bool>(out);
+}
+
+int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
+                           int* value_out) {
+    auto* state = static_cast<RuntimeMenuState*>(context);
+    if (!state || !state->options || !item || !value_out) return 0;
+    if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
+        *value_out = state->options->relative_mouse_sensitivity;
+        return 1;
+    }
+    return 0;
+}
+
+int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
+                           int value) {
+    auto* state = static_cast<RuntimeMenuState*>(context);
+    if (!state || !state->options || !item) return 0;
+    if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
+        if (value < 10 || value > 400) return 0;
+        state->options->relative_mouse_sensitivity =
+            static_cast<uint16_t>(value);
+        std::fprintf(stderr, "[sdl] mouse sensitivity set to %d%%\n", value);
+        return 1;
+    }
+    return 0;
+}
+
+int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
+    auto* state = static_cast<RuntimeMenuState*>(context);
+    if (!state || !item) return 0;
+    if (std::strcmp(item->key, kRuntimeResumeKey) == 0) {
+        state->close_requested = true;
+        return 1;
+    }
+    if (std::strcmp(item->key, kRuntimeQuitKey) == 0) {
+        if (state->running) *state->running = false;
+        return 1;
+    }
+    return 0;
+}
+
+int runtime_menu_is_enabled(void* context, const RecompRuntimeUiItem* item) {
+    auto* state = static_cast<RuntimeMenuState*>(context);
+    if (!state || !state->options || !item) return 0;
+    if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0)
+        return state->options->relative_mouse_touch ? 1 : 0;
+    return 1;
+}
+
+void runtime_menu_save(void* context) {
+    auto* state = static_cast<RuntimeMenuState*>(context);
+    if (!state || !state->options) return;
+    if (save_runtime_mouse_sensitivity(
+            state->options->runtime_settings_path,
+            state->options->relative_mouse_sensitivity)) {
+        std::fprintf(stderr,
+                     "[sdl] saved mouse sensitivity to runtime settings\n");
+    }
+}
+
+bool runtime_menu_key_input(SDL_Scancode scancode,
+                            RecompRuntimeUiInput* input) {
+    if (!input) return false;
+    switch (scancode) {
+        case SDL_SCANCODE_ESCAPE:
+            *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
+            return true;
+        case SDL_SCANCODE_BACKSPACE:
+            *input = RECOMP_RUNTIME_UI_INPUT_BACK;
+            return true;
+        case SDL_SCANCODE_UP:
+            *input = RECOMP_RUNTIME_UI_INPUT_UP;
+            return true;
+        case SDL_SCANCODE_DOWN:
+            *input = RECOMP_RUNTIME_UI_INPUT_DOWN;
+            return true;
+        case SDL_SCANCODE_LEFT:
+            *input = RECOMP_RUNTIME_UI_INPUT_LEFT;
+            return true;
+        case SDL_SCANCODE_RIGHT:
+            *input = RECOMP_RUNTIME_UI_INPUT_RIGHT;
+            return true;
+        case SDL_SCANCODE_RETURN:
+        case SDL_SCANCODE_KP_ENTER:
+            *input = RECOMP_RUNTIME_UI_INPUT_ACCEPT;
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool runtime_menu_controller_input(SDL_GameControllerButton button,
+                                   RecompRuntimeUiInput* input) {
+    if (!input) return false;
+    switch (button) {
+        case SDL_CONTROLLER_BUTTON_START:
+        case SDL_CONTROLLER_BUTTON_BACK:
+            *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
+            return true;
+        case SDL_CONTROLLER_BUTTON_B:
+            *input = RECOMP_RUNTIME_UI_INPUT_BACK;
+            return true;
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            *input = RECOMP_RUNTIME_UI_INPUT_UP;
+            return true;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            *input = RECOMP_RUNTIME_UI_INPUT_DOWN;
+            return true;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            *input = RECOMP_RUNTIME_UI_INPUT_LEFT;
+            return true;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            *input = RECOMP_RUNTIME_UI_INPUT_RIGHT;
+            return true;
+        case SDL_CONTROLLER_BUTTON_A:
+            *input = RECOMP_RUNTIME_UI_INPUT_ACCEPT;
+            return true;
+        default:
+            return false;
+    }
+}
+
+const uint32_t* runtime_menu_overlay(RecompRuntimeUi* ui,
+                                     const uint32_t* pixels,
+                                     int width,
+                                     int height) {
+    if (!ui || !recomp_runtime_ui_is_open(ui) || !pixels ||
+        width <= 0 || height <= 0) {
+        return pixels;
+    }
+    static std::vector<uint32_t> surface;
+    const size_t count = static_cast<size_t>(width) *
+                         static_cast<size_t>(height);
+    surface.assign(pixels, pixels + count);
+    recomp_runtime_ui_render_argb8888(
+        ui, surface.data(), width, height, width * sizeof(uint32_t));
+    return surface.data();
+}
+
 struct FrontendPresentation {
     bool separate = false;
     bool gl_top = false;
@@ -1727,6 +1918,7 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                   int top_width,
                                   const uint32_t* bottom_pixels,
                                   int bottom_width,
+                                  RecompRuntimeUi* runtime_ui,
                                   bool virtual_stylus_visible,
                                   float virtual_stylus_x,
                                   float virtual_stylus_y,
@@ -1747,6 +1939,8 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
         ticks.upload += gl_ticks.upload;
         ticks.draw += gl_ticks.draw;
         ticks.swap += gl_ticks.swap;
+        bottom_pixels = runtime_menu_overlay(
+            runtime_ui, bottom_pixels, bottom_width, kScreenHeight);
         uint64_t start = SDL_GetPerformanceCounter();
         SDL_UpdateTexture(presentation.textures[1], nullptr, bottom_pixels,
                           bottom_width * sizeof(uint32_t));
@@ -1769,6 +1963,8 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
 #endif
         return ticks;
     }
+    top_pixels = runtime_menu_overlay(
+        runtime_ui, top_pixels, top_width, kScreenHeight);
     uint64_t start = SDL_GetPerformanceCounter();
     SDL_UpdateTexture(presentation.textures[0], nullptr, top_pixels,
                       top_width * sizeof(uint32_t));
@@ -1824,7 +2020,8 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
 
 } // namespace
 
-int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
+int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+    NdsFrontendOptions options = initial_options;
     SDL_SetMainReady();
     // SDL_INIT_TIMER matters on Windows: it raises the OS timer resolution
     // to 1 ms (SDL_HINT_TIMER_RESOLUTION default). Without it SDL_Delay(1)
@@ -2036,7 +2233,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
     std::fprintf(stderr,
         "[sdl] controls: gamepad=Player 1 | bottom mouse=touch | "
         "arrows=D-pad | Z=A X=B | A=Y S=X | Q=L W=R | "
-        "Enter=Start Backspace=Select | Esc=quit%s\n",
+        "Enter=Start Backspace=Select | Esc=settings%s\n",
         options.tab_turbo ? " | hold Tab=turbo" : "");
     if (options.relative_mouse_touch) {
         std::fprintf(stderr,
@@ -2136,6 +2333,38 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
     publish_keys();
     nds_set_touch(0, 0, false);
     bool running = true;
+    RuntimeMenuState runtime_menu_state{&options, &running, false};
+    static const RecompRuntimeUiItem runtime_menu_items[] = {
+        {kRuntimeMouseSensitivityKey, "Input", "Mouse sensitivity",
+         "Prime Controls relative aim speed.",
+         RECOMP_RUNTIME_UI_INT, 10, 400, 1, nullptr, 0, nullptr},
+        {kRuntimeResumeKey, "System", "Resume game",
+         "Close settings and return to the game.",
+         RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, nullptr, 0, nullptr},
+        {kRuntimeQuitKey, "System", "Quit",
+         "Close the runner.",
+         RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, nullptr, 0, nullptr},
+    };
+    RecompRuntimeUiConfig runtime_menu_config{};
+    runtime_menu_config.title = "Metroid Prime Hunters";
+    runtime_menu_config.subtitle = "Runtime Settings";
+    runtime_menu_config.items = runtime_menu_items;
+    runtime_menu_config.item_count =
+        sizeof(runtime_menu_items) / sizeof(runtime_menu_items[0]);
+    runtime_menu_config.callbacks.context = &runtime_menu_state;
+    runtime_menu_config.callbacks.get_value = runtime_menu_get_value;
+    runtime_menu_config.callbacks.set_value = runtime_menu_set_value;
+    runtime_menu_config.callbacks.run_action = runtime_menu_run_action;
+    runtime_menu_config.callbacks.is_enabled = runtime_menu_is_enabled;
+    runtime_menu_config.callbacks.save = runtime_menu_save;
+    runtime_menu_config.theme = "nds";
+    runtime_menu_config.accept_label = "Enter";
+    runtime_menu_config.back_label = "Backspace";
+    RecompRuntimeUi* runtime_ui =
+        recomp_runtime_ui_create(&runtime_menu_config);
+    if (!runtime_ui) {
+        std::fprintf(stderr, "[sdl] runtime menu unavailable\n");
+    }
     bool compute_failed = false;
     bool mouse_down = false;
     bool touch_release_pending = false;
@@ -2455,6 +2684,35 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
     };
     auto clear_tab_turbo = [&]() {
         if (options.tab_turbo) turbo_pressed = false;
+    };
+    auto runtime_menu_open = [&]() {
+        return runtime_ui && recomp_runtime_ui_is_open(runtime_ui);
+    };
+    auto clear_gameplay_input_for_runtime_menu = [&]() {
+        release_relative_mouse();
+        keyboard_pressed = 0;
+        controller_pressed = 0;
+        stick_pressed = 0;
+        mouse_pressed = 0;
+        mph_prime_pressed = 0;
+        mph_prime_pad_engaged = false;
+        mph_pad_trigger_left_held = false;
+        mph_pad_trigger_right_held = false;
+        virtual_stylus_pad_trigger_left_held = false;
+        virtual_stylus_pad_trigger_right_held = false;
+        turbo_pressed = false;
+        clear_mph_prime_controls();
+        clear_virtual_stylus();
+        nds_set_touch(0, 0, false);
+        publish_keys();
+    };
+    auto finish_runtime_menu_input = [&](bool was_open) {
+        if (runtime_menu_state.close_requested) {
+            runtime_menu_state.close_requested = false;
+            if (runtime_ui) recomp_runtime_ui_close(runtime_ui);
+        }
+        if (!was_open && runtime_menu_open())
+            clear_gameplay_input_for_runtime_menu();
     };
     uint32_t audio_pace_floor = kAudioQueueFrames;
     uint32_t audio_min_queue = std::numeric_limits<uint32_t>::max();
@@ -2800,6 +3058,24 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
                              (int)sdl_event_scancode(event),
                              (int)event.key.repeat);
             }
+            if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
+                RecompRuntimeUiInput menu_input{};
+                const SDL_Scancode scancode = sdl_event_scancode(event);
+                const bool was_open = runtime_menu_open();
+                const bool known = runtime_menu_key_input(
+                    scancode, &menu_input);
+                if (known && runtime_ui &&
+                    recomp_runtime_ui_handle_input(
+                        runtime_ui, menu_input, event.type == SDL_KEYDOWN,
+                        event.key.repeat)) {
+                    finish_runtime_menu_input(was_open);
+                    continue;
+                }
+                if (was_open) {
+                    finish_runtime_menu_input(was_open);
+                    continue;
+                }
+            }
             if (event.type == SDL_KEYDOWN && !event.key.repeat) {
                 const SDL_Scancode scancode = sdl_event_scancode(event);
                 NdsSavestateSlotCommand state_command{};
@@ -2935,6 +3211,25 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
                 clear_virtual_stylus();
                 publish_keys();
             }
+            if (event.type == SDL_CONTROLLERBUTTONDOWN ||
+                event.type == SDL_CONTROLLERBUTTONUP) {
+                RecompRuntimeUiInput menu_input{};
+                const bool was_open = runtime_menu_open();
+                const auto button = static_cast<SDL_GameControllerButton>(
+                    sdl_controller_button(event));
+                if (was_open &&
+                    runtime_menu_controller_input(button, &menu_input)) {
+                    recomp_runtime_ui_handle_input(
+                        runtime_ui, menu_input,
+                        event.type == SDL_CONTROLLERBUTTONDOWN, false);
+                    finish_runtime_menu_input(was_open);
+                    continue;
+                }
+                if (was_open) {
+                    finish_runtime_menu_input(was_open);
+                    continue;
+                }
+            }
             if (event.type == SDL_CONTROLLERBUTTONDOWN) {
                 const auto button = static_cast<SDL_GameControllerButton>(
                     sdl_controller_button(event));
@@ -2962,6 +3257,12 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
                     controller_pressed &= static_cast<uint16_t>(~bit);
                     publish_keys();
                 }
+            }
+            if (runtime_menu_open() &&
+                (event.type == SDL_MOUSEBUTTONDOWN ||
+                 event.type == SDL_MOUSEBUTTONUP ||
+                 event.type == SDL_MOUSEMOTION)) {
+                continue;
             }
             const bool primary_left_down =
                 event.type == SDL_MOUSEBUTTONDOWN &&
@@ -3491,6 +3792,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
             const PresentationTicks synthetic_ticks = present_screens(
                 presentation, blend_cache.blended[0].data(), top_width,
                 blend_cache.blended[1].data(), bottom_width,
+                runtime_ui,
                 mph_prime_virtual_stylus || generic_virtual_stylus,
                 mph_virtual_x, mph_virtual_y,
                 savestate_notice.empty() ? nullptr : savestate_notice.c_str());
@@ -3514,6 +3816,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
         const PresentationTicks presentation_ticks = present_screens(
             presentation, top_pixels, top_width,
             bottom_pixels, bottom_width,
+            runtime_ui,
             mph_prime_virtual_stylus || generic_virtual_stylus,
             mph_virtual_x, mph_virtual_y,
             savestate_notice.empty() ? nullptr : savestate_notice.c_str());
@@ -3745,6 +4048,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options) {
     nds_compute_host_stop();
 #endif
     if (controller) SDL_GameControllerClose(controller);
+    if (runtime_ui) {
+        recomp_runtime_ui_destroy(runtime_ui);
+        runtime_ui = nullptr;
+    }
     destroy_presentation(presentation);
     SDL_Quit();
     std::fprintf(stderr, "[sdl] closed after %llu presented frames\n",

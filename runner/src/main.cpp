@@ -422,6 +422,7 @@ int main(int argc, char** argv) {
     std::string cli_diagnostics;
     std::string cli_diagnostics_dir;
     std::string cli_diagnostics_interval_ms;
+    std::string cli_runtime_settings_path;
     // beads-yjp.28: where the Tier-3 coverage manifest lands. Empty means
     // "derive it" (next to the save, else next to the ROM). Written on every
     // exit path, with no flag required, so a player's ordinary session yields
@@ -504,6 +505,8 @@ int main(int argc, char** argv) {
             cli_diagnostics_dir = argv[++i];
         } else if (a == "--diagnostics-interval-ms" && i + 1 < argc) {
             cli_diagnostics_interval_ms = argv[++i];
+        } else if (a == "--runtime-settings-path" && i + 1 < argc) {
+            cli_runtime_settings_path = argv[++i];
         } else if (a == "--coverage-manifest" && i + 1 < argc) {
             cli_coverage_manifest = argv[++i];
         } else if (a == "--no-coverage-manifest") {
@@ -668,6 +671,7 @@ int main(int argc, char** argv) {
                 "[--save-path game.sav|--no-save] "
                 "[--diagnostics on|off] [--diagnostics-dir dir] "
                 "[--diagnostics-interval-ms ms] "
+                "[--runtime-settings-path FILE] "
                 "[--coverage-manifest out.json|--no-coverage-manifest] "
                 "[--firmware-path firmware.bin] "
                 "[--firmware-state-path mutable-firmware.bin] "
@@ -985,6 +989,7 @@ int main(int argc, char** argv) {
                      "(expected off or blend)\n");
         return 2;
     }
+    frontend_options.runtime_settings_path = cli_runtime_settings_path;
     if (!cli_relative_mouse_touch.empty() &&
         !nds_parse_on_off(cli_relative_mouse_touch,
                           &frontend_options.relative_mouse_touch)) {

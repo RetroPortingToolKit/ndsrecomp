@@ -311,6 +311,9 @@ struct NdsFrontendOptions {
     std::string savestate_directory;
     std::string savestate_build_id;
     std::string savestate_rom_sha1;
+    // Optional launcher-owned settings file. Runtime-only menu changes update
+    // the existing key/value file when the launcher passes this path.
+    std::string runtime_settings_path;
 };
 
 // Parse [display] settings from a game TOML. Missing [display] is valid.
