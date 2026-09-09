@@ -99,8 +99,8 @@ These terms cover this repository's own source, documentation, and tooling —
 the recompiler, the function finder, the build and analysis tools, the BIOS and
 title configuration, and the docs.
 
-Two boundaries sit outside them, and these terms do not and cannot change
-either one:
+Three boundaries sit outside them, and these terms do not and cannot change
+any of them:
 
 - **Third-party code keeps its own terms.** See
   [`THIRD_PARTY_ATTRIBUTION.md`](THIRD_PARTY_ATTRIBUTION.md) for the provenance
@@ -113,6 +113,11 @@ either one:
   GPL-3.0 does not permit the noncommercial condition above to be attached to
   any part of such a work, so this project's own code inside that boundary
   keeps a GPL-compatible license.
+- **The melonDS-derived code is under GPL-3.0-or-later**; see
+  [`LICENSE-GPL`](LICENSE-GPL). That covers `runner/vendor/melonds/`,
+  `runner/src/melonds_compute/`, `runner/src/frontend.cpp`, and
+  `oracle/patches/`, including the project-written shim headers and interface
+  slices in them.
 
 For the avoidance of doubt, the licensor's intent is to restrict uses where
 profit is derived from this software. Non-profit personal, educational,

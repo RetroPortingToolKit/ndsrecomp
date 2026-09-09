@@ -28,15 +28,21 @@ This repository's default license is the PolyForm Noncommercial License 1.0.0;
 see [`LICENSE`](LICENSE). The MIT terms above apply, as an exception to it, to
 the project's own source in these trees:
 
-- `runner/src/`
+- `runner/src/`, except `runner/src/melonds_compute/` and
+  `runner/src/frontend.cpp`
 - `recompiler/armv4t/`
 - `recompiler/support/`
-- `oracle/`
+- `oracle/`, except `oracle/patches/`
 
 Those trees compile and link against vendored melonDS code, which is
 GPL-3.0-or-later, so `nds_runner` and `ndsref` are combined works distributable
 only under GPL-3.0-or-later. GPL-3.0 does not permit a noncommercial condition
 to be attached to any part of such a work, so this project's own code inside
-that boundary keeps a GPL-compatible license. See
+that boundary keeps a GPL-compatible license.
+
+The excepted paths are themselves derivative works of melonDS rather than a
+compatibility choice, and are under GPL-3.0-or-later; see
+[`LICENSE-GPL`](LICENSE-GPL). `runner/vendor/melonds/` is likewise GPL and is
+not covered by these terms. See
 [`THIRD_PARTY_ATTRIBUTION.md`](THIRD_PARTY_ATTRIBUTION.md) for the full
 provenance record.

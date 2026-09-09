@@ -24,8 +24,17 @@ boundary must keep a GPL-compatible license. The shared
 `external/arm-recomp-core` and `third_party/freebios` submodules are separate
 repositories under their own terms, and are MIT for the same reason.
 
-Neither grant relicenses the third-party code described below, and neither
-makes every build artifact redistributable under its own terms. The recompiler,
+A third group of files is neither: `runner/vendor/melonds/`,
+`runner/src/melonds_compute/`, `runner/src/frontend.cpp`, and `oracle/patches/`
+are derivative works of melonDS and are under **GPL-3.0-or-later**, with the
+license text in [`LICENSE-GPL`](LICENSE-GPL). That includes the
+project-written shim headers and interface slices inside them, which reproduce
+melonDS interfaces and are therefore derived; the sections below record each
+one. The project's own contributions there are copyright © 2026 Matthew
+Stanley and offered under GPL-3.0-or-later.
+
+None of the three grants relicenses the third-party code described below, and
+none makes every build artifact redistributable under its own terms. The recompiler,
 the function finder, the generated banks, and all `ndsref`-independent tooling
 stay outside the GPL boundary and are distributable under the PolyForm terms
 alone.
