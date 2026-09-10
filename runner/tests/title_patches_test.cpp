@@ -10,6 +10,7 @@ namespace {
 
 constexpr uint32_t kMainRamBase = 0x02000000u;
 constexpr uint32_t kPlayerPosition = 0x020D9CB8u;
+constexpr uint32_t kChosenHunter = 0x020CB51Cu;
 constexpr uint32_t kMorphState = 0x020DA818u;
 constexpr uint32_t kJumpFlag = 0x020DABD9u;
 constexpr uint32_t kWeaponChange = 0x020DABDBu;
@@ -20,6 +21,7 @@ constexpr uint32_t kAimX = 0x020DE526u;
 constexpr uint32_t kAimY = 0x020DE52Eu;
 constexpr uint32_t kMorphStride = 0xF30u;
 constexpr uint32_t kAimStride = 0x48u;
+constexpr uint32_t kBoostingOffset = 0x46u;
 constexpr uint32_t kMainRamSize = 0x400000u;
 constexpr uint8_t kSentinel = 0xA5u;
 
@@ -165,6 +167,61 @@ int main() {
     write8(kMorphState, 0x02u);
     if (!require(!nds_title_patches_mph_local_morph_ball()))
         return 16;
+
+    reset_main_ram(0);
+    write8(kChosenHunter, 0x00u);
+    write8(kMorphState, 0x02u);
+    write8(kMorphState + kBoostingOffset, 0x00u);
+    if (!require(nds_title_patches_mph_should_release_touch_for_morph_boost(true)))
+        return 45;
+    if (!require(!nds_title_patches_mph_should_release_touch_for_morph_boost(false)))
+        return 46;
+
+    reset_main_ram(0);
+    write8(kChosenHunter, 0x00u);
+    write8(kMorphState, 0x02u);
+    write8(kMorphState + kBoostingOffset, 0x80u);
+    if (!require(!nds_title_patches_mph_should_release_touch_for_morph_boost(true)))
+        return 47;
+
+    reset_main_ram(3);
+    write8(kChosenHunter + 3u, 0x00u);
+    write8(kChosenHunter + 2u, 0x05u);
+    write8(kMorphState + 3u * kMorphStride, 0x02u);
+    write8(kMorphState + 3u * kMorphStride + kBoostingOffset, 0x00u);
+    write8(kMorphState + 2u * kMorphStride, 0x02u);
+    write8(kMorphState + 2u * kMorphStride + kBoostingOffset, 0x01u);
+    if (!require(nds_title_patches_mph_should_release_touch_for_morph_boost(true)))
+        return 51;
+
+    reset_main_ram(1);
+    write8(kChosenHunter + 1u, 0x05u);
+    write8(kMorphState + kMorphStride, 0x02u);
+    write8(kMorphState + kMorphStride + kBoostingOffset, 0x00u);
+    if (!require(!nds_title_patches_mph_should_release_touch_for_morph_boost(true)))
+        return 48;
+
+    reset_main_ram(2);
+    write8(kChosenHunter + 2u, 0x00u);
+    write8(kMorphState + 2u * kMorphStride, 0x00u);
+    write8(kMorphState + 2u * kMorphStride + kBoostingOffset, 0x00u);
+    if (!require(!nds_title_patches_mph_should_release_touch_for_morph_boost(true)))
+        return 49;
+
+    reset_main_ram(0xFFu);
+    write8(kChosenHunter, 0x00u);
+    write8(kMorphState, 0x02u);
+    if (!require(!nds_title_patches_mph_should_release_touch_for_morph_boost(true)))
+        return 50;
+
+    reset_main_ram(0);
+    nds_title_patches_set_mph_mouse_aim(false);
+    write8(kChosenHunter, 0x00u);
+    write8(kMorphState, 0x02u);
+    write8(kMorphState + kBoostingOffset, 0x00u);
+    if (!require(!nds_title_patches_mph_should_release_touch_for_morph_boost(true)))
+        return 52;
+    nds_title_patches_set_mph_mouse_aim(true);
 
     reset_main_ram(2);
     write8(kMapOrUserActionPaused, 0);

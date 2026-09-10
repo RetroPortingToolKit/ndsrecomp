@@ -972,7 +972,7 @@ bool gpu3d_savestate_validate(const NdsGpu3dSaveState& in,
     const uint16_t minor = static_cast<uint16_t>(in.device[6]) |
         (static_cast<uint16_t>(in.device[7]) << 8u);
     if (std::memcmp(in.device.data(), "MELN", 4u) != 0 || major != 12u ||
-        minor > 1u || read_le32(8u) != in.device.size() ||
+        minor > 2u || read_le32(8u) != in.device.size() ||
         std::memcmp(in.device.data() + 16u, "GP3D", 4u) != 0 ||
         read_le32(20u) != in.device.size() - 16u) {
         if (error) *error = "savestate GPU3D section envelope is invalid";
@@ -1286,6 +1286,10 @@ void nds_gpu3d_set_guest_wide_projection(bool enabled) {
 
 bool nds_gpu3d_guest_wide_projection() {
     return g_nds.GPU.GPU3D.GetGuestWideProjection();
+}
+
+bool nds_gpu3d_projection_has_perspective() {
+    return g_nds.GPU.GPU3D.RenderFrameHasPerspectiveProjection();
 }
 
 const uint32_t* nds_gpu3d_wide_line(int line) {

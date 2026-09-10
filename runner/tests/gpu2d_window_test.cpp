@@ -23,6 +23,7 @@ bool g_lcdc_mapped = false;
 uint16_t g_3d_output_width = 256;
 uint16_t g_3d_render_xpos = 0;
 uint32_t g_3d_render_polygon_count = 0;
+bool g_3d_projection_has_perspective = false;
 // Optional per-test adjustment of the adaptive fixture scene, applied after
 // the base registers are written and before the frame is rendered.
 std::function<void(Unit&)> g_scene_tweak;
@@ -231,10 +232,16 @@ bool test_direct_scene_centers_low_polygon_frames() {
     g_unit[0].dispcnt = 0x00011108u;  // mode 1, BG0/3D, OBJ.
 
     g_3d_render_polygon_count = 31;
-    const bool low_polygon_centered =
+    g_3d_projection_has_perspective = false;
+    const bool orthographic_low_polygon_centered =
         direct_scene_class() == NDS_GPU2D_DIRECT_CENTER_NATIVE;
 
+    g_3d_projection_has_perspective = true;
+    const bool perspective_low_polygon_allowed =
+        direct_scene_class() == NDS_GPU2D_DIRECT_SUPPORTED;
+
     g_3d_render_polygon_count = 65;
+    g_3d_projection_has_perspective = false;
     const bool gameplay_allowed =
         direct_scene_class() == NDS_GPU2D_DIRECT_SUPPORTED;
 
@@ -242,7 +249,9 @@ bool test_direct_scene_centers_low_polygon_frames() {
     g_adaptive_center_max_polygons = 0;
     g_3d_render_polygon_count = 0;
     g_3d_output_width = 256;
-    return require(low_polygon_centered && gameplay_allowed);
+    g_3d_projection_has_perspective = false;
+    return require(orthographic_low_polygon_centered &&
+                   perspective_low_polygon_allowed && gameplay_allowed);
 }
 
 bool test_compose_window_effects() {
@@ -560,6 +569,43 @@ bool test_adaptive_window_x() {
            require(nds_gpu2d_adaptive_window_x(447, extra, -1) == 255);
 }
 
+bool test_adaptive_low_polygon_perspective_stays_wide() {
+    nds_gpu2d_set_adaptive_workers(0);
+    nds_gpu2d_set_adaptive_center_max_polygons(64);
+
+    AdaptiveRun orthographic{};
+    g_scene_tweak = [](Unit&) {
+        g_3d_render_polygon_count = 31;
+        g_3d_projection_has_perspective = false;
+    };
+    run_adaptive_frame(orthographic);
+    NdsGpu2dProfile orthographic_prof{};
+    nds_gpu2d_profile(&orthographic_prof);
+
+    AdaptiveRun perspective{};
+    g_scene_tweak = [](Unit&) {
+        g_3d_render_polygon_count = 31;
+        g_3d_projection_has_perspective = true;
+    };
+    run_adaptive_frame(perspective);
+    NdsGpu2dProfile perspective_prof{};
+    nds_gpu2d_profile(&perspective_prof);
+
+    g_scene_tweak = nullptr;
+    nds_gpu2d_set_adaptive_center_max_polygons(0);
+    g_3d_render_polygon_count = 0;
+    g_3d_projection_has_perspective = false;
+
+    return require(orthographic.width == 448) &&
+           require(orthographic_prof.adaptive_fallback_frames
+                   [NDS_GPU2D_ADAPTIVE_LOW_POLYGON] == 1u) &&
+           require(perspective.width == 448) &&
+           require(perspective_prof.adaptive_fallback_frames
+                   [NDS_GPU2D_ADAPTIVE_WIDE] == 1u) &&
+           require(perspective_prof.adaptive_fallback_frames
+                   [NDS_GPU2D_ADAPTIVE_LOW_POLYGON] == 0u);
+}
+
 // Mario Kart DS races with Win0/Win1/OBJ-window enabled on every frame
 // (DISPCNT 0x0001F108, WININ 0x3F3F, WINOUT 0x322F): the OBJ window is the
 // item-box hole whose mask drops BG0/3D. Such a scene must still be
@@ -732,6 +778,9 @@ const uint32_t* nds_gpu3d_wide_attr_line(int) { return g_3d_line.data(); }
 uint16_t nds_gpu3d_render_xpos() { return g_3d_render_xpos; }
 uint32_t nds_gpu3d_render_polygon_count() { return g_3d_render_polygon_count; }
 bool nds_gpu3d_display_readback_latency() { return false; }
+bool nds_gpu3d_projection_has_perspective() {
+    return g_3d_projection_has_perspective;
+}
 bool nds_title_patches_mph_adaptive_centered_native() { return false; }
 void nds_gpu3d_set_render_xpos(uint16_t) {}
 
@@ -748,6 +797,7 @@ int main() {
     if (!test_capture_serializes_and_matches()) return 10;
     if (!test_adaptive_helpers_match_serial()) return 11;
     if (!test_adaptive_window_x()) return 12;
-    if (!test_adaptive_windowed_scene_composites_wide()) return 13;
+    if (!test_adaptive_low_polygon_perspective_stays_wide()) return 13;
+    if (!test_adaptive_windowed_scene_composites_wide()) return 14;
     return 0;
 }

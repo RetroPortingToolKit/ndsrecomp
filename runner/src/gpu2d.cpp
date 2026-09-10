@@ -227,7 +227,8 @@ NdsGpu2dDirectClass direct_scene_class() {
     if (g_adaptive_center_native)
         return NDS_GPU2D_DIRECT_CENTER_NATIVE;
     if (g_adaptive_center_max_polygons != 0u &&
-        nds_gpu3d_render_polygon_count() <= g_adaptive_center_max_polygons)
+        nds_gpu3d_render_polygon_count() <= g_adaptive_center_max_polygons &&
+        !nds_gpu3d_projection_has_perspective())
         return NDS_GPU2D_DIRECT_CENTER_NATIVE;
     // The direct presenter currently owns the physical top window only.
     if ((nds_powercontrol9() & 0x8000u) == 0u)
@@ -2884,7 +2885,8 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
     if (g_adaptive_center_native)
         return center_native(NDS_GPU2D_ADAPTIVE_CENTER_NATIVE);
     if (g_adaptive_center_max_polygons != 0u &&
-        nds_gpu3d_render_polygon_count() <= g_adaptive_center_max_polygons)
+        nds_gpu3d_render_polygon_count() <= g_adaptive_center_max_polygons &&
+        !nds_gpu3d_projection_has_perspective())
         return center_native(NDS_GPU2D_ADAPTIVE_LOW_POLYGON);
 
     Unit& u = g_unit[0];

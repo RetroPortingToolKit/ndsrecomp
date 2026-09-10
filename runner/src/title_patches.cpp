@@ -25,6 +25,7 @@ constexpr double kFix12One = 4096.0;
 // Feeding deltas here while holding the stylus at center preserves the game
 // path but removes the finite physical touchscreen edge.
 constexpr uint32_t kMphUs10PlayerPosition = 0x020D9CB8u;
+constexpr uint32_t kMphUs10ChosenHunter = 0x020CB51Cu;
 constexpr uint32_t kMphUs10MorphState = 0x020DA818u;
 constexpr uint32_t kMphUs10JumpFlag = 0x020DABD9u;
 constexpr uint32_t kMphUs10WeaponChange = 0x020DABDBu;
@@ -35,6 +36,7 @@ constexpr uint32_t kMphUs10AimX = 0x020DE526u;
 constexpr uint32_t kMphUs10AimY = 0x020DE52Eu;
 constexpr uint32_t kMphUs10MorphStride = 0xF30u;
 constexpr uint32_t kMphUs10AimStride = 0x48u;
+constexpr uint32_t kMphUs10BoostingOffset = 0x46u;
 constexpr uint8_t kMphUs10MaxPlayerPosition = 3u;
 constexpr uint32_t kMphOverlay0Identity = 0x02102228u;
 constexpr uint32_t kMphOverlay0IdentityValue = 0xE59F106Cu;
@@ -339,6 +341,36 @@ bool nds_title_patches_mph_local_morph_ball() {
                    static_cast<uint32_t>(player_position) * kMphUs10MorphStride,
                &morph_state) &&
            morph_state == 0x02u;
+}
+
+bool nds_title_patches_mph_should_release_touch_for_morph_boost(bool boost_held) {
+    if (!boost_held || !g_mph_mouse_aim) return false;
+    uint8_t player_position = 0;
+    if (!mph_local_player_position(&player_position)) return false;
+
+    uint8_t chosen_hunter = 0;
+    if (!read_main_ram8(kMphUs10ChosenHunter + player_position,
+                        &chosen_hunter) ||
+        chosen_hunter != 0x00u) {
+        return false;
+    }
+
+    const uint32_t player_offset =
+        static_cast<uint32_t>(player_position) * kMphUs10MorphStride;
+    uint8_t morph_state = 0;
+    uint8_t is_boosting = 0;
+    if (!read_main_ram8(kMphUs10MorphState + player_offset, &morph_state) ||
+        morph_state != 0x02u ||
+        !read_main_ram8(kMphUs10MorphState + player_offset +
+                            kMphUs10BoostingOffset,
+                        &is_boosting)) {
+        return false;
+    }
+
+    // Samus boost charging is the one upstream path that intentionally keeps
+    // the stylus released. melonPrimeDS treats any nonzero byte at this field
+    // as active boosting, then touches center again so mouse aim keeps working.
+    return is_boosting == 0;
 }
 
 bool nds_title_patches_request_mph_weapon(uint8_t weapon_index) {

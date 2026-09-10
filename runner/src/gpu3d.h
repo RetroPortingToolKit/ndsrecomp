@@ -151,6 +151,7 @@ uint16_t nds_gpu3d_output_width();
 // the enhanced width instead of only the full-screen one.
 void nds_gpu3d_set_guest_wide_projection(bool enabled);
 bool nds_gpu3d_guest_wide_projection();
+bool nds_gpu3d_projection_has_perspective();
 const uint32_t* nds_gpu3d_wide_line(int line);
 const uint32_t* nds_gpu3d_wide_attr_line(int line);
 

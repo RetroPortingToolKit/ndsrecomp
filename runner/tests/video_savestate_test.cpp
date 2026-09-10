@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iterator>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -170,10 +171,109 @@ bool gpu3d_device_roundtrip() {
     return ok;
 }
 
+void gpu3d_run_for(uint64_t& cycles, uint64_t delta = 4096u) {
+    cycles += delta;
+    nds_gpu3d_run(cycles);
+}
+
+void gpu3d_fifo_write(uint32_t value, uint64_t& cycles) {
+    nds_gpu3d_write(0x04000400u, value, 4u);
+    gpu3d_run_for(cycles);
+}
+
+void gpu3d_cmd(uint8_t command, uint32_t param, uint64_t& cycles) {
+    gpu3d_fifo_write(command, cycles);
+    gpu3d_fifo_write(param, cycles);
+}
+
+void gpu3d_load_projection(const int32_t (&matrix)[16],
+                           uint64_t& cycles) {
+    gpu3d_cmd(0x10u, 0u, cycles);  // projection matrix mode
+    gpu3d_fifo_write(0x16u, cycles);  // load 4x4
+    for (uint32_t value : matrix)
+        gpu3d_fifo_write(value, cycles);
+}
+
+uint32_t pack_i16(int16_t lo, int16_t hi) {
+    return static_cast<uint16_t>(lo) |
+        (static_cast<uint32_t>(static_cast<uint16_t>(hi)) << 16u);
+}
+
+void gpu3d_submit_triangle(uint64_t& cycles) {
+    gpu3d_cmd(0x29u, (31u << 16u) | (1u << 6u) | (1u << 7u), cycles);
+    gpu3d_cmd(0x40u, 0u, cycles);  // triangles
+    gpu3d_fifo_write(0x23u, cycles);
+    gpu3d_fifo_write(pack_i16(-0x0400, -0x0400), cycles);
+    gpu3d_fifo_write(0x0000u, cycles);
+    gpu3d_fifo_write(0x23u, cycles);
+    gpu3d_fifo_write(pack_i16(0x0400, -0x0400), cycles);
+    gpu3d_fifo_write(0x0000u, cycles);
+    gpu3d_fifo_write(0x23u, cycles);
+    gpu3d_fifo_write(pack_i16(0, 0x0400), cycles);
+    gpu3d_fifo_write(0x0000u, cycles);
+    gpu3d_cmd(0x41u, 0u, cycles);
+}
+
+bool gpu3d_rendered_projection_flag_follows_submitted_geometry() {
+    constexpr int32_t orthographic[16] = {
+        0x1000, 0,      0,      0,
+        0,      0x1000, 0,      0,
+        0,      0,      0x1000, 0,
+        0,      0,      0,      0x1000,
+    };
+    constexpr int32_t perspective[16] = {
+        0x1000, 0,      0,      0,
+        0,      0x1000, 0,      0,
+        0,      0,      0x1000, 0x1000,
+        0,      0,      0,      0x1000,
+    };
+
+    auto render_one = [&](const int32_t (&submitted)[16],
+                          const int32_t (&after_submit)[16]) {
+        uint64_t cycles = 0;
+        nds_gpu3d_reset();
+        nds_gpu3d_set_power((1u << 2u) | (1u << 3u));
+        gpu3d_run_for(cycles);
+        gpu3d_cmd(0x60u, 0xBFFF0000u, cycles);  // full 256x192 viewport
+        gpu3d_load_projection(submitted, cycles);
+        gpu3d_submit_triangle(cycles);
+        gpu3d_load_projection(after_submit, cycles);
+        gpu3d_cmd(0x50u, 0u, cycles);  // swap buffers
+        gpu3d_run_for(cycles, 32768u);
+        nds_gpu3d_vblank();
+        return std::pair<uint32_t, bool>{
+            nds_gpu3d_render_polygon_count(),
+            nds_gpu3d_projection_has_perspective()};
+    };
+
+    const auto ortho = render_one(orthographic, perspective);
+    const auto persp = render_one(perspective, orthographic);
+    std::string error;
+    NdsGpu3dSaveState saved_perspective{};
+    bool ok = expect(ortho.first == 1u && !ortho.second,
+                     "orthographic rendered polygon stays native-low-poly eligible") &&
+        expect(persp.first == 1u && persp.second,
+               "perspective rendered polygon remains wide even after later matrix reset") &&
+        expect(gpu3d_savestate_export(&saved_perspective, &error),
+               error.c_str());
+
+    render_one(orthographic, orthographic);
+    ok &= expect(nds_gpu3d_render_polygon_count() == 1u &&
+                 !nds_gpu3d_projection_has_perspective(),
+                 "control render clears perspective flag before import") &&
+        expect(gpu3d_savestate_import(saved_perspective, &error),
+               error.c_str()) &&
+        expect(nds_gpu3d_render_polygon_count() == 1u &&
+               nds_gpu3d_projection_has_perspective(),
+               "serialized polygon perspective flag survives GPU3D savestate roundtrip");
+    return ok;
+}
+
 }  // namespace
 
 int main() {
     bool ok = vram_and_midframe_capture_roundtrip();
     ok &= gpu3d_device_roundtrip();
+    ok &= gpu3d_rendered_projection_flag_follows_submitted_geometry();
     return ok ? 0 : 1;
 }

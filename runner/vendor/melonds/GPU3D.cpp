@@ -477,6 +477,10 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
 
         file->Bool32(&poly->FacingView);
         file->Bool32(&poly->Translucent);
+        if (file->IsAtLeastVersion(12, 2))
+            file->Bool32(&poly->PerspectiveProjection);
+        else if (!file->Saving)
+            poly->PerspectiveProjection = false;
 
         file->Bool32(&poly->IsShadowMask);
         file->Bool32(&poly->IsShadow);
@@ -1240,6 +1244,9 @@ void GPU3D::SubmitPolygon() noexcept
 
     // build the actual polygon
 
+    const bool perspective_projection =
+        ClipMatrix[3] != 0 || ClipMatrix[7] != 0 || ClipMatrix[11] != 0;
+
     if (nverts == 4)
     {
         PolygonPipeline = 35;
@@ -1266,6 +1273,7 @@ void GPU3D::SubmitPolygon() noexcept
     poly->Type = 0;
 
     poly->FacingView = facingview;
+    poly->PerspectiveProjection = perspective_projection;
 
     u32 texfmt = (TexParam >> 26) & 0x7;
     u32 polyalpha = (CurPolygonAttr >> 16) & 0x1F;
@@ -2618,6 +2626,16 @@ void GPU3D::SetRenderWidth(u32 width) noexcept
 void GPU3D::SetGuestWideProjection(bool enable) noexcept
 {
     GuestWideProjection = enable;
+}
+
+bool GPU3D::RenderFrameHasPerspectiveProjection() const noexcept
+{
+    for (u32 i = 0; i < RenderNumPolygons; ++i)
+    {
+        const Polygon* const polygon = RenderPolygonRAM[i];
+        if (polygon && polygon->PerspectiveProjection) return true;
+    }
+    return false;
 }
 
 u32* GPU3D::GetLine(int line) noexcept

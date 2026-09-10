@@ -3688,7 +3688,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                     static_cast<uint16_t>(std::lround(mph_virtual_y)),
                     touch_down);
             } else {
-                if (nds_title_patches_mph_local_morph_ball())
+                if (nds_title_patches_mph_should_release_touch_for_morph_boost(
+                        mph_prime_held[static_cast<size_t>(
+                            MphPrimeAction::BoostZoom)]))
                     nds_set_touch(0, 0, false);
                 else
                     nds_set_touch(128, 96, true);

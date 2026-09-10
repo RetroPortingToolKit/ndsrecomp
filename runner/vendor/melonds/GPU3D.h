@@ -67,6 +67,7 @@ struct Polygon
 
     bool FacingView;
     bool Translucent;
+    bool PerspectiveProjection = false;
 
     bool IsShadowMask;
     bool IsShadow;
@@ -116,6 +117,7 @@ public:
     [[nodiscard]] u32 GetRenderWidth() const noexcept { return RenderWidth; }
     void SetGuestWideProjection(bool enable) noexcept;
     [[nodiscard]] bool GetGuestWideProjection() const noexcept { return GuestWideProjection; }
+    [[nodiscard]] bool RenderFrameHasPerspectiveProjection() const noexcept;
     u32* GetLine(int line) noexcept;
     const u32* GetAttrLine(int line) noexcept;
 
