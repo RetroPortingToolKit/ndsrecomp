@@ -1273,9 +1273,9 @@ bool runtime_menu_controller_input(SDL_GameControllerButton button,
     if (!input) return false;
     switch (button) {
         case SDL_CONTROLLER_BUTTON_START:
-        case SDL_CONTROLLER_BUTTON_BACK:
             *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
             return true;
+        case SDL_CONTROLLER_BUTTON_BACK:
         case SDL_CONTROLLER_BUTTON_B:
             *input = RECOMP_RUNTIME_UI_INPUT_BACK;
             return true;
@@ -2358,8 +2358,8 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     runtime_menu_config.callbacks.is_enabled = runtime_menu_is_enabled;
     runtime_menu_config.callbacks.save = runtime_menu_save;
     runtime_menu_config.theme = "nds";
-    runtime_menu_config.accept_label = "Enter";
-    runtime_menu_config.back_label = "Backspace";
+    runtime_menu_config.accept_label = "A / Enter";
+    runtime_menu_config.back_label = "B / Backspace";
     RecompRuntimeUi* runtime_ui =
         recomp_runtime_ui_create(&runtime_menu_config);
     if (!runtime_ui) {
@@ -2401,6 +2401,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     bool mph_pad_trigger_left_held = false;
     bool mph_pad_trigger_right_held = false;
     uint64_t mph_pad_aim_writes = 0;
+    bool runtime_stick_held = false;
+    RecompRuntimeUiInput runtime_stick_input =
+        RECOMP_RUNTIME_UI_INPUT_DOWN;
+    uint32_t runtime_stick_frames = 0;
     auto mph_prime_active = [&]() {
         return mph_prime_controls_available &&
                (relative_mouse.captured() || mph_prime_pad_engaged);
@@ -3217,11 +3221,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 const bool was_open = runtime_menu_open();
                 const auto button = static_cast<SDL_GameControllerButton>(
                     sdl_controller_button(event));
-                if (was_open &&
-                    runtime_menu_controller_input(button, &menu_input)) {
+                if (runtime_menu_controller_input(button, &menu_input) &&
+                    runtime_ui &&
                     recomp_runtime_ui_handle_input(
                         runtime_ui, menu_input,
-                        event.type == SDL_CONTROLLERBUTTONDOWN, false);
+                        event.type == SDL_CONTROLLERBUTTONDOWN, false)) {
                     finish_runtime_menu_input(was_open);
                     continue;
                 }
@@ -3467,22 +3471,66 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 controller, SDL_CONTROLLER_AXIS_LEFTX) / 32767.0f;
             const float ly = SDL_GameControllerGetAxis(
                 controller, SDL_CONTROLLER_AXIS_LEFTY) / 32767.0f;
-            auto stick_dir = [&](float value, uint16_t bit, bool positive) {
-                const float v = positive ? value : -value;
-                const bool held = (stick_pressed & bit) != 0;
-                const bool next = v > (held ? 0.35f : 0.5f);
-                if (next != held) {
-                    if (next) stick_pressed |= bit;
-                    else stick_pressed &= static_cast<uint16_t>(~bit);
+            const bool menu_open = runtime_menu_open();
+            if (menu_open) {
+                if (stick_pressed != 0) {
+                    stick_pressed = 0;
                     publish_keys();
                 }
-            };
-            stick_dir(lx, 1u << 4, true);    // Right
-            stick_dir(lx, 1u << 5, false);   // Left
-            stick_dir(ly, 1u << 6, false);   // Up (SDL Y axis points down)
-            stick_dir(ly, 1u << 7, true);    // Down
+                bool have_stick_input = false;
+                RecompRuntimeUiInput stick_input =
+                    RECOMP_RUNTIME_UI_INPUT_DOWN;
+                const float ax = std::fabs(lx);
+                const float ay = std::fabs(ly);
+                if (std::max(ax, ay) > 0.5f) {
+                    have_stick_input = true;
+                    if (ax > ay)
+                        stick_input = lx > 0.0f
+                            ? RECOMP_RUNTIME_UI_INPUT_RIGHT
+                            : RECOMP_RUNTIME_UI_INPUT_LEFT;
+                    else
+                        stick_input = ly > 0.0f
+                            ? RECOMP_RUNTIME_UI_INPUT_DOWN
+                            : RECOMP_RUNTIME_UI_INPUT_UP;
+                }
+                if (have_stick_input) {
+                    const bool same = runtime_stick_held &&
+                                      runtime_stick_input == stick_input;
+                    if (!same) {
+                        runtime_stick_held = true;
+                        runtime_stick_input = stick_input;
+                        runtime_stick_frames = 0;
+                        recomp_runtime_ui_handle_input(
+                            runtime_ui, stick_input, 1, 0);
+                    } else if (++runtime_stick_frames >= 18 &&
+                               ((runtime_stick_frames - 18) % 5) == 0) {
+                        recomp_runtime_ui_handle_input(
+                            runtime_ui, stick_input, 1, 1);
+                    }
+                } else {
+                    runtime_stick_held = false;
+                    runtime_stick_frames = 0;
+                }
+            } else {
+                runtime_stick_held = false;
+                runtime_stick_frames = 0;
+                auto stick_dir = [&](float value, uint16_t bit, bool positive) {
+                    const float v = positive ? value : -value;
+                    const bool held = (stick_pressed & bit) != 0;
+                    const bool next = v > (held ? 0.35f : 0.5f);
+                    if (next != held) {
+                        if (next) stick_pressed |= bit;
+                        else stick_pressed &= static_cast<uint16_t>(~bit);
+                        publish_keys();
+                    }
+                };
+                stick_dir(lx, 1u << 4, true);    // Right
+                stick_dir(lx, 1u << 5, false);   // Left
+                stick_dir(ly, 1u << 6, false);   // Up (SDL Y axis points down)
+                stick_dir(ly, 1u << 7, true);    // Down
+            }
 
-            if (virtual_stylus_available) {
+            if (!menu_open && virtual_stylus_available) {
                 const float rx = SDL_GameControllerGetAxis(
                     controller, SDL_CONTROLLER_AXIS_RIGHTX) / 32767.0f;
                 const float ry = SDL_GameControllerGetAxis(
@@ -3530,7 +3578,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 }
             }
 
-            if (mph_prime_controls_available) {
+            if (!menu_open && mph_prime_controls_available) {
                 // Right stick -> camera aim; triggers act as bindable
                 // pseudo-buttons (defaults: RT shoot, LT scan-fire).
                 const float rx = SDL_GameControllerGetAxis(
@@ -3575,19 +3623,24 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                     // deflection turns at the built-in rate scaled by the
                     // pad sensitivity. Y keeps the mouse path's 150% scale
                     // and follows the same invert option.
-                    const float curved = (mag - kDeadzone) / (1.0f - kDeadzone);
+                    const float curved =
+                        (mag - kDeadzone) / (1.0f - kDeadzone);
                     const float rate = curved * curved * 5.0f *
                         (options.mph_pad_aim_sensitivity / 100.0f) / mag;
                     mph_pad_aim_rem_x += rx * rate;
                     mph_pad_aim_rem_y += ry * rate * 1.5f *
                         (options.relative_mouse_invert_y ? -1.0f : 1.0f);
-                    mph_pad_frame_x = static_cast<int32_t>(mph_pad_aim_rem_x);
-                    mph_pad_frame_y = static_cast<int32_t>(mph_pad_aim_rem_y);
+                    mph_pad_frame_x =
+                        static_cast<int32_t>(mph_pad_aim_rem_x);
+                    mph_pad_frame_y =
+                        static_cast<int32_t>(mph_pad_aim_rem_y);
                     mph_pad_aim_rem_x -= static_cast<float>(mph_pad_frame_x);
                     mph_pad_aim_rem_y -= static_cast<float>(mph_pad_frame_y);
                 }
             }
         } else {
+            runtime_stick_held = false;
+            runtime_stick_frames = 0;
             if (stick_pressed != 0) {
                 stick_pressed = 0;
                 publish_keys();
