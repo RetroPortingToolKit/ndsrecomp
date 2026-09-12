@@ -1967,6 +1967,11 @@ int main(int argc, char** argv) {
         sm64ds_wide_policy &&
         (frontend_options.adaptive_screens & NDS_ADAPTIVE_TOP) != 0u);
     nds_title_patches_set_mph_mouse_aim(mph_mouse_aim_policy);
+    nds_title_patches_set_mkds_adaptive(
+        rom_sha1 == "691e00d9a5dd80b04f80cc7559503e8b06848785" &&
+        adaptive_guest_culling &&
+        (frontend_options.adaptive_screens & NDS_ADAPTIVE_TOP) != 0u,
+        frontend_options.adaptive_max_width[0]);
     nds_title_patches_set_mph_adventure_wide(
         rom_sha1 == "90164d1ac127ee5f9815ea4ae7de798c7b5fc629" &&
             adaptive_guest_culling &&

@@ -64,6 +64,10 @@ constexpr MphWideSite kMphWideSites[kMphWideSiteCount] = {
 };
 
 bool g_sm64ds_adaptive = false;
+bool g_mkds_adaptive = false;
+uint16_t g_mkds_adaptive_width = 0;
+bool g_mkds_object_wide_active = false;
+uint64_t g_mkds_object_wide_applied = 0;
 bool g_mph_mouse_aim = false;
 bool g_mph_adaptive = false;
 bool g_mph_adaptive_centered_native = false;
@@ -253,6 +257,73 @@ void patch_sm64ds_clipper() {
     }
 }
 
+void patch_mkds_object_clipper() {
+    g_mkds_object_wide_active = false;
+    if (!g_mkds_adaptive ||
+        nds_gpu3d_output_width() != g_mkds_adaptive_width)
+        return;
+
+    // AMCE0 cam_updateFrustum builds object planes at 020D4A20, then
+    // selects GX projection mode at 02077238. mobj's 020D4F94 subsequently
+    // rotates these planes into world space. The camera/projection itself
+    // stays native: the renderer already widens it, so changing it here
+    // would widen the view twice. Guard both code and the active camera.
+    uint32_t call = 0, transform = 0, camera = 0;
+    if (!read_main_ram_word(0x0207722Cu, &call) || call != 0xFA0175FBu ||
+        !read_main_ram_word(0x020D5094u, &transform) ||
+        transform != 0x0217B550u ||
+        !read_main_ram_word(0x0217AC74u, &camera) ||
+        camera < kMainRamBase || camera > 0x023FFD90u || (camera & 3u))
+        return;
+    int32_t aspect = 0, near = 0, left = 0, right = 0;
+    if (!read_main_ram32(camera + 0x6Cu, &aspect) || aspect != kNativeAspect ||
+        !read_main_ram32(camera + 0x70u, &near) || near <= 0 || near > 0x100000 ||
+        !read_main_ram32(camera + 0x80u, &left) || left == 0 ||
+        left < -0x100000 || left > 0x100000 ||
+        !read_main_ram32(camera + 0x84u, &right) || right != -left)
+        return;
+
+    const double extent = std::abs(static_cast<double>(left));
+    const double native_length = std::hypot(static_cast<double>(near), extent);
+    const double wide_extent = extent * g_mkds_adaptive_width / 256.0;
+    const double wide_length = std::hypot(static_cast<double>(near), wide_extent);
+    const int32_t native_x = static_cast<int32_t>(std::lround(near * kFix12One / native_length));
+    const int32_t native_z = static_cast<int32_t>(std::lround(extent * kFix12One / native_length));
+    const int32_t wide_x = static_cast<int32_t>(std::lround(near * kFix12One / wide_length));
+    const int32_t wide_z = static_cast<int32_t>(std::lround(wide_extent * kFix12One / wide_length));
+    int32_t planes[2][3]{};
+    bool replace[2]{};
+    for (unsigned i = 0; i < 2u; ++i) {
+        for (unsigned axis = 0; axis < 3u; ++axis)
+            if (!read_main_ram32(0x0217B550u + i * 12u + axis * 4u,
+                                 &planes[i][axis])) return;
+        const int32_t x = planes[i][0], z = planes[i][2];
+        if (planes[i][1] != 0 || x < -4096 || x > 4096 || x == 0 ||
+            z <= 0 || z > 4096) return;
+        // The SDK's integer vector normalization differs by a few Fix12
+        // units from rounded host math. Recognize either native or already
+        // widened planes, including after a savestate load; never rescale
+        // the previously widened result or accept another camera's planes.
+        const auto matches = [&](int32_t expected_x, int32_t expected_z) {
+            return std::abs(std::abs(x) - expected_x) <= 4 &&
+                   std::abs(z - expected_z) <= 4;
+        };
+        if (matches(wide_x, wide_z)) continue;
+        if (!matches(native_x, native_z)) return;
+        replace[i] = true;
+    }
+    if ((planes[0][0] < 0) == (planes[1][0] < 0)) return;
+    for (unsigned i = 0; i < 2u; ++i) {
+        if (!replace[i]) continue;
+        const uint32_t address = 0x0217B550u + i * 12u;
+        bus_write_u32_slow(address, static_cast<uint32_t>(
+            planes[i][0] < 0 ? -wide_x : wide_x));
+        bus_write_u32_slow(address + 8u, static_cast<uint32_t>(wide_z));
+        ++g_mkds_object_wide_applied;
+    }
+    g_mkds_object_wide_active = true;
+}
+
 bool mph_briefing_active() {
     int32_t overlay_identity = 0;
     int32_t menu_list = 0;
@@ -269,6 +340,17 @@ bool mph_briefing_active() {
 
 void nds_title_patches_set_sm64ds_adaptive(bool enabled) {
     g_sm64ds_adaptive = enabled;
+}
+
+void nds_title_patches_set_mkds_adaptive(bool enabled, uint16_t adaptive_width) {
+    g_mkds_adaptive = enabled && adaptive_width > 256u && adaptive_width <= 448u;
+    g_mkds_adaptive_width = adaptive_width;
+    g_mkds_object_wide_active = false;
+    g_mkds_object_wide_applied = 0;
+}
+
+void nds_title_patches_projection_begin() {
+    if (g_mkds_adaptive) patch_mkds_object_clipper();
 }
 
 void nds_title_patches_set_mph_mouse_aim(bool enabled) {
@@ -431,6 +513,9 @@ static_assert(kMphWideSiteCount ==
 
 NdsTitlePatchDebugState nds_title_patches_debug_state() {
     NdsTitlePatchDebugState state{};
+    state.mkds_object_wide_enabled = g_mkds_adaptive;
+    state.mkds_object_wide_active = g_mkds_object_wide_active;
+    state.mkds_object_wide_applied = g_mkds_object_wide_applied;
     state.mph_adventure_wide_enabled = g_mph_adventure_wide;
     state.mph_adventure_wide_active = g_mph_wide_active;
     state.mph_adventure_wide_width = g_mph_adventure_width;

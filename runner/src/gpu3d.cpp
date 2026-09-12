@@ -22,6 +22,7 @@
 #include "scheduler.h"
 #include "savestate.h"
 #include "state.h"
+#include "title_patches.h"
 #include "vram.h"
 #include "net/net_ring.h"
 #include "emu_profile.h"
@@ -1097,6 +1098,8 @@ uint32_t nds_gpu3d_read(uint32_t addr, uint32_t width) {
 }
 
 void nds_gpu3d_write(uint32_t addr, uint32_t value, uint32_t width) {
+    if (addr == 0x04000440u && width == 4u && value == 0u)
+        nds_title_patches_projection_begin();
     // Keep the engine's view of ARM9 time live for mid-slice writes too
     // (GXFIFO stall/IRQ/DMA decisions inside the vendored write paths).
     g_nds.ARM9Timestamp = g_runtime_cycles;

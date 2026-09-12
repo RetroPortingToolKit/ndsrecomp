@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #include "state.h"
 
@@ -26,6 +27,7 @@ constexpr uint32_t kMainRamSize = 0x400000u;
 constexpr uint8_t kSentinel = 0xA5u;
 
 std::array<uint8_t, kMainRamSize> g_main_ram{};
+uint16_t g_render_width = 256;
 
 bool require(bool value) {
     return value;
@@ -81,13 +83,92 @@ extern "C" void bus_write_u32_slow(uint32_t addr, uint32_t val) {
 }
 
 uint16_t nds_gpu3d_output_width() {
-    return 256;
+    return g_render_width;
 }
 
 void nds_gpu3d_set_guest_wide_projection(bool) {
 }
 
+bool test_mkds_object_clipping() {
+    constexpr uint32_t camera = 0x02300000u;
+    constexpr uint32_t planes = 0x0217B550u;
+    g_main_ram.fill(0);
+    const auto put = [](uint32_t addr, int32_t value) {
+        bus_write_u32_slow(addr, static_cast<uint32_t>(value));
+    };
+    const auto get = [](uint32_t addr) {
+        int32_t value;
+        std::memcpy(&value, &g_main_ram[main_ram_offset(addr)], sizeof(value));
+        return value;
+    };
+    put(0x0207722Cu, 0xFA0175FBu);
+    put(0x020D5094u, planes);
+    put(0x0217AC74u, camera);
+    put(camera + 0x6Cu, 0x1555);
+    put(camera + 0x70u, 1024);
+    put(camera + 0x80u, -795);
+    put(camera + 0x84u, 795);
+    // Native planes captured at the user's Luigi Circuit reproduction.
+    put(planes, 3234);
+    put(planes + 8u, 2511);
+    put(planes + 12u, -3234);
+    put(planes + 20u, 2511);
+    const std::vector<uint8_t> native(g_main_ram.begin(), g_main_ram.end());
+    g_render_width = 448;
+    nds_title_patches_set_mkds_adaptive(false, 448);
+    nds_title_patches_projection_begin();
+    if (std::memcmp(native.data(), g_main_ram.data(), native.size())) return false;
+    nds_title_patches_set_mkds_adaptive(true, 448);
+    g_render_width = 256;
+    nds_title_patches_projection_begin();
+    if (std::memcmp(native.data(), g_main_ram.data(), native.size())) return false;
+    g_render_width = 448;
+    nds_title_patches_projection_begin();
+    const int32_t x = get(planes), z = get(planes + 8u);
+    // A point with |x/z| == 1 is outside the native side plane but inside
+    // the widened side plane. Keep normalized normals and both side signs.
+    if (2511 - 3234 >= 0 || z - x <= 0 || x < 2427 || x > 2431 ||
+        z < 3296 || z > 3301 || get(planes + 12u) != -x ||
+        get(planes + 20u) != z) return false;
+    std::vector<uint8_t> allowed = native;
+    for (uint32_t offset : {0u, 8u, 12u, 20u})
+        std::memcpy(allowed.data() + main_ram_offset(planes + offset),
+                    &g_main_ram[main_ram_offset(planes + offset)], 4);
+    // Camera zoom, vertical planes, near/far clipping and unrelated memory
+    // must remain byte-identical.
+    if (std::memcmp(allowed.data(), g_main_ram.data(), allowed.size())) return false;
+    nds_title_patches_projection_begin();
+    if (std::memcmp(allowed.data(), g_main_ram.data(), allowed.size()) ||
+        nds_title_patches_debug_state().mkds_object_wide_applied != 2u) return false;
+
+    // A fresh native frustum from a changed FOV is widened again.
+    put(camera + 0x80u, -1024);
+    put(camera + 0x84u, 1024);
+    put(planes, 2896);
+    put(planes + 8u, 2896);
+    put(planes + 12u, -2896);
+    put(planes + 20u, 2896);
+    nds_title_patches_projection_begin();
+    if (get(planes + 8u) <= get(planes) ||
+        nds_title_patches_debug_state().mkds_object_wide_applied != 4u) return false;
+    const std::vector<uint8_t> wide(g_main_ram.begin(), g_main_ram.end());
+    // Loading already widened planes into fresh host patch state must not
+    // widen them cumulatively.
+    nds_title_patches_set_mkds_adaptive(true, 448);
+    nds_title_patches_projection_begin();
+    if (std::memcmp(wide.data(), g_main_ram.data(), wide.size()) ||
+        !nds_title_patches_debug_state().mkds_object_wide_active ||
+        nds_title_patches_debug_state().mkds_object_wide_applied != 0u) return false;
+    put(0x0207722Cu, 0);
+    nds_title_patches_projection_begin();
+    if (nds_title_patches_debug_state().mkds_object_wide_active) return false;
+    nds_title_patches_set_mkds_adaptive(false, 448);
+    g_render_width = 256;
+    return true;
+}
+
 int main() {
+    if (!test_mkds_object_clipping()) return 100;
     for (uint8_t slot = 0; slot < 4u; ++slot) {
         reset_main_ram(slot);
         const int32_t dx = slot == 2u ? -17 : static_cast<int32_t>(10 + slot);

@@ -1166,7 +1166,13 @@ std::string handle(const std::string& line) {
                ",\"frames_active\":" +
                std::to_string(s.mph_adventure_wide_frames_active) +
                ",\"frames_inactive\":" +
-               std::to_string(s.mph_adventure_wide_frames_inactive) + "}";
+               std::to_string(s.mph_adventure_wide_frames_inactive) +
+               ",\"mkds_object_wide_enabled\":" +
+               std::to_string(s.mkds_object_wide_enabled ? 1 : 0) +
+               ",\"mkds_object_wide_active\":" +
+               std::to_string(s.mkds_object_wide_active ? 1 : 0) +
+               ",\"mkds_object_wide_applied\":" +
+               std::to_string(s.mkds_object_wide_applied) + "}";
     }
     if (cmd == "frontend_input_stats") {
         NdsFrontendInputDebugState s{};
