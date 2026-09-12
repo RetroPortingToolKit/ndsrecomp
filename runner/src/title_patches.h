@@ -9,11 +9,18 @@ struct NdsTitlePatchDebugState {
     uint64_t mph_adventure_wide_site_applied[3];
     uint64_t mph_adventure_wide_frames_active;
     uint64_t mph_adventure_wide_frames_inactive;
+    bool mkds_object_wide_enabled;
+    bool mkds_object_wide_active;
+    uint64_t mkds_object_wide_applied;
 };
 
 // Title-specific, opt-in presentation patches. Native DS execution never
 // enables these paths.
 void nds_title_patches_set_sm64ds_adaptive(bool enabled);
+void nds_title_patches_set_mkds_adaptive(bool enabled, uint16_t adaptive_width);
+// Called on a direct GX projection-mode write, after MKDS rebuilds its
+// camera-space object planes and before it transforms them into world space.
+void nds_title_patches_projection_begin();
 void nds_title_patches_set_mph_mouse_aim(bool enabled);
 // MPH adventure mode: rebuild the guest's own frusta at the host's adaptive
 // top width so per-room sub-frusta and entity sphere culling cover the whole
