@@ -2,11 +2,13 @@
 #include "gpu3d.h"
 #include "savestate.h"
 #include "vram.h"
+#include "NDS.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -269,11 +271,74 @@ bool gpu3d_rendered_projection_flag_follows_submitted_geometry() {
     return ok;
 }
 
+bool gpu3d_long_strip_savestate_roundtrip() {
+    uint64_t cycles = 0;
+    nds_gpu3d_reset();
+    nds_gpu3d_set_power((1u << 2u) | (1u << 3u));
+    gpu3d_run_for(cycles);
+    gpu3d_cmd(0x60u, 0xBFFF0000u, cycles);
+    gpu3d_cmd(0x29u, (31u << 16u) | (1u << 6u) | (1u << 7u), cycles);
+    gpu3d_cmd(0x40u, 2u, cycles);  // one triangle strip, many vertices
+    auto vertex = [&](unsigned index) {
+        gpu3d_fifo_write(0x23u, cycles);
+        gpu3d_fifo_write(pack_i16(-0x0800 + (index / 2u) * 0x0400,
+                                  (index & 1u) ? 0x0400 : -0x0400), cycles);
+        gpu3d_fifo_write(0u, cycles);
+    };
+    for (unsigned i = 0; i < 7; ++i) vertex(i);
+
+    NdsGpu3dSaveState saved{};
+    std::string error;
+    if (!expect(gpu3d_savestate_export(&saved, &error), error.c_str()))
+        return false;
+    // Inspect the actual command-generated state, not a hand-built fixture.
+    auto device = std::make_unique<melonDS::NDS>();
+    melonDS::Savestate decode(saved.device.data(),
+                              static_cast<uint32_t>(saved.device.size()), false);
+    device->GPU.GPU3D.DoSavestate(&decode);
+    bool ok = expect(!decode.Error && device->GPU.GPU3D.VertexNum == 7u &&
+                     device->GPU.GPU3D.VertexNumInPoly == 2u,
+                     "strip tracks total submitted vertices separately from buffer index") &&
+        expect(gpu3d_savestate_validate(saved, &error),
+               "valid long strip passes GPU3D savestate validation");
+    const uint64_t saved_cycles = cycles;
+    vertex(7);
+    vertex(8);
+    NdsGpu3dSaveState uninterrupted{};
+    ok &= expect(gpu3d_savestate_export(&uninterrupted, &error), error.c_str());
+    if (!expect(gpu3d_savestate_import(saved, &error),
+                "restore long strip GPU3D state"))
+        return false;
+    cycles = saved_cycles;
+    vertex(7);
+    vertex(8);
+    NdsGpu3dSaveState resumed{};
+    ok &= expect(gpu3d_savestate_export(&resumed, &error), error.c_str()) &&
+        expect(resumed.device == uninterrupted.device &&
+               resumed.arm9_timestamp == uninterrupted.arm9_timestamp,
+               "continuing a restored long strip matches uninterrupted geometry");
+
+    // Removing the total-count limit must keep the real buffer-index guard.
+    device->GPU.GPU3D.VertexNumInPoly = 11u;
+    melonDS::Savestate encode;
+    device->GPU.GPU3D.DoSavestate(&encode);
+    encode.Finish();
+    if (!expect(!encode.Error, "encode malformed buffer-index fixture"))
+        return false;
+    const auto* begin = static_cast<const uint8_t*>(encode.Buffer());
+    NdsGpu3dSaveState corrupt = saved;
+    corrupt.device.assign(begin, begin + encode.Length());
+    ok &= expect(!gpu3d_savestate_validate(corrupt, &error),
+                 "out-of-range vertex buffer index remains rejected");
+    return ok;
+}
+
 }  // namespace
 
 int main() {
     bool ok = vram_and_midframe_capture_roundtrip();
     ok &= gpu3d_device_roundtrip();
     ok &= gpu3d_rendered_projection_flag_follows_submitted_geometry();
+    ok &= gpu3d_long_strip_savestate_roundtrip();
     return ok ? 0 : 1;
 }

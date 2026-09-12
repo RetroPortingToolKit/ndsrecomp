@@ -80,13 +80,16 @@ bool validate_gpu3d_device(const melonDS::GPU3D& gpu,
         gpu.NumPolygons > 2048u || gpu.NumOpaquePolygons > gpu.NumPolygons ||
         gpu.RenderNumPolygons > 2048u)
         return fail("savestate GPU3D RAM state is invalid");
+    // VertexNum counts every vertex since BEGIN_VTXS, so valid batches and
+    // strips routinely exceed four. Only VertexNumInPoly indexes the
+    // temporary vertex buffer; do not cap the cumulative counter.
     if (gpu.ProjMatrixStackPointer < 0 ||
         gpu.ProjMatrixStackPointer > 1 ||
         gpu.PosMatrixStackPointer < 0 ||
         gpu.PosMatrixStackPointer > 63 ||
         gpu.TexMatrixStackPointer < 0 ||
         gpu.TexMatrixStackPointer > 1 ||
-        gpu.MatrixMode > 3u || gpu.VertexNum > 4u ||
+        gpu.MatrixMode > 3u ||
         gpu.VertexNumInPoly > 10u || gpu.ExecParamCount > 32u ||
         gpu.ParamCount > 32u || gpu.TotalParams > 32u)
         return fail("savestate GPU3D command state is invalid");
