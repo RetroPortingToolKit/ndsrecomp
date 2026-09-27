@@ -3810,8 +3810,8 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         // Route the Thor's second-display touch surface to the DS bottom screen
         // when the in-game Prime aim logic below is not driving the stylus
         // (menus, "touch to start", map, etc.).
-        if (android_second_screen_active() && !mph_prime_is_active &&
-            !generic_virtual_stylus) {
+        if (android_second_screen_active() && !runtime_menu_open() &&
+            !mph_prime_is_active && !generic_virtual_stylus) {
             int tx = 0, ty = 0;
             bool tdown = false;
             android_second_screen_touch(&tx, &ty, &tdown);
