@@ -4,12 +4,12 @@
 #include "TextureUpscale.h"
 
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #if defined(NDS_GLES)
 #include "melonds_compute/android_gl_compat.h"
 #else
-#include <string>
 #include "glad/glad.h"
 #endif
 
