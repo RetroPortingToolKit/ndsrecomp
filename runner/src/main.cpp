@@ -55,7 +55,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <android/log.h>
-// Forward the runner's stdout/stderr into logcat (tag "ThorMPHrun") so its
+// Forward the runner's stdout/stderr into logcat (tag "ndsrecomp") so its
 // printf/fprintf diagnostics are visible via `adb logcat` on the device.
 static int g_log_pipe[2];
 static void* android_log_pump(void*) {
@@ -64,7 +64,7 @@ static void* android_log_pump(void*) {
     while ((n = read(g_log_pipe[0], buf, sizeof(buf) - 1)) > 0) {
         if (buf[n - 1] == '\n') --n;
         buf[n] = '\0';
-        __android_log_write(ANDROID_LOG_INFO, "ThorMPHrun", buf);
+        __android_log_write(ANDROID_LOG_INFO, "ndsrecomp", buf);
     }
     return nullptr;
 }

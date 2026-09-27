@@ -33,11 +33,11 @@ Java_com_thor_mph_MyGame_nativeSetSecondSurface(JNIEnv* env, jclass,
     }
     if (surface) {
         g_win = ANativeWindow_fromSurface(env, surface);
-        __android_log_write(ANDROID_LOG_INFO, "ThorMPHrun",
+        __android_log_write(ANDROID_LOG_INFO, "ndsrecomp",
                             g_win ? "[second-screen] surface attached"
                                   : "[second-screen] fromSurface failed");
     } else {
-        __android_log_write(ANDROID_LOG_INFO, "ThorMPHrun",
+        __android_log_write(ANDROID_LOG_INFO, "ndsrecomp",
                             "[second-screen] surface detached");
     }
 }
