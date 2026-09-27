@@ -450,12 +450,14 @@ GLuint compile_shader(GLenum type, const char* source)
     GLuint shader = glCreateShader(type);
 #if defined(NDS_GLES)
     // Swap the desktop version line for a GLES 3.2 es-profile header with the
-    // precision qualifiers GLES requires (harmless in the vertex stage).
+    // precision qualifiers GLES requires (harmless in the vertex stage). ES
+    // requires #version on the first line, so the raw string's leading
+    // newline goes with it.
     std::string src = source;
     const std::string ver = "#version 430 core";
     size_t pos = src.find(ver);
     if (pos != std::string::npos)
-        src.replace(pos, ver.size(),
+        src.replace(0, pos + ver.size(),
             "#version 320 es\nprecision highp float;\nprecision highp int;\n"
             "precision highp usampler2D;\nprecision highp sampler2D;");
     const char* patched = src.c_str();

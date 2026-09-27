@@ -48,6 +48,8 @@ bool ComputeRenderer::CompileShader(GLuint& shader, const std::string& source, c
     shaderSource += "precision highp image2D;\n";
     shaderSource += "precision highp uimage2D;\n";
     shaderSource += "precision highp iimage2D;\n";
+    shaderSource += "precision highp usampler2DArray;\n";
+    shaderSource += "precision highp uimageBuffer;\n";
 #else
     shaderSource += "#version 430 core\n";
 #endif
