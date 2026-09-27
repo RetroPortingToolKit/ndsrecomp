@@ -3572,6 +3572,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 stick_dir(ly, 1u << 7, true);    // Down
             }
 
+#if defined(__ANDROID__)
             // Hold Select/Back = turbo (fast-forward). Lets a gamepad blitz
             // through the interpreter-heavy opening FMVs. On a pad-equipped
             // host the pad owns turbo state (Android has no Tab key).
@@ -3580,6 +3581,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 turbo_pressed = true;
             else
                 turbo_pressed = false;
+#endif
 
             if (!menu_open && virtual_stylus_available) {
                 const float rx = SDL_GameControllerGetAxis(
