@@ -187,7 +187,8 @@ endif()
 # Retail BIOS banks exist only when the developer has generated them from
 # their own hash-verified dumps; without them the FreeBIOS path still works,
 # so link empty dispatch tables instead of requiring the dumps at build time.
-if(EXISTS "${GEN}/arm9_bios.c")
+if(EXISTS "${GEN}/arm9_bios.c" AND EXISTS "${GEN}/arm9_bios_dispatch.c" AND
+   EXISTS "${GEN}/arm7_bios.c" AND EXISTS "${GEN}/arm7_bios_dispatch.c")
     set(RETAIL_BIOS_BANK_SOURCES
         ${GEN}/arm9_bios.c
         ${GEN}/arm9_bios_dispatch.c
