@@ -1322,6 +1322,11 @@ const uint32_t* runtime_menu_overlay(RecompRuntimeUi* ui,
 struct FrontendPresentation {
     bool separate = false;
     bool gl_top = false;
+#if defined(__ANDROID__)
+    // Renderer 0 is presenting the top screen alone (bottom screen on the
+    // second physical display); its stacked logical size is suspended.
+    bool android_top_only = false;
+#endif
     SDL_Window* windows[2]{};
     SDL_Renderer* renderers[2]{};
     SDL_Texture* textures[2]{};
@@ -2002,20 +2007,45 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
 #if defined(__ANDROID__)
         if (android_second_screen_active()) {
             // The bottom screen is on the Thor's second physical display, so
-            // the main window shows the top screen alone, stretched to fill the
-            // entire panel edge-to-edge (no letterbox). Disable the logical-size
-            // letterbox mapping and copy the top texture to the full drawable.
-            SDL_RenderSetIntegerScale(renderer, SDL_FALSE);
-            SDL_RenderSetLogicalSize(renderer, 0, 0);
+            // the main window shows the top screen alone, scaled to the
+            // largest rect that keeps its aspect ratio and centered. The
+            // stacked logical size reserves room for the bottom screen, so
+            // drop it and fit the top screen's content size (which includes
+            // any adaptive widescreen width) to the drawable in pixels.
+            if (!presentation.android_top_only) {
+                SDL_RenderSetIntegerScale(renderer, SDL_FALSE);
+                SDL_RenderSetLogicalSize(renderer, 0, 0);
+                presentation.android_top_only = true;
+            }
             int out_w = 0, out_h = 0;
             SDL_GetRendererOutputSize(renderer, &out_w, &out_h);
-            const SDL_Rect top_only{0, 0, out_w, out_h};
+            const int content_w = presentation.screen_widths[0];
+            int fit_w = out_w;
+            int fit_h = static_cast<int>(
+                static_cast<long long>(out_w) * kScreenHeight / content_w);
+            if (fit_h > out_h) {
+                fit_h = out_h;
+                fit_w = static_cast<int>(
+                    static_cast<long long>(out_h) * content_w / kScreenHeight);
+            }
+            if (fit_w < 1) fit_w = 1;
+            if (fit_h < 1) fit_h = 1;
+            const SDL_Rect top_only{(out_w - fit_w) / 2, (out_h - fit_h) / 2,
+                                    fit_w, fit_h};
             render_screen(presentation, 0, top_only);
             ticks.draw += SDL_GetPerformanceCounter() - start;
             start = SDL_GetPerformanceCounter();
             SDL_RenderPresent(renderer);
             ticks.swap += SDL_GetPerformanceCounter() - start;
             return ticks;
+        }
+        if (presentation.android_top_only) {
+            // The second display went away: restore the stacked logical
+            // presentation create_presentation configured.
+            set_render_logical_size(renderer, presentation.canvas_width,
+                                    kScreenHeight * 2);
+            SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
+            presentation.android_top_only = false;
         }
 #endif
         const SDL_Rect top_rect{
