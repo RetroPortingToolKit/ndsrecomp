@@ -4,9 +4,14 @@
 #include "TextureUpscale.h"
 
 #include <cstdio>
+#include <string>
 #include <vector>
 
+#if defined(NDS_GLES)
+#include "melonds_compute/android_gl_compat.h"
+#else
 #include "glad/glad.h"
+#endif
 
 namespace {
 
@@ -191,7 +196,21 @@ void main()
 GLuint compile_compute(const char* source)
 {
     GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+#if defined(NDS_GLES)
+    // ES requires #version on the first line: replace everything up to and
+    // including the desktop version line.
+    std::string src = source;
+    const std::string ver = "#version 430 core";
+    size_t pos = src.find(ver);
+    if (pos != std::string::npos)
+        src.replace(0, pos + ver.size(),
+            "#version 320 es\nprecision highp float;\nprecision highp int;\n"
+            "precision highp usampler2D;\nprecision highp uimage2DArray;");
+    const char* patched = src.c_str();
+    glShaderSource(shader, 1, &patched, nullptr);
+#else
     glShaderSource(shader, 1, &source, nullptr);
+#endif
     glCompileShader(shader);
     GLint ok = GL_FALSE;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
