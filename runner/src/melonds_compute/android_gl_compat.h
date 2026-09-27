@@ -31,7 +31,8 @@
 
 // GLES has no GL_BGRA_INTEGER. Only the software-render fallback upload uses it
 // (the primary compute path uses GL_RGBA_INTEGER); map it so the build works.
-// TODO: swizzle R/B if the fallback path's colors need correcting.
+// The upload then lands with red and blue transposed; ComputeHost sets
+// GL_TEXTURE_SWIZZLE_R/B on the fallback textures to read them back in order.
 #ifndef GL_BGRA_INTEGER
 #define GL_BGRA_INTEGER GL_RGBA_INTEGER
 #endif
