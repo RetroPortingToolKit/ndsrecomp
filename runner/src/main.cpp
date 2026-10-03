@@ -1726,6 +1726,7 @@ int main(int argc, char** argv) {
             : std::filesystem::path(rom_path).filename().string();
     nds_diagnostics_set_identity(rom_sha1.c_str(), rom_name.c_str(),
                                  NDS_RUNNER_BUILD_ID);
+    debug_set_savestate_identity(NDS_RUNNER_BUILD_ID, rom_sha1);
     if (!cli_savestate_dir.empty() && !rom_sha1.empty()) {
         frontend_options.savestate_directory =
             (std::filesystem::path(cli_savestate_dir) / rom_sha1).string();

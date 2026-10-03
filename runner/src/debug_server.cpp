@@ -17,6 +17,7 @@
 #include <thread>
 
 #include "scheduler.h"
+#include "savestate.h"
 #include "state.h"
 #include "io.h"
 #include "frontend.h"
@@ -58,6 +59,7 @@ using socket_t = int;
 namespace {
 
 std::function<void()> g_reset_fn;
+NdsSavestateIdentity g_savestate_identity;
 
 // Play-mode flag: set by debug_pump_start(). Execution-driving commands are
 // rejected while the SDL frontend owns execution (psxrecomp model — query
@@ -488,6 +490,19 @@ std::string handle(const std::string& line) {
         return out + tail;
     }
 
+    if (cmd == "state_save" || cmd == "state_load") {
+        if (g_play_mode)
+            return "{\"error\":\"debug savestates require headless serve mode\"}";
+        const std::string path = json_str(line, "path");
+        if (path.empty() || g_savestate_identity.rom_sha1.empty())
+            return "{\"error\":\"savestate needs a path and a loaded ROM\"}";
+        std::string error;
+        const bool ok = cmd == "state_save"
+            ? nds_savestate_save_core(path, g_savestate_identity, &error)
+            : nds_savestate_load_core(path, g_savestate_identity, &error);
+        if (!ok) return "{\"error\":\"" + json_escape(error) + "\"}";
+        return "{\"ok\":true}";
+    }
     if (cmd == "event_counts") return counts_json();
     if (cmd == "cartridge") {
         uint32_t max = static_cast<uint32_t>(json_u64(line, "max", 128));
@@ -1766,6 +1781,29 @@ std::string handle(const std::string& line) {
         return "{\"hex\":\"" + hex + "\"}";
     }
 
+    // Debugger edits use the real bus write path so executable-page generations
+    // and native-bank invalidation remain correct. Restrict this command to
+    // canonical main RAM; device registers and aliased/TCM writes need explicit
+    // device-aware commands. Handlers execute on the emulation thread.
+    if (cmd == "write_mem") {
+        const uint64_t cpu = json_u64(line, "cpu", 9);
+        const uint64_t addr = json_u64(line, "addr", 0);
+        const std::string hex = json_str(line, "hex");
+        std::vector<uint8_t> bytes;
+        if ((cpu != 7 && cpu != 9) || hex.empty() || hex.size() > 8192 ||
+            !parse_hex_bytes(hex, bytes))
+            return "{\"error\":\"write_mem needs cpu 7/9 and 1..4096 hex bytes\"}";
+        if (addr < 0x02000000u || addr >= 0x02400000u ||
+            bytes.size() > 0x02400000u - addr)
+            return "{\"error\":\"write_mem is restricted to canonical main RAM\"}";
+        const NdsCpu old = g_nds_active;
+        g_nds_active = cpu == 7 ? NDS_ARM7 : NDS_ARM9;
+        for (size_t i = 0; i < bytes.size(); ++i)
+            bus_write_u8_slow(static_cast<uint32_t>(addr + i), bytes[i]);
+        g_nds_active = old;
+        return "{\"ok\":true,\"written\":" + std::to_string(bytes.size()) + "}";
+    }
+
     if (cmd == "read_mem") {
         uint64_t cpu = json_u64(line, "cpu", 9);
         uint32_t addr = (uint32_t)json_u64(line, "addr", 0);
@@ -1917,6 +1955,10 @@ bool send_all(socket_t s, const char* data, size_t len) {
 }  // namespace
 
 void debug_set_reset_fn(std::function<void()> fn) { g_reset_fn = std::move(fn); }
+void debug_set_savestate_identity(const std::string& build_id,
+                                  const std::string& rom_sha1) {
+    g_savestate_identity = {build_id, rom_sha1};
+}
 
 void debug_serve(uint16_t port) {
 #ifdef _WIN32

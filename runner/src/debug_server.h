@@ -2,12 +2,17 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 
 // Registers the full power-on re-init (set by main, capturing the dumps) so the
 // debug server can honour a `reset` command — the event-count bisector compares
 // FRESH-from-reset at each N (repeated mid-slice event-breaks otherwise perturb
 // the ARM9/ARM7 interleaving and accumulate false divergences).
 void debug_set_reset_fn(std::function<void()> fn);
+// Identity used by the headless state_save/state_load commands; normal core
+// save-state validation and networking eligibility still apply.
+void debug_set_savestate_identity(const std::string& build_id,
+                                  const std::string& rom_sha1);
 
 // Headless serve mode: blocking accept loop; commands drive execution
 // (run_to_event etc.). Used by the oracle probes and gates.

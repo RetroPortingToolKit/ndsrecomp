@@ -15,6 +15,7 @@ constexpr uint32_t kMorphState = 0x020DA818u;
 constexpr uint32_t kJumpFlag = 0x020DABD9u;
 constexpr uint32_t kWeaponChange = 0x020DABDBu;
 constexpr uint32_t kSelectedWeapon = 0x020DABE3u;
+constexpr uint32_t kSpecialWeaponSlot = 0x020DA86Eu;
 constexpr uint32_t kGameMode = 0x020E78FCu;
 constexpr uint32_t kMapOrUserActionPaused = 0x020FB458u;
 constexpr uint32_t kAimX = 0x020DE526u;
@@ -366,6 +367,51 @@ int main() {
     if (!require(g_main_ram[main_ram_offset(kJumpFlag +
                                             2u * kMorphStride)] == 0x01u))
         return 37;
+
+    // The campaign Omega slot survives every special-weapon hotkey, and can
+    // be selected again after using Power Beam or missiles. Verify each local
+    // player slot so another player's inventory cannot trigger the guard.
+    for (uint8_t slot = 0; slot < 4u; ++slot) {
+        const uint32_t offset = static_cast<uint32_t>(slot) * kMorphStride;
+        for (uint8_t requested : {1u, 3u, 4u, 5u, 6u, 7u}) {
+            reset_main_ram(slot);
+            write8(kGameMode, 2);
+            write8(kMapOrUserActionPaused, 0);
+            write8(kSpecialWeaponSlot + offset, 8);
+            write8(kSelectedWeapon + offset, 0);
+            write8(kWeaponChange + offset, 0);
+            write8(kJumpFlag + offset, 0);
+            write8(kMorphState + offset, 0);
+            if (!require(nds_title_patches_request_mph_weapon(requested)) ||
+                !require(g_main_ram[main_ram_offset(kSelectedWeapon + offset)] == 8))
+                return 45;
+            if (!require(!nds_title_patches_request_mph_weapon(requested)))
+                return 46;
+            if (!require(nds_title_patches_request_mph_weapon(2)) ||
+                !require(g_main_ram[main_ram_offset(kSelectedWeapon + offset)] == 2) ||
+                !require(nds_title_patches_request_mph_weapon(requested)) ||
+                !require(g_main_ram[main_ram_offset(kSelectedWeapon + offset)] == 8) ||
+                !require(nds_title_patches_request_mph_weapon(0)))
+                return 47;
+            for (uint8_t other = 0; other < 4u; ++other) {
+                if (other != slot &&
+                    !require(unchanged(kSelectedWeapon + other * kMorphStride)))
+                    return 48;
+            }
+            // Omega has no campaign lock in multiplayer.
+            write8(kGameMode, 3);
+            if (!require(nds_title_patches_request_mph_weapon(requested)) ||
+                !require(g_main_ram[main_ram_offset(kSelectedWeapon + offset)] == requested))
+                return 49;
+            // Ordinary campaign special slots retain direct weapon selection.
+            write8(kGameMode, 2);
+            write8(kSpecialWeaponSlot + offset, 7);
+            write8(kSelectedWeapon + offset, 0);
+            if (!require(nds_title_patches_request_mph_weapon(requested)) ||
+                !require(g_main_ram[main_ram_offset(kSelectedWeapon + offset)] == requested))
+                return 50;
+        }
+    }
 
     return 0;
 }

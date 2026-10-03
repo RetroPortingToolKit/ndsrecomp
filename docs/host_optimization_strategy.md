@@ -1,5 +1,16 @@
 # Host optimization strategy — static-path overhead (ISSUE-2)
 
+Owner policy update, 2026-10-03 (MPH issue 44): optional HLE is permitted and
+may be the default. Keep a functioning LLE implementation linked and explicitly
+selectable, with the same guest-visible contracts. The historical restriction
+below to removing bookkeeping only does not prohibit such HLE. Preserve
+register/memory results, executable-page invalidation, device effects, guest
+cycle accounting, and scheduler/IRQ boundaries; decline a fast path before
+side effects whenever its guards cannot establish those conditions. The
+workspace validation policy also supersedes this document's old benchmark
+matrices and multi-route/repetition gates. Use focused contract checks and
+only the gameplay coverage or validation the owner has authorized.
+
 Status doc for the "locked 60 FPS with headroom" workstream. Written
 2026-07-31 against framework `728d12b` + the forward-goto emission
 generalization; update it as knobs land. Companion evidence:

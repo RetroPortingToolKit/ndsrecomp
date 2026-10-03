@@ -30,6 +30,7 @@ constexpr uint32_t kMphUs10MorphState = 0x020DA818u;
 constexpr uint32_t kMphUs10JumpFlag = 0x020DABD9u;
 constexpr uint32_t kMphUs10WeaponChange = 0x020DABDBu;
 constexpr uint32_t kMphUs10SelectedWeapon = 0x020DABE3u;
+constexpr uint32_t kMphUs10SpecialWeaponSlot = 0x020DA86Eu;
 constexpr uint32_t kMphUs10GameMode = 0x020E78FCu;
 constexpr uint32_t kMphUs10MapOrUserActionPaused = 0x020FB458u;
 constexpr uint32_t kMphUs10AimX = 0x020DE526u;
@@ -387,6 +388,17 @@ bool nds_title_patches_request_mph_weapon(uint8_t weapon_index) {
 
     const uint32_t player_offset =
         static_cast<uint32_t>(player_position) * kMphUs10MorphStride;
+    // AMHE0's campaign weapon menu locks the special slot while it holds
+    // Omega (native guard at 0x02026F58). Requesting a hunter weapon bypasses
+    // that menu and the native swap at 0x0200C81C removes Omega ownership.
+    // Treat special-weapon shortcuts as this locked slot, including when
+    // returning from Power Beam or missiles. Multiplayer keeps native swaps.
+    uint8_t special_weapon = 0;
+    if (game_mode == 0x02u && weapon_index != 0u && weapon_index != 2u &&
+        read_main_ram8(kMphUs10SpecialWeaponSlot + player_offset,
+                       &special_weapon) && special_weapon == 8u) {
+        weapon_index = 8u;
+    }
     const uint32_t selected_weapon_addr =
         kMphUs10SelectedWeapon + player_offset;
     const uint32_t weapon_change_addr = kMphUs10WeaponChange + player_offset;

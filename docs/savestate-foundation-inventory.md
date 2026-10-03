@@ -4,6 +4,25 @@ This document is the review boundary for `beads-q7fj`'s save-state foundation.
 The implemented container covers the deterministic CPU, memory, I/O, storage,
 video, and audio core; it is not a user-facing whole-console state format yet.
 
+Headless coverage tooling can use `state_save` and `state_load` over the debug
+socket, with an absolute forward-slash `path`. These commands require a loaded
+ROM and headless `--serve` mode. They pass the runner build ID and actual ROM
+SHA-1 through the existing core validator and networking eligibility checks;
+they do not override identity or online-state restrictions. Historical state
+loads retain the core's persistence isolation. Use `--no-save` for destructive
+game-state exploration, and keep snapshots private because they contain ROM
+and save-derived bytes. Some in-flight GPU states cannot currently be saved;
+advance to a serializable boundary instead of weakening validation.
+
+The companion `write_mem` command accepts `cpu` (7 or 9, default 9), numeric
+`addr`, and `hex` (1..4096 bytes). The entire write must lie within canonical
+main RAM, `0x02000000..0x023FFFFF`. It runs on the emulation thread through the
+normal byte-write bus path, preserving executable-page generations and native
+bank invalidation. It rejects device registers, aliases and out-of-range writes
+before writing any bytes. `tools/test_debug_memory.py` checks its bounds and a
+checkpoint roundtrip against a disposable headless runner without executing
+guest frames.
+
 ## Existing melonDS integrations
 
 The vendored melonDS save-state class exists, but it only covers vendored
