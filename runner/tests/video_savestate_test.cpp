@@ -1,5 +1,6 @@
 #include "gpu2d.h"
 #include "gpu3d.h"
+#include "io.h"
 #include "savestate.h"
 #include "vram.h"
 
@@ -271,9 +272,38 @@ bool gpu3d_rendered_projection_flag_follows_submitted_geometry() {
 
 }  // namespace
 
+bool gpu3d_batch_contract() {
+    nds_gpu3d_reset();
+    uint64_t cycles = 0;
+    // One packed command word: matrix mode, identity, position test.
+    const uint32_t packet[] = {0x00711510, 0, 0x20001000, 0x3000};
+    bool ok = expect(nds_gpu3d_submit_words(0x04000400, packet, 4) == 4,
+                     "packed packet accepted");
+    gpu3d_run_for(cycles, 32768);
+    ok &= expect(nds_gpu3d_read(0x04000620, 4) == 0x1000 &&
+                 nds_gpu3d_read(0x04000624, 4) == 0x2000 &&
+                 nds_gpu3d_read(0x04000628, 4) == 0x3000 &&
+                 nds_gpu3d_read(0x0400062C, 4) == 0x1000,
+                 "batched geometry produces identity-transformed position");
+    nds_gpu3d_reset();
+    uint32_t commands[400]{}; // NOPs consume real FIFO entries
+    const uint32_t prefix = nds_gpu3d_submit_words(0x04000400, commands, 400);
+    ok &= expect(prefix > 256 && prefix < 400 && nds_gxfifo_stalled(),
+                 "batch stops at FIFO pressure");
+    ok &= expect(nds_gpu3d_submit_words(0x04000400, commands, 10) == 0,
+                 "stalled batch accepts no additional words");
+    cycles = 0;
+    gpu3d_run_for(cycles, 32768);
+    ok &= expect(!nds_gxfifo_stalled(), "geometry drain clears pressure");
+    ok &= expect(nds_gpu3d_submit_words(0x04000400, commands + prefix, 400 - prefix)
+                     == 400 - prefix, "unconsumed suffix accepted after drain");
+    return ok;
+}
+
 int main() {
     bool ok = vram_and_midframe_capture_roundtrip();
     ok &= gpu3d_device_roundtrip();
     ok &= gpu3d_rendered_projection_flag_follows_submitted_geometry();
+    ok &= gpu3d_batch_contract();
     return ok ? 0 : 1;
 }

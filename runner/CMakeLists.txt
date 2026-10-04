@@ -45,14 +45,22 @@ option(NDS_PROFILE_MEM_TIMING
     "Build candidate-only runtime memory-timing census instrumentation"
     OFF)
 set(NDS_MKDS_IMPLEMENTATION "LLE" CACHE STRING
-    "Developer build choice for MKDS vector math: LLE or HLE")
+    "Developer build choice for MKDS math and submission: LLE or HLE")
 set_property(CACHE NDS_MKDS_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
 set(NDS_MKDS_HLE_GROUPS "VECTOR" CACHE STRING
-    "MKDS HLE groups available in this build: VECTOR")
-if(NOT NDS_MKDS_HLE_GROUPS STREQUAL "VECTOR")
-    message(FATAL_ERROR "Only VECTOR HLE is integrated; MATH and SUBMIT remain draft work")
-endif()
-set(NDS_MKDS_HLE_GROUP_MASK 1)
+    "Build-selected MKDS HLE groups: VECTOR, MATH, SUBMIT (semicolon-separated)")
+set(NDS_MKDS_HLE_GROUP_MASK 0)
+foreach(_mkds_group IN LISTS NDS_MKDS_HLE_GROUPS)
+    if(_mkds_group STREQUAL "VECTOR")
+        math(EXPR NDS_MKDS_HLE_GROUP_MASK "${NDS_MKDS_HLE_GROUP_MASK} | 1")
+    elseif(_mkds_group STREQUAL "MATH")
+        math(EXPR NDS_MKDS_HLE_GROUP_MASK "${NDS_MKDS_HLE_GROUP_MASK} | 2")
+    elseif(_mkds_group STREQUAL "SUBMIT")
+        math(EXPR NDS_MKDS_HLE_GROUP_MASK "${NDS_MKDS_HLE_GROUP_MASK} | 4")
+    else()
+        message(FATAL_ERROR "Unknown MKDS HLE group: ${_mkds_group}")
+    endif()
+endforeach()
 if(NOT NDS_MKDS_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
     message(FATAL_ERROR "NDS_MKDS_IMPLEMENTATION must be LLE or HLE")
 endif()
@@ -840,6 +848,18 @@ ndsrecomp_link_tomlpp(frontend_config_test)
       ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
   target_link_libraries(hle_mkds_test PRIVATE nds_support)
   add_test(NAME hle_mkds_test COMMAND hle_mkds_test)
+
+  add_executable(hle_mkds_io_test tests/hle_mkds_io_test.cpp)
+  target_include_directories(hle_mkds_io_test PRIVATE src vendor/melonds
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  if(MSVC)
+    target_compile_options(hle_mkds_io_test PRIVATE /GL /Gy /Gw)
+    target_link_options(hle_mkds_io_test PRIVATE /LTCG /OPT:REF)
+  else()
+    target_compile_options(hle_mkds_io_test PRIVATE -flto -ffunction-sections -fdata-sections)
+    target_link_options(hle_mkds_io_test PRIVATE -flto -Wl,--gc-sections)
+  endif()
+  add_test(NAME hle_mkds_io_test COMMAND hle_mkds_io_test)
 
   add_executable(perf_governor_test
       tests/perf_governor_test.cpp

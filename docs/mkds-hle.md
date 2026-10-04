@@ -1,55 +1,101 @@
-# MKDS vector HLE
+# MKDS native math and graphics submission
 
-The integrated MKDS HLE consists of three byte-identical MPH SDK operations:
-Q12 scale/add (`0x02147FD8`), cross product (`0x021483A0`) and matrix transform
-plus translation (`0x02147288`). `hle_vector_math.h` shares their native kernels;
-each game keeps its own ROM/code identity checks and counters.
+`NDS_MKDS_IMPLEMENTATION=HLE|LLE` is a developer CMake choice. The generic runner
+defaults to LLE; the MarioKartDSRecomp title scripts default to HLE. HLE builds
+compile `hle_mkds.cpp` and carry a `mkds-hle` build identity. There is no runtime
+selector. The original generated banks and device timing remain usable in LLE.
 
-`NDS_MKDS_IMPLEMENTATION=HLE|LLE` is a developer build-time choice. The generic
-framework defaults to LLE; the MarioKartDSRecomp build scripts select HLE and
-`NDS_MKDS_HLE_GROUPS=VECTOR` explicitly. VECTOR is the only integrated group.
-There is no runtime switch. HLE build identities include `mkds-hle-groups1`;
-the read-only `mkds_hle` debug command reports the compiled choice and call counts.
+For bounded developer measurements, `NDS_MKDS_HLE_GROUPS` selects a semicolon
+list of `VECTOR`, `MATH`, and `SUBMIT` at build time (default: VECTOR only). Omitted
+groups retain ordinary generated execution. Partial selections receive a distinct
+build identity and expose a read-only `group_mask` in `mkds_hle` diagnostics:
+vector=1, math=2, submission=4. This does not add runtime switches.
 
-The kernels retain fixed-point results, aliasing, required register/memory
-effects, return mode and continuation. Each operation finishes atomically with
-one approximate timing charge. Internal guest instructions and intermediate
-timing are not reproduced. The original generated routines remain the LLE path.
+HLE covers three byte-identical MPH SDK kernels (scale/add, cross product and
+transform/translate), four-component normalization, rounded division-result
+completion, and fixed-destination word submission. `hle_vector_math.h` contains
+the shared arithmetic; each game retains its own ROM/code binding and counters.
 
-Only verified AMCE0 SHA-1 `691e00d9a5dd80b04f80cc7559503e8b06848785` binds, at
-approved ARM9 ARM-state entries. Cold lookup checks current resident bytes,
-write provenance and the complete routine fingerprint. Warm lookup/direct links
-retain page-generation and code proofs. Unknown or modified code uses ordinary
-dispatch because its identity is not established. No ROM payload is committed.
+## Boundary and shortcuts
 
-Two previously authorized 600-frame GCN Luigi Circuit samples measured vector
-HLE at 9.264/9.805 ms per frame versus 11.039/11.105 with HLE off on Windows.
-The final screenshots matched. This is a bounded local result, not a universal
-speedup or a Steam Deck measurement. The title repository retains the full data.
+Math preserves fixed-point arithmetic, required register/memory effects,
+aliasing, return mode and continuation. Each call uses one approximate timing
+charge after publishing its completed state. Native division and square root
+publish observable device registers immediately and remove guest polling loops.
+The original device start/poll paths remain unchanged for LLE.
 
-Focused checks:
+Word submission batches up to 32 ordinary RAM words into packed geometry FIFO
+ports. Other sources or destinations use ordered native bus access. Accepted
+prefixes update guest registers before yielding; the explicit loop entry resumes
+without host-only state or duplicate writes. Backpressure ends the current slice
+using `nds_reschedule_slice`, allowing device drain instead of repeated stalled
+dispatch. The geometry device retains command order, results and DMA/IRQ behavior.
+The batch path bypasses the generic bus lookup and its per-word diagnostic ring.
+
+These replacements do not require original internal instruction timing.
+Larger queues or wider packet boundaries can replace these internals later if
+they preserve the same caller-visible contract.
+
+## Identity and dispatch
+
+Only MKDS USA revision 0 SHA-1 `691e00d9a5dd80b04f80cc7559503e8b06848785`
+and approved ARM9 ARM-state entries bind. `mkds_hle::resolve` reads current
+resident code, checks write provenance and a full-operation SHA-1, and supplies
+a stable `NdsStaticValidation` proof. Code bytes are never embedded in this source.
+
+Generated entry proofs can cover only a short prefix. HLE expands the cached
+proof to the complete operation and literals, for both ordinary lookup and
+direct links. Even a rejected binding adds its complete page range to the cached
+answer: repairing a distant literal must invalidate that rejection too.
+An unknown/modified routine uses ordinary dispatch; it is not an established
+instance of the supported operation. No operation switches implementation midway.
+
+The read-only `mkds_hle` debug command reports the compiled choice, ROM admission,
+per-operation calls, submitted words, batches and yields.
+
+## Focused checks
 
 ```sh
-cmake --build BUILD --target hle_mkds_test hle_mph_math_test
-ctest --test-dir BUILD -R '^(hle_mkds_test|hle_mph_math_test)$' --output-on-failure
-BUILD/hle_mkds_test PRIVATE/arm9.bin
+cmake --build BUILD --target hle_mkds_test hle_mkds_io_test hle_mph_math_test video_savestate_test
+ctest --test-dir BUILD -R '^(hle_mkds_test|hle_mkds_io_test|hle_mph_math_test|video_savestate_test)$' --output-on-failure
+BUILD/hle_mkds_test PRIVATE/arm9.bin PRIVATE/copied/mkds_arm9_itcm.bin
 ```
 
-They cover shared math, overlap, caller return contracts, exact-image bindings,
-rejection of modified code and rejection of the draft-only entries. The title's
-`tools/test_mkds_hle_integration.py` executes synthetic vector callers through
-the real runtime without entering gameplay.
+The first test checks caller and transfer contracts; the second checks the real
+math device implementation. The geometry test includes real packed-command
+position results and FIFO pressure/drain/resume. The MPH regression test covers
+the extracted shared kernels. Optional private images check the exact bindings.
 
-## Deferred experiments and behavior risk
+MarioKartDSRecomp's `tools/test_mkds_hle_integration.py` additionally exercises
+all replacements through real runtime dispatch, including mutation/restoration
+of a normalization literal on its second page and a stalled FIFO continuation.
+It executes synthetic callers without entering gameplay. Windows MinGW HLE/LLE
+builds and these focused tests passed on October 4, 2026. The later bounded
+measurements supported vector HLE only; see the risk record below. No further
+gameplay validation was run while retaining this draft.
 
-Normalization/division and graphics submission remain in
-[draft PR #25](https://github.com/RetroPortingToolKit/ndsrecomp/pull/25), outside
-the integrated runtime. Hardware-math measurements were inconsistent; graphics
-submission showed no measured gain.
+## Draft status and behavior risk
 
-Graphics-enabled samples reproducibly changed the AI driver's trajectory,
-item and ranking. Timing/ordering changes could affect collisions, random-event
-ordering or other gameplay; the cause and full impact are not established.
-Math-only samples matched the baseline screenshots, but atomic math completion
-changes observable device/interrupt timing and retains compatibility risk.
-Neither experiment is approved for the default build by these measurements.
+Vector HLE is merged through PR #26. This branch retains only the deferred
+normalization/division and graphics experiments beyond main. VECTOR remains
+the default; MATH and SUBMIT require explicit developer build selection here.
+
+Graphics submission was effectively flat in two 600-frame GCN Luigi Circuit
+samples (11.115/11.056 ms per frame versus 11.039/11.105 off), and reproducibly
+changed the AI driver's trajectory, item and ranking (seventh versus eighth
+at the end of the window, not a completed-race result). The all-on build matched
+the changed graphics result. This is a known caller-visible gameplay difference;
+the cause and full impact remain untraced. Timing, event ordering, collisions or
+random-event ordering are possibilities, not established explanations.
+
+Normalization/division was inconsistent (9.271/11.310 ms per frame). Its sampled
+screenshots and AI positions matched off, so no behavior change was demonstrated
+for that group alone. Atomic completion changes device/interrupt timing and
+retains compatibility risk for unsampled callers or modes. The combined HLE
+build also varied (10.103/11.295); no reliable combined benefit is claimed.
+
+Small internal timing differences are allowed by the HLE policy. These stay
+draft because benefit is unproven and behavior risk remains, not because exact
+LLE instruction timing is required. See the title's
+[full risk record](https://github.com/mstan/MarioKartDSRecomp/blob/main/docs/hle-draft-risks.md)
+and [measurement data](https://github.com/mstan/MarioKartDSRecomp/blob/main/docs/hle-measurements-2026-10-04.json).

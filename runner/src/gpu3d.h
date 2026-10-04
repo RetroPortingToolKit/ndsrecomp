@@ -102,6 +102,11 @@ bool nds_gpu3d_reg_addr(uint32_t addr);
 uint32_t nds_gpu3d_read(uint32_t addr, uint32_t width);
 void nds_gpu3d_write(uint32_t addr, uint32_t value, uint32_t width);
 
+// Packed FIFO stream adapter for title HLE. Accepts a prefix and stops as
+// soon as the device stalls; the caller owns the unconsumed suffix. No host
+// queue or extra savestate state. Geometry results/order remain device-owned.
+uint32_t nds_gpu3d_submit_words(uint32_t port, const uint32_t* words, uint32_t count);
+
 // POWCNT1 (ARM9 0x04000304): bit3 enables the geometry engine, bit2 the
 // rendering engine, matching melonDS GPU::SetPowerCnt.
 void nds_gpu3d_set_power(uint16_t powcnt1);
