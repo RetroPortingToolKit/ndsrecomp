@@ -24,6 +24,9 @@
 #include "gpu2d.h"
 #include "gpu3d.h"
 #include "hle_profile.h"
+#if defined(NDS_MPH_MATH_HLE)
+#include "hle_mph_math.h"
+#endif
 #include "host_profile.h"
 #include "dispatch_stats.h"
 #include "dispatch_timing.h"
@@ -1359,6 +1362,18 @@ std::string handle(const std::string& line) {
                ",\"frames\":" + std::to_string(stats.frames) + "}";
     }
     if (cmd == "hle_heat") return nds_hle_profile_json();
+    if (cmd == "mph_math") {
+#if defined(NDS_MPH_MATH_HLE)
+        const auto counts = mph_hle::statistics();
+        return std::string("{\"implementation\":\"HLE\",\"rom_supported\":") +
+            (counts.rom_supported ? "true" : "false") +
+            ",\"scale_add_calls\":" + std::to_string(counts.scale_add_calls) +
+            ",\"cross_product_calls\":" + std::to_string(counts.cross_product_calls) +
+            ",\"transform_translate_calls\":" + std::to_string(counts.transform_translate_calls) + "}";
+#else
+        return "{\"implementation\":\"LLE\"}";
+#endif
+    }
     if (cmd == "mem_timing_profile") return nds_mem_timing_profile_json();
     if (cmd == "dispatch_stats") return nds_dispatch_stats_json();
     // Cost companion to dispatch_stats: same snapshot-twice-and-subtract

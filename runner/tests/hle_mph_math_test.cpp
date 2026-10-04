@@ -48,6 +48,7 @@ void reset_call(uint32_t lr = 0x020F0000u) {
 }
 
 void smoke() {
+    require(mph_hle::initialize("90164d1ac127ee5f9815ea4ae7de798c7b5fc629"), "supported ROM rejected");
     Memory mem;
     memory = &mem;
     reset_call();
@@ -98,6 +99,10 @@ void smoke() {
     unwind_on_tick = true;
     mph_hle::cross_product();
     require(ticks == 1 && return_checks == 0 && exchanges == 0, "IRQ unwind boundary");
+    const auto counts = mph_hle::statistics();
+    require(counts.rom_supported && counts.scale_add_calls == 1 &&
+            counts.cross_product_calls == 2 && counts.transform_translate_calls == 1,
+            "HLE call counters do not reflect executed operations");
 
     std::array<uint8_t, 256> wrong_code{};
     NdsStaticValidation validation{0x02080BD8u, 256u, wrong_code.data(), nullptr, 0};

@@ -220,6 +220,7 @@ benchmark leg was used to manufacture a cleaner result.
 
 Implementation follow-up: the three main-RAM vector routines now have a
 [build-time HLE pilot](mph-math-hle.md), with native arithmetic and one
-approximate timing charge per operation. Its caller-contract tests pass;
-whole-game performance and timing behavior have not been measured. The
+approximate timing charge per operation. Its caller-contract tests and focused
+HLE-only campaign/bot-combat checks pass, with all three replacements exercised
+and sampled execution above real time. No comparative speedup is claimed. The
 matrix-multiply and DMA/geometry candidates remain future work.

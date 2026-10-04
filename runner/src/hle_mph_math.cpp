@@ -9,6 +9,7 @@
 namespace mph_hle {
 namespace {
 bool supported_rom = false;
+Statistics counters{};
 
 struct Binding {
     uint32_t pc;
@@ -59,8 +60,11 @@ void finish(uint32_t cycles) {
 bool initialize(const char* rom_sha1) {
     supported_rom = rom_sha1 &&
         std::strcmp(rom_sha1, "90164d1ac127ee5f9815ea4ae7de798c7b5fc629") == 0;
+    counters = {supported_rom, 0, 0, 0};
     return supported_rom;
 }
+
+Statistics statistics() { return counters; }
 
 Function resolve(NdsCpu cpu, uint32_t pc, bool thumb,
                  const NdsStaticValidation* validation) {
@@ -79,6 +83,7 @@ Function resolve(NdsCpu cpu, uint32_t pc, bool thumb,
 }
 
 void scale_add() {
+    ++counters.scale_add_calls;
     const uint32_t scale = g_cpu.R[0];
     const uint32_t vector = g_cpu.R[1];
     const uint32_t addend = g_cpu.R[2];
@@ -101,6 +106,7 @@ void scale_add() {
 }
 
 void cross_product() {
+    ++counters.cross_product_calls;
     const uint32_t a = g_cpu.R[0], b = g_cpu.R[1], out = g_cpu.R[2];
     const uint32_t ax = load(a), ay = load(a + 4u), az = load(a + 8u);
     const uint32_t bx = load(b), by = load(b + 4u), bz = load(b + 8u);
@@ -128,6 +134,7 @@ void cross_product() {
 }
 
 void transform_translate() {
+    ++counters.transform_translate_calls;
     const uint32_t vector = g_cpu.R[0], matrix = g_cpu.R[1], out = g_cpu.R[2];
     const uint32_t x = load(vector), y = load(vector + 4u), z = load(vector + 8u);
     uint32_t before_translation = 0, result = 0;

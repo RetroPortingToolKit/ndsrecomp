@@ -5,6 +5,16 @@
 namespace mph_hle {
 using Function = void (*)(void);
 
+struct Statistics {
+    bool rom_supported;
+    uint64_t scale_add_calls;
+    uint64_t cross_product_calls;
+    uint64_t transform_translate_calls;
+};
+// Read on the emulation thread. Monotonic counters are diagnostic only;
+// snapshots/loads do not reset them or select an implementation.
+Statistics statistics();
+
 // Called once at startup, before dispatch caches are populated. This scopes
 // the compiled implementation to its supported ROM; it is not a mode setter.
 bool initialize(const char* rom_sha1);
