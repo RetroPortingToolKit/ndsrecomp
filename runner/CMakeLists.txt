@@ -57,11 +57,20 @@ if(NOT NDS_MKDS_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
     message(FATAL_ERROR "NDS_MKDS_IMPLEMENTATION must be LLE or HLE")
 endif()
 set(NDS_BUILD_VARIANT "")
+option(NDS_EXPERIMENT_NATIVE_REGIONS
+    "Experiment: connect validated ARM9 native bodies without full dispatch per link"
+    OFF)
 if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
     set(NDS_BUILD_VARIANT "mkds-hle")
     if(NOT NDS_MKDS_HLE_GROUP_MASK EQUAL 7)
         string(APPEND NDS_BUILD_VARIANT "-groups${NDS_MKDS_HLE_GROUP_MASK}")
     endif()
+endif()
+if(NDS_EXPERIMENT_NATIVE_REGIONS)
+    string(APPEND NDS_BUILD_VARIANT "-native-regions")
+    # This changes runtime routing, not the generated-bank ABI.
+    set_property(SOURCE src/runtime_arm.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS NDS_EXPERIMENT_NATIVE_REGIONS=1)
 endif()
 set(NDS_PGO_MODE "OFF" CACHE STRING
     "Runner-only GCC PGO mode: OFF, GENERATE, or USE")

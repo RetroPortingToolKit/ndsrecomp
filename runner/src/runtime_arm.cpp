@@ -804,6 +804,11 @@ uint32_t g_link_epoch = 1u;
 uint64_t g_link_hits[2]{};
 uint64_t g_link_resolves[2]{};
 uint64_t g_link_falls[2]{};
+#ifndef NDS_EXPERIMENT_NATIVE_REGIONS
+#define NDS_EXPERIMENT_NATIVE_REGIONS 0
+#endif
+uint64_t g_native_region_entries = 0;
+uint64_t g_native_region_tails = 0;
 // beads-yjp.67 inline-leaf accounting. `admits` counts expansions actually
 // run inline; `falls` counts sites that dropped to the faithful link call
 // because the slot was unresolved, the resolution named a different body, or
@@ -1611,6 +1616,9 @@ extern "C" void arm_set_nzcv_sbc(uint32_t a, uint32_t b, uint32_t ci, uint32_t r
 // and nothing else; a slot that is stale, mode-mismatched, or whose backing
 // pages moved simply is not used, and the ordinary lookup then refills it.
 namespace {
+#if NDS_EXPERIMENT_NATIVE_REGIONS
+bool run_native_region(NdsLinkSlot* slot);
+#endif
 void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
     TailDispatchScope tail;
     for (;;) {
@@ -1724,6 +1732,9 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
             if (!tail.state.pending) return;
             target_pc = tail.state.target_pc;
             linked = tail.state.linked;
+#if NDS_EXPERIMENT_NATIVE_REGIONS
+            if (linked && run_native_region(linked)) return;
+#endif
             continue;
         }
         if (g_discover_static_misses && static_bios_pc(pc)) {
@@ -1754,6 +1765,48 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
         return;
     }
 }
+
+#if NDS_EXPERIMENT_NATIVE_REGIONS
+// Connect already-compiled ARM9 bodies. Unlike the LLE dispatch path, a warm
+// native link does not publish an intermediate dispatch trace/profile event.
+// Generated instruction checks still service IRQs, MMIO, code writes and slice
+// deadlines. ARM7's direct C calls have different tail ownership and are outside
+// this experiment. No guest instruction or required device work is omitted.
+bool run_native_region(NdsLinkSlot* slot) {
+    auto admissible = [](NdsLinkSlot* next, const LinkGuard** proof) {
+        return next && g_nds_active == NDS_ARM9 && g_tail_dispatch &&
+            g_tail_dispatch->cpu == NDS_ARM9 && link_enabled() &&
+            !g_runtime_deep_trace && !g_nds_unwinding &&
+            g_runtime_cycles < g_nds_fast_limit && link_slot_admit(next, proof);
+    };
+    const LinkGuard* proof = nullptr;
+    if (!admissible(slot, &proof)) return false;
+    TailDispatchScope tail;
+    for (;;) {
+        tail.state.pending = false;
+        tail.state.linked = nullptr;
+        g_cpu.R[15] = slot->target_pc & ((slot->target_pc & 1u) ? ~1u : ~3u);
+        {
+            StaticGuardScope guard;
+            guard.prepare_linked(slot->fn, proof);
+            ++g_link_hits[NDS_ARM9];
+            ++g_native_region_entries;
+            live_overlay_note_cached_hit(proof ? proof->serial : 0u);
+            guard.invoke();
+        }
+        if (!tail.state.pending) return true;
+        const uint32_t target = tail.state.target_pc;
+        slot = tail.state.linked;
+        if (!admissible(slot, &proof)) {
+            // Cold/invalidated code, mode changes and pending service return
+            // to authoritative resolution. This is ordinary native routing,
+            // not a runtime HLE/LLE implementation selector.
+            runtime_dispatch_impl(target, slot);
+            return true;
+        }
+    }
+}
+#endif
 }  // namespace
 
 extern "C" void runtime_dispatch(uint32_t target_pc) {
@@ -1832,12 +1885,27 @@ extern "C" void runtime_dispatch_literal_fallthrough(uint32_t target_pc) {
 // B2 names explicitly.
 extern "C" void runtime_link_branch(NdsLinkSlot* slot) {
     ++g_nds_dispatch_stats[g_nds_active].literal_branch;
+#if NDS_EXPERIMENT_NATIVE_REGIONS
+    if (g_nds_active == NDS_ARM9 && g_tail_dispatch &&
+        g_tail_dispatch->cpu == NDS_ARM9 && !g_runtime_deep_trace) {
+        // A branch is a tail, never a recursive host call. The owner consumes
+        // this target after the current generated body returns.
+        ++g_native_region_tails;
+        g_tail_dispatch->target_pc = slot->target_pc & ~1u;
+        g_tail_dispatch->linked = slot;
+        g_tail_dispatch->pending = true;
+        return;
+    }
+#endif
     nds_dispatch_tag(NDS_DISPATCH_CLASS_LITERAL_BRANCH);
     runtime_dispatch_impl(slot->target_pc & ~1u, slot);
 }
 
 extern "C" void runtime_link_call(NdsLinkSlot* slot) {
     ++g_nds_dispatch_stats[g_nds_active].literal_call;
+#if NDS_EXPERIMENT_NATIVE_REGIONS
+    if (run_native_region(slot)) return;
+#endif
     nds_dispatch_tag(NDS_DISPATCH_CLASS_LITERAL_CALL);
     runtime_dispatch_impl(slot->target_pc & ~1u, slot);
 }
@@ -1902,10 +1970,11 @@ extern "C" int runtime_inline_leaf_admit(const NdsLinkSlot* slot,
 
 extern "C" const char* nds_direct_link_json(void) {
     static std::string out;
-    char buf[520];
+    char buf[768];
     std::snprintf(buf, sizeof buf,
         "{\"enabled\":%s,\"deep_trace\":%s,\"epoch\":%u,"
         "\"guards\":%zu,\"inline_leaves\":%s,"
+        "\"native_regions\":%s,\"native_region_entries\":%llu,\"native_region_tails\":%llu,"
         "\"arm9\":{\"hits\":%llu,\"resolves\":%llu,\"skipped\":%llu,"
         "\"inline_leaf_admits\":%llu,\"inline_leaf_falls\":%llu},"
         "\"arm7\":{\"hits\":%llu,\"resolves\":%llu,\"skipped\":%llu,"
@@ -1914,6 +1983,9 @@ extern "C" const char* nds_direct_link_json(void) {
         g_runtime_deep_trace ? "true" : "false",
         g_link_epoch, g_link_guards.size(),
         g_inline_leaves ? "true" : "false",
+        NDS_EXPERIMENT_NATIVE_REGIONS ? "true" : "false",
+        static_cast<unsigned long long>(g_native_region_entries),
+        static_cast<unsigned long long>(g_native_region_tails),
         static_cast<unsigned long long>(g_link_hits[0]),
         static_cast<unsigned long long>(g_link_resolves[0]),
         static_cast<unsigned long long>(g_link_falls[0]),
@@ -2272,6 +2344,7 @@ extern "C" void runtime_init(void*) {
     g_direct_link = configured_direct_link();
     link_epoch_bump();
     g_link_hits[0] = g_link_hits[1] = 0u;
+    g_native_region_entries = g_native_region_tails = 0u;
     g_link_resolves[0] = g_link_resolves[1] = 0u;
     g_link_falls[0] = g_link_falls[1] = 0u;
     g_inline_leaves = configured_inline_leaves();
