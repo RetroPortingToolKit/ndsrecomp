@@ -1,9 +1,9 @@
-// main.cpp — DS runner driver.
+// main.cpp â€” DS runner driver.
 //
 // Loads + SHA-1-verifies the three dumps (CLAUDE.md: refuse to start
 // otherwise), maps both BIOSes, resets both cores, and interleaves them on
 // the scheduler until ARM9 reaches the cycle budget or both terminally
-// halt. Reports where each core got — the execution-driven signal for the
+// halt. Reports where each core got â€” the execution-driven signal for the
 // next pieces (SPI/firmware boot for ARM7, IPC handshake between them).
 
 #include <algorithm>
@@ -30,6 +30,9 @@
 #include "runtime_arm.h"
 #if defined(NDS_MPH_MATH_HLE)
 #include "hle_mph_math.h"
+#endif
+#if defined(NDS_MKDS_HLE)
+#include "hle_mkds.h"
 #endif
 #include "io.h"
 #include "debug_server.h"
@@ -226,7 +229,7 @@ bool load_or_create_identity_mac(const std::string& path,
 }
 
 // Concrete direct-boot machine (beads-yjp.15 increment 1). Guest memory
-// writes go through the device bus path — never raw RAM pokes — so the
+// writes go through the device bus path â€” never raw RAM pokes â€” so the
 // copied ARM9/ARM7 binaries acquire write provenance (Tier-3 and static
 // bank validation both require it). Note the cpu convention translation:
 // nds_direct_boot speaks 0=ARM9/1=ARM7, bus_device_write* speaks 9/7.
@@ -296,7 +299,7 @@ void dump_replay_status() {
     }
 }
 
-// ── Live-overlay backend policy ────────────────────────────────────────────
+// â”€â”€ Live-overlay backend policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Tier order is static banks > gcc shards > tcc shards > interpreter. Which
 // COMPILER fills the remaining gaps is a separate question from which shards
@@ -306,7 +309,7 @@ void dump_replay_status() {
 //   gcc         use the command the launcher/CLI supplied (a dev checkout)
 //   tcc         force the bundled, toolchain-free toolchain beside the exe
 //   auto        gcc when a command was supplied, else the bundled tcc tier
-//   auto-no-gcc force the tcc branch even where gcc IS present — this is how
+//   auto-no-gcc force the tcc branch even where gcc IS present â€” this is how
 //               a dev box exercises the exact path a player gets
 //
 // Precedence: NDS_LIVE_OVERLAY_BACKEND > auto.
@@ -472,7 +475,7 @@ int main(int argc, char** argv) {
     // ring to stderr at the end of a plain (non-serve, non-interactive) run,
     // same convention as the existing nds_dump_irq()/runtime_trace_dump_recent
     // tail (main.cpp end-of-run block). No call site pushes into this ring
-    // yet, so a normal run's dump is expected to be empty — this flag and
+    // yet, so a normal run's dump is expected to be empty â€” this flag and
     // its two companions below exist to prove the query surface works, not
     // to surface real traffic yet.
     bool net_ring_dump = false;
@@ -1735,6 +1738,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[hle] MPH native vector math selected at build time\n");
     }
 #endif
+#if defined(NDS_MKDS_HLE)
+    if (mkds_hle::initialize(rom_sha1.c_str())) {
+        std::fprintf(stderr, "[hle] MKDS native vector math selected at build time\n");
+    }
+#endif
     if (!cli_savestate_dir.empty() && !rom_sha1.empty()) {
         frontend_options.savestate_directory =
             (std::filesystem::path(cli_savestate_dir) / rom_sha1).string();
@@ -2058,7 +2066,7 @@ int main(int argc, char** argv) {
         net_ring_reset();
 
         // Both BIOS backends are linked; the one matching the loaded (and
-        // hash-verified) images is registered — the psxrecomp runtime-
+        // hash-verified) images is registered â€” the psxrecomp runtime-
         // selection model, never a silent substitution.
         if (frontend_options.freebios) {
             nds_register_dispatch(NDS_ARM9, g_dispatch_freebios_arm9,
@@ -2275,7 +2283,7 @@ int main(int argc, char** argv) {
     if (interactive) {
         // The per-access deep-trace payloads (bus ring, mem_r/mem_w events,
         // per-insn register images) default OFF in play mode for real-time
-        // headroom — the B3 inline bus fast path engages while they are off.
+        // headroom â€” the B3 inline bus fast path engages while they are off.
         // The play-mode TCP surface below can re-arm them on demand
         // (`deep_trace` command); event counters always advance.
         runtime_set_deep_trace(0);
@@ -2301,7 +2309,7 @@ int main(int argc, char** argv) {
     if (serve) {
         // Optional: NDS_DEEP_TRACE=0 drops the per-access payloads (bus
         // ring, mem_r/mem_w events, per-insn register images) in serve
-        // mode too — the bus fast path then engages exactly as in the
+        // mode too â€” the bus fast path then engages exactly as in the
         // interactive frontend. Used to prove fast-path execution
         // equivalence under the G3 byte-lock and for honest serve-mode
         // perf A/B (deep trace otherwise masks bank/bus wins).

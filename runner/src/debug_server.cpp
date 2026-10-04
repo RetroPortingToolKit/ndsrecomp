@@ -27,6 +27,9 @@
 #if defined(NDS_MPH_MATH_HLE)
 #include "hle_mph_math.h"
 #endif
+#if defined(NDS_MKDS_HLE)
+#include "hle_mkds.h"
+#endif
 #include "host_profile.h"
 #include "dispatch_stats.h"
 #include "dispatch_timing.h"
@@ -65,7 +68,7 @@ std::function<void()> g_reset_fn;
 NdsSavestateIdentity g_savestate_identity;
 
 // Play-mode flag: set by debug_pump_start(). Execution-driving commands are
-// rejected while the SDL frontend owns execution (psxrecomp model — query
+// rejected while the SDL frontend owns execution (psxrecomp model â€” query
 // the always-on rings instead of advancing the machine from a handler).
 bool g_play_mode = false;
 
@@ -856,11 +859,11 @@ std::string handle(const std::string& line) {
             (unsigned long long)e.insn9, (unsigned long long)e.insn7, e.value);
         return buf;
     }
-    // ── Network event ring (Wiimmfi M0) ─────────────────────────────────
+    // â”€â”€ Network event ring (Wiimmfi M0) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Read-only ring queries, same "by ordinal" / "most recent N" idioms as
     // the rest of this group above. No call site pushes into the ring yet
     // (Wi-Fi device/AP/bridge/backend are later phases), so a normal run
-    // will see an empty ring here — {"latest":0}, {"found":false} for any
+    // will see an empty ring here â€” {"latest":0}, {"found":false} for any
     // nonzero count, and zero entries from net_ring_dump. That is the
     // correct, expected shape of an inert-but-present query surface, not an
     // error. None of these three commands advance execution, so none of
@@ -1109,7 +1112,7 @@ std::string handle(const std::string& line) {
     if (cmd == "scheduler_state") return scheduler_state_json();
     if (cmd == "frontend_stats") {
         // Cumulative frontend counters; sample twice and diff for fps /
-        // phase shares over the window. active=0 → headless (all zeros).
+        // phase shares over the window. active=0 â†’ headless (all zeros).
         NdsFrontendLiveStats s{};
         nds_frontend_live_stats(&s);
         return "{\"active\":" + std::to_string(s.active) +
@@ -1370,6 +1373,19 @@ std::string handle(const std::string& line) {
             ",\"scale_add_calls\":" + std::to_string(counts.scale_add_calls) +
             ",\"cross_product_calls\":" + std::to_string(counts.cross_product_calls) +
             ",\"transform_translate_calls\":" + std::to_string(counts.transform_translate_calls) + "}";
+#else
+        return "{\"implementation\":\"LLE\"}";
+#endif
+    }
+    if (cmd == "mkds_hle") {
+#if defined(NDS_MKDS_HLE)
+        const auto c = mkds_hle::statistics();
+        return std::string("{\"implementation\":\"HLE\",\"rom_supported\":") +
+            (c.rom_supported ? "true" : "false") +
+            ",\"group_mask\":" + std::to_string(c.group_mask) +
+            ",\"scale_add\":" + std::to_string(c.scale_add) +
+            ",\"cross_product\":" + std::to_string(c.cross_product) +
+            ",\"transform_translate\":" + std::to_string(c.transform_translate) + "}";
 #else
         return "{\"implementation\":\"LLE\"}";
 #endif
@@ -2049,10 +2065,10 @@ void debug_serve(uint16_t port) {
 #endif
 }
 
-// ── Play-mode pump (psxrecomp handoff model) ────────────────────────────
+// â”€â”€ Play-mode pump (psxrecomp handoff model) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // A dedicated I/O thread owns accept/recv/send on the same line-JSON
 // protocol; each complete request line is handed to the frontend thread,
-// which executes it inside debug_pump() between frames — the emu state is
+// which executes it inside debug_pump() between frames â€” the emu state is
 // only ever touched by its owning thread, so no emulator locking exists.
 // The mutex/condvar below protect ONLY the request/response handoff pair.
 

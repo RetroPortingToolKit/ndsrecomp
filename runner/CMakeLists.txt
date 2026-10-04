@@ -30,7 +30,7 @@ set(NDS_SDL_BACKEND "SDL3" CACHE STRING
     "Host presentation backend: SDL3, SDL2, or NONE")
 set_property(CACHE NDS_SDL_BACKEND PROPERTY STRINGS SDL3 SDL2 NONE)
 option(NDS_ENABLE_PCAP_BACKEND
-    "Build the vendored melonDS Net_PCap backend (dynamically loads Npcap/WinPcap at runtime; off by default per docs/adr-melonds-wifi-vendoring.md §2)"
+    "Build the vendored melonDS Net_PCap backend (dynamically loads Npcap/WinPcap at runtime; off by default per docs/adr-melonds-wifi-vendoring.md Â§2)"
     OFF)
 option(NDS_PROFILE_HLE_HEAT
     "Build candidate-only sampled leaf heat instrumentation"
@@ -44,6 +44,25 @@ endif()
 option(NDS_PROFILE_MEM_TIMING
     "Build candidate-only runtime memory-timing census instrumentation"
     OFF)
+set(NDS_MKDS_IMPLEMENTATION "LLE" CACHE STRING
+    "Developer build choice for MKDS vector math: LLE or HLE")
+set_property(CACHE NDS_MKDS_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
+set(NDS_MKDS_HLE_GROUPS "VECTOR" CACHE STRING
+    "MKDS HLE groups available in this build: VECTOR")
+if(NOT NDS_MKDS_HLE_GROUPS STREQUAL "VECTOR")
+    message(FATAL_ERROR "Only VECTOR HLE is integrated; MATH and SUBMIT remain draft work")
+endif()
+set(NDS_MKDS_HLE_GROUP_MASK 1)
+if(NOT NDS_MKDS_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
+    message(FATAL_ERROR "NDS_MKDS_IMPLEMENTATION must be LLE or HLE")
+endif()
+set(NDS_BUILD_VARIANT "")
+if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
+    set(NDS_BUILD_VARIANT "mkds-hle")
+    if(NOT NDS_MKDS_HLE_GROUP_MASK EQUAL 7)
+        string(APPEND NDS_BUILD_VARIANT "-groups${NDS_MKDS_HLE_GROUP_MASK}")
+    endif()
+endif()
 set(NDS_PGO_MODE "OFF" CACHE STRING
     "Runner-only GCC PGO mode: OFF, GENERATE, or USE")
 set_property(CACHE NDS_PGO_MODE PROPERTY STRINGS OFF GENERATE USE)
@@ -74,7 +93,7 @@ set(NDS_TITLE_ROM_SHA1S "" CACHE STRING
     "Semicolon list of exact lowercase ROM SHA-1s (parallel to NDS_TITLE_BANK_DIRS)")
 
 # The recompiled ARM9 BIOS bank (generated; compiled as C). Generated TUs
-# trade warning-cleanliness for uniform emission — silence the expected
+# trade warning-cleanliness for uniform emission â€” silence the expected
 # unused-temp warnings rather than touch generated/.
 if(NDS_GENERATED_DIR)
     set(GEN "${NDS_GENERATED_DIR}")
@@ -351,7 +370,7 @@ target_include_directories(nds_support PUBLIC
 
 # Vendored libslirp 4.8.0 (BSD-3-Clause), built via melonDS's own hand-written
 # CMakeLists.txt (not upstream's meson.build, which wants real GLib2 -- see
-# docs/adr-melonds-wifi-vendoring.md §9). That CMakeLists ships its own glib
+# docs/adr-melonds-wifi-vendoring.md Â§9). That CMakeLists ships its own glib
 # shim (glib/glib.c, not real GLib) and already wires ws2_32/iphlpapi on
 # WIN32 internally, so no extra link setup is needed beyond depending on the
 # `slirp` target it defines. cmake_minimum_required(VERSION 3.16) there is
@@ -464,6 +483,12 @@ if(NDS_MPH_MATH_IMPLEMENTATION STREQUAL "HLE")
     target_compile_definitions(nds_runner PRIVATE NDS_MPH_MATH_HLE=1)
 endif()
 message(STATUS "MPH math implementation: ${NDS_MPH_MATH_IMPLEMENTATION}")
+if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
+    target_sources(nds_runner PRIVATE src/hle_mkds.cpp)
+    target_compile_definitions(nds_runner PRIVATE NDS_MKDS_HLE=1
+        NDS_MKDS_HLE_GROUP_MASK=${NDS_MKDS_HLE_GROUP_MASK})
+endif()
+message(STATUS "MKDS implementation: ${NDS_MKDS_IMPLEMENTATION}")
 ndsrecomp_limit_link(nds_runner)
 if(NOT NDS_PGO_MODE STREQUAL "OFF")
     if(MSVC)
@@ -595,7 +620,7 @@ if(NDS_ENABLE_PCAP_BACKEND)
     # pcap/ -- same tree melonDS itself vendors) at compile time; the actual
     # wpcap.dll/Packet.dll is loaded at runtime via Platform::DynamicLibrary_*
     # (src/wifi_net.cpp), so there is no link-time Npcap/WinPcap SDK
-    # dependency. Off by default: docs/adr-melonds-wifi-vendoring.md §2.
+    # dependency. Off by default: docs/adr-melonds-wifi-vendoring.md Â§2.
     target_sources(nds_runner PRIVATE vendor/melonds/net/Net_PCap.cpp)
     target_compile_definitions(nds_runner PRIVATE NDS_ENABLE_PCAP_BACKEND=1)
 endif()
@@ -619,6 +644,7 @@ execute_process(COMMAND "${CMAKE_COMMAND}"
     "-DNDS_VERSION_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../VERSION"
     "-DNDS_TITLE_DIR=${NDS_TITLE_BANK_DIR}"
     "-DNDS_TITLE_VERSION=${NDS_TITLE_VERSION}"
+    "-DNDS_BUILD_VARIANT=${NDS_BUILD_VARIANT}"
     -P "${NDS_BUILD_ID_SCRIPT}")
 add_custom_target(nds_build_id ALL
     BYPRODUCTS "${NDS_BUILD_ID_HEADER}"
@@ -628,6 +654,7 @@ add_custom_target(nds_build_id ALL
         "-DNDS_VERSION_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../VERSION"
         "-DNDS_TITLE_DIR=${NDS_TITLE_BANK_DIR}"
         "-DNDS_TITLE_VERSION=${NDS_TITLE_VERSION}"
+        "-DNDS_BUILD_VARIANT=${NDS_BUILD_VARIANT}"
         -P "${NDS_BUILD_ID_SCRIPT}"
     COMMENT "Stamping git HEAD into nds_build_id.h"
     VERBATIM)
@@ -806,6 +833,13 @@ ndsrecomp_link_tomlpp(frontend_config_test)
       ${NDS_ARM_RECOMP_INCLUDE_DIRS})
   target_link_libraries(hle_mph_math_test PRIVATE nds_support nds_armv4t)
   add_test(NAME hle_mph_math_test COMMAND hle_mph_math_test)
+
+  add_executable(hle_mkds_test tests/hle_mkds_test.cpp src/hle_mkds.cpp)
+  target_compile_definitions(hle_mkds_test PRIVATE NDS_RUNTIME_ABI_SHIMS=1)
+  target_include_directories(hle_mkds_test PRIVATE src
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  target_link_libraries(hle_mkds_test PRIVATE nds_support)
+  add_test(NAME hle_mkds_test COMMAND hle_mkds_test)
 
   add_executable(perf_governor_test
       tests/perf_governor_test.cpp
