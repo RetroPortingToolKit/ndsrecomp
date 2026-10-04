@@ -1,0 +1,120 @@
+# MPH vector math HLE pilot
+
+This is the first build-selectable HLE replacement for MPH USA revision 0
+(ROM SHA-1 `90164d1ac127ee5f9815ea4ae7de798c7b5fc629`). It is development
+work after the v0.7.5-alpha coverage release; that release contains no HLE.
+
+The developer chooses the implementation when configuring the runner:
+
+```powershell
+cmake -S runner -B runner/build-mph-release-0610 "-DNDS_MPH_MATH_IMPLEMENTATION=HLE"
+cmake --build runner/build-mph-release-0610 --target nds_runner hle_mph_math_test
+```
+
+Configure the same runner with `"-DNDS_MPH_MATH_IMPLEMENTATION=LLE"` to build
+the maintained generated-code implementation. This cache variable accepts
+only `HLE` or `LLE`. LLE remains the default during this initial pilot.
+There is no launcher control, environment variable, runtime mode setter,
+mid-operation fallback, or state-conversion mechanism. HLE can become the
+default after its practical benefit and player behavior have been assessed.
+
+## Caller contracts
+
+| ARM9 entry | Inputs | Operation |
+|---|---|---|
+| `0x02080BD8` | r0: Q12 scale; r1: vector; r2: addend; r3: output | `out = (scale * vector >> 12) + addend` |
+| `0x02080DE0` | r0: first vector; r1: second vector; r2: output | Cross product, rounding each component with `+0x800` before shifting by 12 |
+| `0x0207FD38` | r0: vector; r1: 4x3 matrix; r2: output | Q12 transform plus the matrix's translation vector |
+
+Vectors have three 32-bit components. Products use signed components and
+64-bit modular accumulators; stored results wrap to 32 bits. The transform
+uses matrix indices `j`, `j+3`, `j+6`, with translation at `j+9`.
+
+These routines operate on ordinary writable guest RAM. Their contract
+includes in-place/overlapping buffers, ARM word-load rotation for unaligned
+addresses, and word-aligned stores. MMIO buffers and buffers overlapping the
+routine's own temporary stack frame are outside this math interface.
+
+The replacements preserve caller-visible output, stack pointer, callee-saved
+registers, LR, and ARM/Thumb return behavior. Retaining the original scratch
+registers and final flags is inexpensive here, so this pilot also does so.
+That convenience is not a rule that future HLE implementations must reproduce
+all internal CPU state. Dead stack-frame bytes, individual instruction
+events, internal instruction counts, and intermediate register states are
+not reproduced.
+
+## Freedom inside the operation
+
+Native integer arithmetic replaces the instruction stream. The implementation
+does not simulate guest pushes/pops, instruction fetches, multiply timing,
+per-instruction dispatch, or per-instruction yield checks. The transform
+derives a redundant RAM reload from its stored value. Existing guest bus
+writes retain memory mapping and code-write invalidation behavior.
+
+Each call completes atomically and publishes its return PC/state before one
+timing charge. The initial estimates are 96 ARM9 cycles for scale/add and 160
+for each of the other operations. These are provisional coarse budgets, not
+cycle-equivalence claims. IRQ delivery and scheduler observation can move to
+the operation boundary. Tiny timing differences are acceptable under the
+owner's HLE policy; practical pacing still needs assessment. Do not rebuild
+an instruction emulator inside these operations merely to match a trace.
+
+An ordinary return uses the existing call-return stack. A tail call uses the
+existing interworking dispatch path. An IRQ unwind after completion exposes
+the completed return state; it does not restart the HLE operation.
+
+## Integration and LLE maintenance
+
+The HLE build initializes its ROM scope once before guest execution. On a
+cold native lookup, the dispatcher recognizes a supported entry and proves
+the complete routine's fingerprint against the already validated bank span.
+It caches the replacement function using the existing content/page-generation
+guards. Warm lookups and direct links call that function without another HLE
+selection branch. The scope checks prevent unrelated code at the same address
+from being mistaken for this interface.
+
+Only whole-routine entry points are replaced. HLE never creates an interior
+resume PC. Other functions and instruction entry points retain their ordinary
+execution paths. There is no promise of cross-build savestate compatibility.
+The existing interpreter debugging machinery is not the HLE/LLE build setting.
+
+The LLE build compiles out the HLE resolver calls and does not link these math
+replacements into the runner. Original generated banks, interpreter support,
+and their timing paths remain maintained. No generated source or guest ABI
+header is changed by this pilot.
+
+## Checks and limits
+
+`hle_mph_math_test` checks analytic results, in-place operations, call/tail
+returns, Thumb interworking, post-operation unwind, and rejection of unrelated
+or insufficient code proofs. A local, uncommitted extracted ARM9 image enables
+comparison with the original instructions through the independent ARM IR
+interpreter:
+
+```powershell
+runner/build-mph-release-0610/hle_mph_math_test.exe --arm9 ../metroidprimehuntersrecomp/generated/inputs/arm9.bin
+```
+
+The fixture is fingerprint-checked before use. It is never embedded in tests
+or committed. The 1,536 deterministic cases include arithmetic extremes,
+random inputs, overlapping buffers, unaligned words, and both return modes.
+They compare outputs, active registers, flags, and all memory outside the dead
+temporary stack area. Timing/internal instruction traces are intentionally
+outside this comparison.
+
+Both Windows/MinGW runner builds and their `--help` startup checks passed.
+The LLE executable excludes the HLE startup marker and replacement source;
+the HLE executable includes them. The release ZIP/AppImage are unchanged.
+
+No additional gameplay or performance run was made for this pilot. The prior
+profile attributed 90 of 5,594 self samples (about 1.6%) to these three bodies;
+shared dispatch and timing overhead was accounted separately. That makes
+them a bounded first implementation, not evidence of a large overall FPS
+gain. Whole-game benefit and the coarse timing budgets remain unmeasured.
+The next larger candidate is the DMA/geometry submission family identified in
+[the issue 44 assessment](mph-issue44-performance.md).
+
+The governing policy is compatible caller interfaces with freedom inside HLE,
+a maintained LLE build, and developer selection at build time. See
+[the optimization strategy](host_optimization_strategy.md) and the shared
+template's `HLE.md` for the broader policy.

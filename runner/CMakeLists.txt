@@ -35,6 +35,12 @@ option(NDS_ENABLE_PCAP_BACKEND
 option(NDS_PROFILE_HLE_HEAT
     "Build candidate-only sampled leaf heat instrumentation"
     OFF)
+set(NDS_MPH_MATH_IMPLEMENTATION "LLE" CACHE STRING
+    "Developer build choice for MPH vector math: LLE or HLE (no runtime switch)")
+set_property(CACHE NDS_MPH_MATH_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
+if(NOT NDS_MPH_MATH_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
+    message(FATAL_ERROR "NDS_MPH_MATH_IMPLEMENTATION must be LLE or HLE")
+endif()
 option(NDS_PROFILE_MEM_TIMING
     "Build candidate-only runtime memory-timing census instrumentation"
     OFF)
@@ -453,6 +459,11 @@ add_executable(nds_runner
     vendor/melonds/net/PacketDispatcher.cpp
     vendor/melonds/net/Net_Slirp.cpp)
 set_target_properties(nds_runner PROPERTIES ENABLE_EXPORTS ON)
+if(NDS_MPH_MATH_IMPLEMENTATION STREQUAL "HLE")
+    target_sources(nds_runner PRIVATE src/hle_mph_math.cpp)
+    target_compile_definitions(nds_runner PRIVATE NDS_MPH_MATH_HLE=1)
+endif()
+message(STATUS "MPH math implementation: ${NDS_MPH_MATH_IMPLEMENTATION}")
 ndsrecomp_limit_link(nds_runner)
 if(NOT NDS_PGO_MODE STREQUAL "OFF")
     if(MSVC)
@@ -784,6 +795,17 @@ ndsrecomp_link_tomlpp(frontend_config_test)
       ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
       ${CMAKE_CURRENT_SOURCE_DIR}/../external/arm-recomp-core/common)
   add_test(NAME title_patches_test COMMAND title_patches_test)
+
+  add_executable(hle_mph_math_test
+      tests/hle_mph_math_test.cpp
+      src/hle_mph_math.cpp)
+  target_compile_definitions(hle_mph_math_test PRIVATE NDS_RUNTIME_ABI_SHIMS=1)
+  target_include_directories(hle_mph_math_test PRIVATE
+      src
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
+      ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  target_link_libraries(hle_mph_math_test PRIVATE nds_support nds_armv4t)
+  add_test(NAME hle_mph_math_test COMMAND hle_mph_math_test)
 
   add_executable(perf_governor_test
       tests/perf_governor_test.cpp
