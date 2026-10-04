@@ -8,7 +8,9 @@ uint16_t nds_powercontrol9() { return 0xFFFFu; }
 void nds_raise_irq(int, uint32_t) {}
 void nds_clear_irq(int, uint32_t) {}
 void nds_dma_trigger(int, unsigned) {}
-void nds_gxfifo_set_stall(bool) {}
+static bool gx_stalled = false;
+void nds_gxfifo_set_stall(bool value) { gx_stalled = value; }
+bool nds_gxfifo_stalled() { return gx_stalled; }
 void scheduler_terminal_halt_all(const char*) {}
 bool nds_title_patches_mph_adaptive_centered_native() { return false; }
 

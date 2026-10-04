@@ -310,6 +310,13 @@ void     nds_dma_trigger(int cpu, uint32_t start_mode);
 void     nds_gxfifo_set_stall(bool stalled);
 bool     nds_gxfifo_stalled();
 
+// Native operation adapters used only by build-selected title HLE. They
+// publish the ordinary device register state without per-register restarts
+// or guest polling. Completion timing is charged by the caller once.
+uint64_t nds_math_hle_divide(uint16_t mode, uint64_t numerator, uint64_t denominator);
+uint32_t nds_math_hle_sqrt(uint16_t mode, uint64_t value);
+uint64_t nds_math_hle_complete_division();
+
 // melonDS ordering: each CPU's timers advance at that CPU's own post-Execute
 // timestamp; display/system time advances only after ARM7 catches up.
 void     nds_tick_timers(int cpu, unsigned long long cpu_cycles);

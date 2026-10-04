@@ -67,6 +67,11 @@ if(_dirty)
     set(_display "${_id}-dirty")
 endif()
 
+# Build-selected implementations have distinct diagnostic/save identities.
+if(NDS_BUILD_VARIANT)
+    string(APPEND _display "-${NDS_BUILD_VARIANT}")
+endif()
+
 # Framework version string from the repo-root VERSION file.
 set(_framework_version "unknown")
 if(NDS_VERSION_FILE AND EXISTS "${NDS_VERSION_FILE}")

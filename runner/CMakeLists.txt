@@ -44,6 +44,16 @@ endif()
 option(NDS_PROFILE_MEM_TIMING
     "Build candidate-only runtime memory-timing census instrumentation"
     OFF)
+set(NDS_MKDS_IMPLEMENTATION "LLE" CACHE STRING
+    "Developer build choice for MKDS math and submission: LLE or HLE")
+set_property(CACHE NDS_MKDS_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
+if(NOT NDS_MKDS_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
+    message(FATAL_ERROR "NDS_MKDS_IMPLEMENTATION must be LLE or HLE")
+endif()
+set(NDS_BUILD_VARIANT "")
+if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
+    set(NDS_BUILD_VARIANT "mkds-hle")
+endif()
 set(NDS_PGO_MODE "OFF" CACHE STRING
     "Runner-only GCC PGO mode: OFF, GENERATE, or USE")
 set_property(CACHE NDS_PGO_MODE PROPERTY STRINGS OFF GENERATE USE)
@@ -464,6 +474,11 @@ if(NDS_MPH_MATH_IMPLEMENTATION STREQUAL "HLE")
     target_compile_definitions(nds_runner PRIVATE NDS_MPH_MATH_HLE=1)
 endif()
 message(STATUS "MPH math implementation: ${NDS_MPH_MATH_IMPLEMENTATION}")
+if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
+    target_sources(nds_runner PRIVATE src/hle_mkds.cpp)
+    target_compile_definitions(nds_runner PRIVATE NDS_MKDS_HLE=1)
+endif()
+message(STATUS "MKDS implementation: ${NDS_MKDS_IMPLEMENTATION}")
 ndsrecomp_limit_link(nds_runner)
 if(NOT NDS_PGO_MODE STREQUAL "OFF")
     if(MSVC)
@@ -619,6 +634,7 @@ execute_process(COMMAND "${CMAKE_COMMAND}"
     "-DNDS_VERSION_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../VERSION"
     "-DNDS_TITLE_DIR=${NDS_TITLE_BANK_DIR}"
     "-DNDS_TITLE_VERSION=${NDS_TITLE_VERSION}"
+    "-DNDS_BUILD_VARIANT=${NDS_BUILD_VARIANT}"
     -P "${NDS_BUILD_ID_SCRIPT}")
 add_custom_target(nds_build_id ALL
     BYPRODUCTS "${NDS_BUILD_ID_HEADER}"
@@ -628,6 +644,7 @@ add_custom_target(nds_build_id ALL
         "-DNDS_VERSION_FILE=${CMAKE_CURRENT_SOURCE_DIR}/../VERSION"
         "-DNDS_TITLE_DIR=${NDS_TITLE_BANK_DIR}"
         "-DNDS_TITLE_VERSION=${NDS_TITLE_VERSION}"
+        "-DNDS_BUILD_VARIANT=${NDS_BUILD_VARIANT}"
         -P "${NDS_BUILD_ID_SCRIPT}"
     COMMENT "Stamping git HEAD into nds_build_id.h"
     VERBATIM)
@@ -806,6 +823,25 @@ ndsrecomp_link_tomlpp(frontend_config_test)
       ${NDS_ARM_RECOMP_INCLUDE_DIRS})
   target_link_libraries(hle_mph_math_test PRIVATE nds_support nds_armv4t)
   add_test(NAME hle_mph_math_test COMMAND hle_mph_math_test)
+
+  add_executable(hle_mkds_test tests/hle_mkds_test.cpp src/hle_mkds.cpp)
+  target_compile_definitions(hle_mkds_test PRIVATE NDS_RUNTIME_ABI_SHIMS=1)
+  target_include_directories(hle_mkds_test PRIVATE src
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  target_link_libraries(hle_mkds_test PRIVATE nds_support)
+  add_test(NAME hle_mkds_test COMMAND hle_mkds_test)
+
+  add_executable(hle_mkds_io_test tests/hle_mkds_io_test.cpp)
+  target_include_directories(hle_mkds_io_test PRIVATE src vendor/melonds
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  if(MSVC)
+    target_compile_options(hle_mkds_io_test PRIVATE /GL /Gy /Gw)
+    target_link_options(hle_mkds_io_test PRIVATE /LTCG /OPT:REF)
+  else()
+    target_compile_options(hle_mkds_io_test PRIVATE -flto -ffunction-sections -fdata-sections)
+    target_link_options(hle_mkds_io_test PRIVATE -flto -Wl,--gc-sections)
+  endif()
+  add_test(NAME hle_mkds_io_test COMMAND hle_mkds_io_test)
 
   add_executable(perf_governor_test
       tests/perf_governor_test.cpp

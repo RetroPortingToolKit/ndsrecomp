@@ -1118,6 +1118,18 @@ void nds_gpu3d_write(uint32_t addr, uint32_t value, uint32_t width) {
     e.pipe_after = g3.CmdPIPE.Level();
 }
 
+uint32_t nds_gpu3d_submit_words(uint32_t port, const uint32_t* words, uint32_t count) {
+    if (!words || port < 0x04000400u || port >= 0x04000440u || (port & 3u)) return 0;
+    g_nds.ARM9Timestamp = g_runtime_cycles;
+    uint32_t consumed = 0;
+    while (consumed < count && !nds_gxfifo_stalled()) {
+        // One packed word can expand to four no-parameter commands. Stop
+        // after the first stalled word, well within the device's spill queue.
+        g_nds.GPU.GPU3D.Write32(port, words[consumed++]);
+    }
+    return consumed;
+}
+
 void nds_gpu3d_set_power(uint16_t powcnt1) {
     g_nds.GPU.GPU3D.SetEnabled((powcnt1 & (1u << 3)) != 0,
                                (powcnt1 & (1u << 2)) != 0);

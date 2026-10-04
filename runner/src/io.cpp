@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <ctime>
 #include <vector>
 
@@ -2340,6 +2341,42 @@ const uint64_t* event_ptr(const char* name) {
     return nullptr;
 }
 }  // namespace
+
+uint64_t nds_math_hle_complete_division() {
+    if (g_divcnt & 0x8000u) {
+        finish_div();
+        g_div_deadline = UINT64_MAX;
+    }
+    return words_u64(g_div_quot);
+}
+
+uint64_t nds_math_hle_divide(uint16_t mode, uint64_t numerator, uint64_t denominator) {
+    g_divcnt = mode & 3u;
+    g_div_numer[0] = static_cast<uint32_t>(numerator);
+    g_div_numer[1] = static_cast<uint32_t>(numerator >> 32);
+    g_div_denom[0] = static_cast<uint32_t>(denominator);
+    g_div_denom[1] = static_cast<uint32_t>(denominator >> 32);
+    finish_div();
+    g_div_deadline = UINT64_MAX;
+    return words_u64(g_div_quot);
+}
+
+uint32_t nds_math_hle_sqrt(uint16_t mode, uint64_t value) {
+    g_sqrtcnt = mode & 1u;
+    g_sqrt_val[0] = static_cast<uint32_t>(value);
+    g_sqrt_val[1] = static_cast<uint32_t>(value >> 32);
+    const uint64_t operand = (mode & 1u) ? value : uint64_t{g_sqrt_val[0]};
+    // Host sqrt plus an integer correction gives floor(sqrt(n)) without
+    // emulating the serial hardware algorithm. Division avoids overflow at
+    // the top of the 64-bit range when checking the rounded estimate.
+    uint64_t root = std::min<uint64_t>(UINT32_MAX,
+        static_cast<uint64_t>(std::sqrt(static_cast<double>(operand))));
+    while (root && root > operand / root) --root;
+    while (root < UINT32_MAX && root + 1 <= operand / (root + 1)) ++root;
+    g_sqrt_res = static_cast<uint32_t>(root);
+    g_sqrt_deadline = UINT64_MAX;
+    return g_sqrt_res;
+}
 
 void nds_event_break_arm(const char* name, uint64_t target) {
     g_brk_ptr = event_ptr(name);
