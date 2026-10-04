@@ -27,6 +27,9 @@
 #if defined(NDS_MPH_MATH_HLE)
 #include "hle_mph_math.h"
 #endif
+#if defined(NDS_MKDS_HLE)
+#include "hle_mkds.h"
+#endif
 #include "host_profile.h"
 #include "dispatch_stats.h"
 #include "dispatch_timing.h"
@@ -1370,6 +1373,19 @@ std::string handle(const std::string& line) {
             ",\"scale_add_calls\":" + std::to_string(counts.scale_add_calls) +
             ",\"cross_product_calls\":" + std::to_string(counts.cross_product_calls) +
             ",\"transform_translate_calls\":" + std::to_string(counts.transform_translate_calls) + "}";
+#else
+        return "{\"implementation\":\"LLE\"}";
+#endif
+    }
+    if (cmd == "mkds_hle") {
+#if defined(NDS_MKDS_HLE)
+        const auto c = mkds_hle::statistics();
+        return std::string("{\"implementation\":\"HLE\",\"rom_supported\":") +
+            (c.rom_supported ? "true" : "false") +
+            ",\"group_mask\":" + std::to_string(c.group_mask) +
+            ",\"scale_add\":" + std::to_string(c.scale_add) +
+            ",\"cross_product\":" + std::to_string(c.cross_product) +
+            ",\"transform_translate\":" + std::to_string(c.transform_translate) + "}";
 #else
         return "{\"implementation\":\"LLE\"}";
 #endif

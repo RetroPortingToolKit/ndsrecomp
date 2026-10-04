@@ -36,6 +36,9 @@
 #include "diagnostics.h"
 #include "dispatch_lookup.h"
 #include "hle_profile.h"
+#if defined(NDS_MKDS_HLE)
+#include "hle_mkds.h"
+#endif
 #include "dispatch_stats.h"
 #include "dispatch_timing.h"
 #include "coverage_manifest.h"
@@ -549,6 +552,33 @@ const CachedStaticLookup* lookup_static_cached_impl(const CpuCtx& c,
         if (auto replacement = mph_hle::resolve(g_nds_active, pc, thumb,
                                                 hit->validation)) {
             slot.fn = replacement;
+        }
+    }
+#endif
+#if defined(NDS_MKDS_HLE)
+    if (hit) {
+        const auto replacement = mkds_hle::resolve(g_nds_active, pc, thumb);
+        // A rejected operation must also observe its full range. Otherwise a
+        // later repair on a page outside the native prefix leaves a cached
+        // native answer that never retries the HLE identity proof.
+        if (replacement.guard_size) {
+            const uint32_t last = (replacement.guard_start + replacement.guard_size - 1) & ~0xFFFu;
+            for (uint32_t page = replacement.guard_start & ~0xFFFu;; page += 4096u) {
+                if (!cache_page_generation(slot, page)) { slot = {}; return nullptr; }
+                if (page == last) break;
+            }
+        }
+        if (replacement.function) {
+            // A generated entry can prove only a prefix or a loop block.
+            // HLE needs the whole operation, including literal pools. Carry
+            // that proof through cache, direct links and active write guards.
+            CachedStaticLookup expanded = slot;
+            expanded.validation = replacement.validation;
+            expanded.page_count = 0;
+            if (cache_validation_pages(expanded, replacement.validation)) {
+                expanded.fn = replacement.function;
+                slot = expanded;
+            }
         }
     }
 #endif
