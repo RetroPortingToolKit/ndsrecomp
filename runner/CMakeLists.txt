@@ -30,7 +30,7 @@ set(NDS_SDL_BACKEND "SDL3" CACHE STRING
     "Host presentation backend: SDL3, SDL2, or NONE")
 set_property(CACHE NDS_SDL_BACKEND PROPERTY STRINGS SDL3 SDL2 NONE)
 option(NDS_ENABLE_PCAP_BACKEND
-    "Build the vendored melonDS Net_PCap backend (dynamically loads Npcap/WinPcap at runtime; off by default per docs/adr-melonds-wifi-vendoring.md Â§2)"
+    "Build the vendored melonDS Net_PCap backend (dynamically loads Npcap/WinPcap at runtime; off by default per docs/adr-melonds-wifi-vendoring.md §2)"
     OFF)
 option(NDS_PROFILE_HLE_HEAT
     "Build candidate-only sampled leaf heat instrumentation"
@@ -93,7 +93,7 @@ set(NDS_TITLE_ROM_SHA1S "" CACHE STRING
     "Semicolon list of exact lowercase ROM SHA-1s (parallel to NDS_TITLE_BANK_DIRS)")
 
 # The recompiled ARM9 BIOS bank (generated; compiled as C). Generated TUs
-# trade warning-cleanliness for uniform emission â€” silence the expected
+# trade warning-cleanliness for uniform emission — silence the expected
 # unused-temp warnings rather than touch generated/.
 if(NDS_GENERATED_DIR)
     set(GEN "${NDS_GENERATED_DIR}")
@@ -370,7 +370,7 @@ target_include_directories(nds_support PUBLIC
 
 # Vendored libslirp 4.8.0 (BSD-3-Clause), built via melonDS's own hand-written
 # CMakeLists.txt (not upstream's meson.build, which wants real GLib2 -- see
-# docs/adr-melonds-wifi-vendoring.md Â§9). That CMakeLists ships its own glib
+# docs/adr-melonds-wifi-vendoring.md §9). That CMakeLists ships its own glib
 # shim (glib/glib.c, not real GLib) and already wires ws2_32/iphlpapi on
 # WIN32 internally, so no extra link setup is needed beyond depending on the
 # `slirp` target it defines. cmake_minimum_required(VERSION 3.16) there is
@@ -620,7 +620,7 @@ if(NDS_ENABLE_PCAP_BACKEND)
     # pcap/ -- same tree melonDS itself vendors) at compile time; the actual
     # wpcap.dll/Packet.dll is loaded at runtime via Platform::DynamicLibrary_*
     # (src/wifi_net.cpp), so there is no link-time Npcap/WinPcap SDK
-    # dependency. Off by default: docs/adr-melonds-wifi-vendoring.md Â§2.
+    # dependency. Off by default: docs/adr-melonds-wifi-vendoring.md §2.
     target_sources(nds_runner PRIVATE vendor/melonds/net/Net_PCap.cpp)
     target_compile_definitions(nds_runner PRIVATE NDS_ENABLE_PCAP_BACKEND=1)
 endif()

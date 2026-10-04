@@ -68,7 +68,7 @@ std::function<void()> g_reset_fn;
 NdsSavestateIdentity g_savestate_identity;
 
 // Play-mode flag: set by debug_pump_start(). Execution-driving commands are
-// rejected while the SDL frontend owns execution (psxrecomp model â€” query
+// rejected while the SDL frontend owns execution (psxrecomp model — query
 // the always-on rings instead of advancing the machine from a handler).
 bool g_play_mode = false;
 
@@ -859,11 +859,11 @@ std::string handle(const std::string& line) {
             (unsigned long long)e.insn9, (unsigned long long)e.insn7, e.value);
         return buf;
     }
-    // â”€â”€ Network event ring (Wiimmfi M0) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Network event ring (Wiimmfi M0) ─────────────────────────────────
     // Read-only ring queries, same "by ordinal" / "most recent N" idioms as
     // the rest of this group above. No call site pushes into the ring yet
     // (Wi-Fi device/AP/bridge/backend are later phases), so a normal run
-    // will see an empty ring here â€” {"latest":0}, {"found":false} for any
+    // will see an empty ring here — {"latest":0}, {"found":false} for any
     // nonzero count, and zero entries from net_ring_dump. That is the
     // correct, expected shape of an inert-but-present query surface, not an
     // error. None of these three commands advance execution, so none of
@@ -1112,7 +1112,7 @@ std::string handle(const std::string& line) {
     if (cmd == "scheduler_state") return scheduler_state_json();
     if (cmd == "frontend_stats") {
         // Cumulative frontend counters; sample twice and diff for fps /
-        // phase shares over the window. active=0 â†’ headless (all zeros).
+        // phase shares over the window. active=0 → headless (all zeros).
         NdsFrontendLiveStats s{};
         nds_frontend_live_stats(&s);
         return "{\"active\":" + std::to_string(s.active) +
@@ -2065,10 +2065,10 @@ void debug_serve(uint16_t port) {
 #endif
 }
 
-// â”€â”€ Play-mode pump (psxrecomp handoff model) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Play-mode pump (psxrecomp handoff model) ────────────────────────────
 // A dedicated I/O thread owns accept/recv/send on the same line-JSON
 // protocol; each complete request line is handed to the frontend thread,
-// which executes it inside debug_pump() between frames â€” the emu state is
+// which executes it inside debug_pump() between frames — the emu state is
 // only ever touched by its owning thread, so no emulator locking exists.
 // The mutex/condvar below protect ONLY the request/response handoff pair.
 
