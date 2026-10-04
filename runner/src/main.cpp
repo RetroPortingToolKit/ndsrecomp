@@ -28,6 +28,9 @@
 #include <array>
 #include <random>
 #include "runtime_arm.h"
+#if defined(NDS_MPH_MATH_HLE)
+#include "hle_mph_math.h"
+#endif
 #include "io.h"
 #include "debug_server.h"
 #include "host_profile.h"
@@ -1727,6 +1730,11 @@ int main(int argc, char** argv) {
     nds_diagnostics_set_identity(rom_sha1.c_str(), rom_name.c_str(),
                                  NDS_RUNNER_BUILD_ID);
     debug_set_savestate_identity(NDS_RUNNER_BUILD_ID, rom_sha1);
+#if defined(NDS_MPH_MATH_HLE)
+    if (mph_hle::initialize(rom_sha1.c_str())) {
+        std::fprintf(stderr, "[hle] MPH native vector math selected at build time\n");
+    }
+#endif
     if (!cli_savestate_dir.empty() && !rom_sha1.empty()) {
         frontend_options.savestate_directory =
             (std::filesystem::path(cli_savestate_dir) / rom_sha1).string();

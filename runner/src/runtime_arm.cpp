@@ -8,6 +8,9 @@
 // always-on trace ring, the cooperative yield/halt, and lifecycle.
 
 #include "runtime_arm.h"
+#if defined(NDS_MPH_MATH_HLE)
+#include "hle_mph_math.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -539,6 +542,16 @@ const CachedStaticLookup* lookup_static_cached_impl(const CpuCtx& c,
         slot = {};
         return nullptr;
     }
+#if defined(NDS_MPH_MATH_HLE)
+    // Build-selected whole-operation replacements share the existing cache
+    // and content guards. Warm calls/direct links incur no HLE selector branch.
+    if (hit) {
+        if (auto replacement = mph_hle::resolve(g_nds_active, pc, thumb,
+                                                hit->validation)) {
+            slot.fn = replacement;
+        }
+    }
+#endif
     return hit ? &slot : nullptr;
 }
 
