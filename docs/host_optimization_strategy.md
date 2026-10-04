@@ -1,15 +1,33 @@
 # Host optimization strategy — static-path overhead (ISSUE-2)
 
-Owner policy update, 2026-10-03 (MPH issue 44): optional HLE is permitted and
-may be the default. Keep a functioning LLE implementation linked and explicitly
-selectable, with the same guest-visible contracts. The historical restriction
-below to removing bookkeeping only does not prohibit such HLE. Preserve
-register/memory results, executable-page invalidation, device effects, guest
-cycle accounting, and scheduler/IRQ boundaries; decline a fast path before
-side effects whenever its guards cannot establish those conditions. The
-workspace validation policy also supersedes this document's old benchmark
-matrices and multi-route/repetition gates. Use focused contract checks and
-only the gameplay coverage or validation the owner has authorized.
+Owner policy clarification, 2026-10-03 (MPH issue 44): HLE versus LLE is a
+developer's BUILD-TIME choice. HLE may be the default build configuration
+and may take substantial internal shortcuts. The owner accepts extremely
+small, practically unnoticeable differences in exchange for substantial
+measured performance gains. HLE need not reproduce individual instructions,
+intermediate state, exact guest cycles, or every LLE scheduling boundary.
+Batching, approximate timing models and bounded result approximations are
+permitted; their compatibility and benefit must be established, not assumed.
+
+Keep a functioning LLE implementation maintained and buildable. The developer
+selects the implementation before compilation; an HLE binary need not link
+the alternative LLE implementation. There is no runtime HLE/LLE switching,
+automatic HLE-to-LLE fallback requirement, or player-facing accuracy toggle.
+Use a common caller-facing interface so either implementation can be selected
+without rewriting callers. HLE may own different internal state and queues;
+live state conversion, switching boundaries and cross-mode savestate
+compatibility are not requirements. Preserve the selected implementation's
+functional contracts with the rest of the game, subject to the permitted
+small approximations. Existing native-code/interpreter coverage fallback is
+a separate mechanism and is not an HLE/LLE selection feature.
+
+The historical bit-exact restrictions below still describe transparent LLE
+optimizations; they do not prohibit this separate HLE policy. See
+`mph-issue44-performance.md` for the compatibility and timing tradeoffs.
+The workspace validation policy also supersedes the old benchmark matrices
+and multi-route/repetition gates. Use focused interface and approximation
+checks for the respective builds and only the gameplay validation the owner
+has authorized. No HLE/LLE build selector has been implemented yet.
 
 Status doc for the "locked 60 FPS with headroom" workstream. Written
 2026-07-31 against framework `728d12b` + the forward-goto emission

@@ -33,33 +33,57 @@ elapsed time or instruction count; it cannot alone justify an HLE candidate.
 
 ## LLE and HLE policy
 
-The owner permits HLE to be enabled by default. A working LLE path must stay
-linked and explicitly selectable, and it defines the same guest contract.
-No new HLE routine is introduced by this investigation.
+Owner clarification, 2026-10-03: HLE versus LLE is a developer's BUILD-TIME
+choice. HLE may be the default build configuration and take substantial
+internal shortcuts. Extremely small differences that a player would not
+normally notice are acceptable for substantial measured gains. Exact
+instruction timing and identical intermediate state are not HLE requirements.
+Maintain a working, more accurate LLE implementation that can be selected
+when building. An HLE binary need not link that alternative implementation.
+There is no runtime HLE/LLE switching, automatic HLE-to-LLE fallback
+requirement, or player-facing accuracy toggle. No HLE routine or build
+selector is introduced by this investigation.
 
-A future fast path must establish all of the following before changing state:
+The shared interface lets a developer select either implementation at build
+time without rewriting callers. A future HLE implementation should provide:
 
-1. The ROM, instruction set and resident code bytes match the intended
-   routine. Overlay address alone is insufficient. Code writes and overlay
-   replacement invalidate the same assumptions as native dispatch.
-2. All guest-observable register results, flags, scratch-register effects,
-   return PC/mode, memory writes and permitted aliases match LLE, including
-   fixed-point overflow and rounding. Host floating point is not an automatic
-   substitute for integer vector/matrix code.
-3. Guest cycles, bus timing and scheduler/IRQ deadlines are honored. A routine
-   that cannot complete before the current deadline must decline before any
-   side effect or provide an exact resumable implementation.
+1. A defined supported ROM/routine scope. Any address-based interception must
+   identify the intended resident code; overlay address alone is insufficient.
+   Code writes and overlay replacement must not select the wrong operation.
+2. A defined entry/exit state contract: arguments, required register/flag
+   results, return PC/mode, memory effects, aliasing and pending device work
+   remain compatible with the caller. Internal scratch work need
+   not be reproduced unless later execution observes it. Prefer exact integer
+   results when cheap; any numerical approximation needs an explicit error
+   bound and evidence that it does not materially change gameplay. Replacing
+   fixed-point math with floating point is a candidate, not an assumed win.
+3. A deliberate timing model. Work may be batched, guest cycles estimated,
+   and internal scheduler checks omitted. Keep the guest clock and relevant
+   devices coherent at declared synchronization points. Small timing errors
+   can change event order even when the elapsed difference is tiny, so
+   shared-memory CPU communication, IRQs, DMA completion, audio and networking
+   need specific consideration. A fast path need not decline solely because
+   it crosses an LLE slice boundary; model the affected events or define and
+   validate an acceptable approximation. Developers can select an LLE build
+   when greater accuracy or broader compatibility is needed.
 4. RAM-only bulk operations guard range, overlap, alignment and permissions;
    they must not silently bypass MMIO, VRAM semantics, DMA visibility or code
-   invalidation. Device commands keep their native ordering and effects.
-5. Explicit opt-out forces the LLE implementation. Guard failures use the same
-   fallback. Contract tests compare complete relevant state and timing for
-   ordinary, boundary, overlap and near-event inputs, not just output values.
+   invalidation. A device HLE path may model those effects at a higher level;
+   it must expose completion, ordering and data visibility compatible with
+   its callers, subject to the permitted small approximations.
+5. A build-time implementation selection and functioning builds for both
+   choices. HLE may use its own internal state and queues. Live state
+   conversion, HLE/LLE handoff checks and savestate portability between those
+   builds are not requirements. Focused checks cover the shared functional
+   interface and permitted approximation errors in the respective builds.
+   Exact timing comparison belongs to the LLE build or an HLE routine that
+   explicitly promises it. Follow the workspace's gameplay validation limits.
 
 The current `--hle-manifest` machinery is candidate heat instrumentation for
-verified straight-line leaves. It is not a general MPH HLE implementation or
-a user-facing HLE/LLE switch. `--force-tier3` selects the interpreter floor
-today; a future HLE switch must also bypass every introduced HLE path.
+verified straight-line leaves. It is not an MPH HLE implementation or a
+build-time implementation selector. `--force-tier3` selects interpreter
+execution today; native-code/interpreter coverage fallback is separate from
+the developer's HLE/LLE build choice.
 
 ## Other actionable findings
 
@@ -153,17 +177,19 @@ reducing repeated dispatch/scheduler work, not merely rearranging cache data.
    does not turn it into an ordinary host game engine. The cycle helpers and
    dispatch alone account for about 20% of self samples. Investigate longer
    proven execution spans, fewer returns through the resume path, and
-   coalesced cycle accounting bounded by the next device/IRQ event. Preserve
-   the existing instruction-accurate fallback at uncertain boundaries. Do
-   not globally increase scheduler slices or remove cycle charges.
+   coalesced cycle accounting. Transparent LLE changes preserve existing
+   event boundaries; HLE may use larger operations and an approximate timing
+   model under the policy above. Retain the accurate LLE build option. Larger
+   slices alone are an experiment whose compatibility needs evidence.
 2. **Target DMA-to-GXFIFO and geometry submission overhead.** The hot guest
    ITCM routine at `0x01FF9420` programs DMA; `0x01FF9470` chunks transfers and
    polls completion. Their bytes also occur in the verified ROM image.
    Host samples include `nds_dma_run`, `bus_write_u32[_slow]`,
    `WriteToGXFIFO`, and `ExecuteCommand`. A guarded batch path could reduce
-   per-word host overhead while retaining FIFO capacity/stalls, DMA timing,
-   memory provenance, command order and IRQ delivery. This is a concrete
-   cross-cutting candidate; it is not permission to bypass DMA completion.
+   per-word host overhead. An HLE version may approximate internal FIFO/stall
+   and transfer timing while exposing compatible completion, command order,
+   data visibility and IRQ behavior at its interface. The HLE build may own
+   its own queue and device state without converting them to LLE state.
 3. **Pilot HLE on the measured fixed-point math family.** Verified ARM9 code
    identifies a cross product at `0x02080DE0`, a vector/matrix transform with
    translation at `0x0207FD38`, and a vector scale/add at `0x02080BD8`.
@@ -171,9 +197,11 @@ reducing repeated dispatch/scheduler work, not merely rearranging cache data.
    observed byte span also at ROM address `0x0207FDEC`. These four bodies
    contribute 112 self samples (2.0% of the interval), plus some shared helper
    cost. That supports a bounded pilot, not a promised large speedup. Measure
-   complete routine cost before expanding the work. Preserve integer
-   rounding, overflow, aliasing, stack/scratch writes and guest cycles; retain
-   the LLE implementations and an explicit opt-out.
+   complete routine cost before expanding the work. Replace whole routines
+   and repeated timing checks where useful; keep exact arithmetic if cheap,
+   and evaluate bounded approximations under the policy above. Preserve the
+   required caller state and retain LLE implementations selectable at build
+   time.
 4. **Investigate HD/driver cost on the reporter's actual configuration.**
    This native-width NVIDIA sample cannot rank Arc HD readback/presentation.
    Inspect governor transitions and renderer timings before changing GPU
@@ -182,7 +210,8 @@ reducing repeated dispatch/scheduler work, not merely rearranging cache data.
 
 The frequently sampled guest routines `0x020882E0` and `0x020882F4` modify
 CPSR interrupt masks. Their high entry count does not make them harmless
-math helpers: any fusion or HLE must preserve IRQ visibility and timing.
+math helpers: any HLE must account for changed IRQ visibility or delivery
+order. A tiny elapsed-time error alone does not establish compatibility.
 
 Private evidence: game `scratch/issue44/post-profile.json`,
 `post-hostprof.json`, `post-host-symbols.json`, `performance-summary.json`,
