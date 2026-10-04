@@ -1382,6 +1382,7 @@ std::string handle(const std::string& line) {
         const auto c = mkds_hle::statistics();
         return std::string("{\"implementation\":\"HLE\",\"rom_supported\":") +
             (c.rom_supported ? "true" : "false") +
+            ",\"group_mask\":" + std::to_string(c.group_mask) +
             ",\"scale_add\":" + std::to_string(c.scale_add) +
             ",\"cross_product\":" + std::to_string(c.cross_product) +
             ",\"transform_translate\":" + std::to_string(c.transform_translate) +

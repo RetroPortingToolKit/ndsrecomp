@@ -10,6 +10,10 @@
 #include <bit>
 #include <cstring>
 
+#ifndef NDS_MKDS_HLE_GROUP_MASK
+#define NDS_MKDS_HLE_GROUP_MASK 7
+#endif
+
 namespace mkds_hle {
 namespace {
 Statistics counts;
@@ -22,14 +26,21 @@ struct Binding {
 };
 // ROM hashes only; the proof bytes are read from the verified resident image.
 Binding bindings[] = {
+#if NDS_MKDS_HLE_GROUP_MASK & 1
     {0x02147FD8, 0x02147FD8, 96, "a62a720989cd408241a1acc35520b93d866bf7df", scale_add},
     {0x021483A0, 0x021483A0, 156, "8a97f6bdacd40175ea4f577788a82635a8057984", cross_product},
     {0x02147288, 0x02147288, 180, "fe182d57e45fd6086b43f0b98ac689d14b815365", transform_translate},
+#endif
+#if NDS_MKDS_HLE_GROUP_MASK & 2
     {0x01FFCF7C, 0x01FFCF7C, 364, "7c90aa0fcd0833960463a030b6838a86571e4851", normalize},
     {0x02147E28, 0x02147E28, 60, "d3b343e50f4ec02eccd3bdd78190bcf798d2caee", divide_result},
+#endif
+#if NDS_MKDS_HLE_GROUP_MASK & 4
     {0x0214D044, 0x0214D044, 24, "ae6f870471f3f8365211f530ed2cfb372d22a9b4", send_words},
     // Explicit resumable loop ABI: r0=current source, r12=end, r2=last word.
     {0x0214D048, 0x0214D044, 24, "ae6f870471f3f8365211f530ed2cfb372d22a9b4", send_words},
+#endif
+    {0, 0, 0, "", nullptr}, // keeps the empty build selection well-formed
 };
 
 void add_flags(uint32_t a, uint32_t b) {
@@ -53,6 +64,7 @@ void compare_flags(uint32_t a, uint32_t b) {
 
 bool initialize(const char* rom_sha1) {
     counts = {};
+    counts.group_mask = NDS_MKDS_HLE_GROUP_MASK;
     counts.rom_supported = rom_sha1 &&
         std::strcmp(rom_sha1, "691e00d9a5dd80b04f80cc7559503e8b06848785") == 0;
     return counts.rom_supported;
@@ -62,7 +74,7 @@ Statistics statistics() { return counts; }
 Replacement resolve(NdsCpu cpu, uint32_t pc, bool thumb) {
     if (!counts.rom_supported || cpu != NDS_ARM9 || thumb) return {};
     for (auto& b : bindings) {
-        if (pc != b.entry) continue;
+        if (!b.function || pc != b.entry) continue;
         std::array<uint8_t, 364> live{};
         if (!bus_range_has_write_provenance(b.start, b.size) ||
             !bus_debug_copy(0, b.start, live.data(), b.size) ||

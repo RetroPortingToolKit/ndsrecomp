@@ -5,6 +5,12 @@ defaults to LLE; the MarioKartDSRecomp title scripts default to HLE. HLE builds
 compile `hle_mkds.cpp` and carry a `mkds-hle` build identity. There is no runtime
 selector. The original generated banks and device timing remain usable in LLE.
 
+For bounded developer measurements, `NDS_MKDS_HLE_GROUPS` selects a semicolon
+list of `VECTOR`, `MATH`, and `SUBMIT` at build time (default: all three). Omitted
+groups retain ordinary generated execution. Partial selections receive a distinct
+build identity and expose a read-only `group_mask` in `mkds_hle` diagnostics:
+vector=1, math=2, submission=4. This does not add runtime switches.
+
 HLE covers three byte-identical MPH SDK kernels (scale/add, cross product and
 transform/translate), four-component normalization, rounded division-result
 completion, and fixed-destination word submission. `hle_vector_math.h` contains

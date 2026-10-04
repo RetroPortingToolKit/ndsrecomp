@@ -10,6 +10,7 @@ struct Replacement {
 };
 struct Statistics {
     bool rom_supported = false;
+    uint32_t group_mask = 0; // VECTOR=1, MATH=2, SUBMIT=4; compiled choice
     uint64_t scale_add = 0, cross_product = 0, transform_translate = 0;
     uint64_t normalize = 0, divide_result = 0, send_calls = 0, send_words = 0;
     uint64_t send_batches = 0, send_yields = 0;
