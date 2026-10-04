@@ -6,7 +6,7 @@ compile `hle_mkds.cpp` and carry a `mkds-hle` build identity. There is no runtim
 selector. The original generated banks and device timing remain usable in LLE.
 
 For bounded developer measurements, `NDS_MKDS_HLE_GROUPS` selects a semicolon
-list of `VECTOR`, `MATH`, and `SUBMIT` at build time (default: all three). Omitted
+list of `VECTOR`, `MATH`, and `SUBMIT` at build time (default: VECTOR only). Omitted
 groups retain ordinary generated execution. Partial selections receive a distinct
 build identity and expose a read-only `group_mask` in `mkds_hle` diagnostics:
 vector=1, math=2, submission=4. This does not add runtime switches.
@@ -70,5 +70,32 @@ MarioKartDSRecomp's `tools/test_mkds_hle_integration.py` additionally exercises
 all replacements through real runtime dispatch, including mutation/restoration
 of a normalization literal on its second page and a stalled FIFO continuation.
 It executes synthetic callers without entering gameplay. Windows MinGW HLE/LLE
-builds and these focused tests passed on October 4, 2026. They establish no FPS
-gain, new gameplay validation or additional platform result.
+builds and these focused tests passed on October 4, 2026. The later bounded
+measurements supported vector HLE only; see the risk record below. No further
+gameplay validation was run while retaining this draft.
+
+## Draft status and behavior risk
+
+Vector HLE is merged through PR #26. This branch retains only the deferred
+normalization/division and graphics experiments beyond main. VECTOR remains
+the default; MATH and SUBMIT require explicit developer build selection here.
+
+Graphics submission was effectively flat in two 600-frame GCN Luigi Circuit
+samples (11.115/11.056 ms per frame versus 11.039/11.105 off), and reproducibly
+changed the AI driver's trajectory, item and ranking (seventh versus eighth
+at the end of the window, not a completed-race result). The all-on build matched
+the changed graphics result. This is a known caller-visible gameplay difference;
+the cause and full impact remain untraced. Timing, event ordering, collisions or
+random-event ordering are possibilities, not established explanations.
+
+Normalization/division was inconsistent (9.271/11.310 ms per frame). Its sampled
+screenshots and AI positions matched off, so no behavior change was demonstrated
+for that group alone. Atomic completion changes device/interrupt timing and
+retains compatibility risk for unsampled callers or modes. The combined HLE
+build also varied (10.103/11.295); no reliable combined benefit is claimed.
+
+Small internal timing differences are allowed by the HLE policy. These stay
+draft because benefit is unproven and behavior risk remains, not because exact
+LLE instruction timing is required. See the title's
+[full risk record](https://github.com/mstan/MarioKartDSRecomp/blob/main/docs/hle-draft-risks.md)
+and [measurement data](https://github.com/mstan/MarioKartDSRecomp/blob/main/docs/hle-measurements-2026-10-04.json).

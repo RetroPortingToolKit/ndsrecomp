@@ -1740,7 +1740,7 @@ int main(int argc, char** argv) {
 #endif
 #if defined(NDS_MKDS_HLE)
     if (mkds_hle::initialize(rom_sha1.c_str())) {
-        std::fprintf(stderr, "[hle] MKDS native math and graphics submission selected at build time\n");
+        std::fprintf(stderr, "[hle] MKDS HLE selection fixed at build time\n");
     }
 #endif
     if (!cli_savestate_dir.empty() && !rom_sha1.empty()) {
