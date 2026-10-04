@@ -1385,7 +1385,13 @@ std::string handle(const std::string& line) {
             ",\"group_mask\":" + std::to_string(c.group_mask) +
             ",\"scale_add\":" + std::to_string(c.scale_add) +
             ",\"cross_product\":" + std::to_string(c.cross_product) +
-            ",\"transform_translate\":" + std::to_string(c.transform_translate) + "}";
+            ",\"transform_translate\":" + std::to_string(c.transform_translate) +
+            ",\"packet_calls\":" + std::to_string(c.packet_calls) +
+            ",\"packet_buffered\":" + std::to_string(c.packet_buffered) +
+            ",\"packet_direct\":" + std::to_string(c.packet_direct) +
+            ",\"packet_words\":" + std::to_string(c.packet_words) +
+            ",\"packet_batches\":" + std::to_string(c.packet_batches) +
+            ",\"packet_waits\":" + std::to_string(c.packet_waits) + "}";
 #else
         return "{\"implementation\":\"LLE\"}";
 #endif

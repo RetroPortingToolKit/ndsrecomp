@@ -561,9 +561,12 @@ const CachedStaticLookup* lookup_static_cached_impl(const CpuCtx& c,
         // A rejected operation must also observe its full range. Otherwise a
         // later repair on a page outside the native prefix leaves a cached
         // native answer that never retries the HLE identity proof.
-        if (replacement.guard_size) {
-            const uint32_t last = (replacement.guard_start + replacement.guard_size - 1) & ~0xFFFu;
-            for (uint32_t page = replacement.guard_start & ~0xFFFu;; page += 4096u) {
+        const uint32_t starts[] = {replacement.guard_start, replacement.helper_guard_start};
+        const uint32_t sizes[] = {replacement.guard_size, replacement.helper_guard_size};
+        for (unsigned range = 0; range < 2; ++range) {
+            if (!sizes[range]) continue;
+            const uint32_t last = (starts[range] + sizes[range] - 1) & ~0xFFFu;
+            for (uint32_t page = starts[range] & ~0xFFFu;; page += 4096u) {
                 if (!cache_page_generation(slot, page)) { slot = {}; return nullptr; }
                 if (page == last) break;
             }
