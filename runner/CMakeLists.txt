@@ -57,11 +57,22 @@ if(NOT NDS_MKDS_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
     message(FATAL_ERROR "NDS_MKDS_IMPLEMENTATION must be LLE or HLE")
 endif()
 set(NDS_BUILD_VARIANT "")
+option(NDS_EXPERIMENT_MKDS_PACKET_HLE
+    "Experiment: replace complete MKDS graphics packet construction/submission"
+    OFF)
 if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
     set(NDS_BUILD_VARIANT "mkds-hle")
     if(NOT NDS_MKDS_HLE_GROUP_MASK EQUAL 7)
         string(APPEND NDS_BUILD_VARIANT "-groups${NDS_MKDS_HLE_GROUP_MASK}")
     endif()
+endif()
+if(NDS_EXPERIMENT_MKDS_PACKET_HLE)
+    if(NOT NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
+        message(FATAL_ERROR "Packet HLE requires NDS_MKDS_IMPLEMENTATION=HLE")
+    endif()
+    string(APPEND NDS_BUILD_VARIANT "-packet-hle")
+    set_property(SOURCE src/hle_mkds.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS "$<$<STREQUAL:$<TARGET_PROPERTY:NAME>,nds_runner>:NDS_EXPERIMENT_MKDS_PACKET_HLE=1>")
 endif()
 set(NDS_PGO_MODE "OFF" CACHE STRING
     "Runner-only GCC PGO mode: OFF, GENERATE, or USE")

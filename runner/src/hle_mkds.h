@@ -7,11 +7,14 @@ struct Replacement {
     Function function = nullptr;
     const NdsStaticValidation* validation = nullptr;
     uint32_t guard_start = 0, guard_size = 0;
+    uint32_t helper_guard_start = 0, helper_guard_size = 0;
 };
 struct Statistics {
     bool rom_supported = false;
     uint32_t group_mask = 0; // VECTOR=1; compiled choice
     uint64_t scale_add = 0, cross_product = 0, transform_translate = 0;
+    uint64_t packet_calls = 0, packet_buffered = 0, packet_direct = 0;
+    uint64_t packet_words = 0, packet_batches = 0, packet_waits = 0;
 };
 bool initialize(const char* rom_sha1);
 Statistics statistics();
@@ -21,4 +24,6 @@ Replacement resolve(NdsCpu cpu, uint32_t pc, bool thumb);
 void scale_add();
 void cross_product();
 void transform_translate();
+void packet();
+void packet_resume();
 } // namespace mkds_hle

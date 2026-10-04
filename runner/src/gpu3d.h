@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+// Native packed FIFO submission. Returns the accepted prefix; callers own
+// any remaining words and preserve ordering across a genuine device stall.
+uint32_t nds_gpu3d_submit_words(uint32_t port, const uint32_t* words, uint32_t count);
 
 // Bridge to the vendored melonDS GPU3D geometry/rasterizer device model
 // (runner/vendor/melonds/, GPL-3.0-or-later — see THIRD_PARTY_ATTRIBUTION.md).

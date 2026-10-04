@@ -1123,6 +1123,15 @@ void nds_gpu3d_set_power(uint16_t powcnt1) {
                                (powcnt1 & (1u << 2)) != 0);
 }
 
+uint32_t nds_gpu3d_submit_words(uint32_t port, const uint32_t* words, uint32_t count) {
+    if (!words || port < 0x04000400u || port >= 0x04000440u || (port & 3u)) return 0;
+    g_nds.ARM9Timestamp = g_runtime_cycles;
+    uint32_t consumed = 0;
+    while (consumed < count && !nds_gxfifo_stalled())
+        g_nds.GPU.GPU3D.Write32(port, words[consumed++]);
+    return consumed;
+}
+
 void nds_gpu3d_run(unsigned long long arm9_cycles) {
     g_nds.ARM9Timestamp = arm9_cycles;
     auto& g3 = g_nds.GPU.GPU3D;
