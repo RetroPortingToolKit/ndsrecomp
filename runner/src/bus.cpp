@@ -455,6 +455,31 @@ uint32_t g_last_code_pc[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
 extern "C" uint32_t g_last_data_addr[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
 static void reset_arm9_code_timing();
 
+bool bus_dma_copy_main_ram(uint32_t src, uint32_t dst, uint32_t bytes) {
+    if (!bytes || src < 0x02000000u || src >= 0x03000000u ||
+        dst < 0x02000000u || dst >= 0x03000000u ||
+        uint64_t{src} + bytes > 0x03000000u ||
+        uint64_t{dst} + bytes > 0x03000000u) return false;
+    if (g_nds_active == NDS_ARM9 && g_cp15.dtcm_enable && g_cp15.dtcm_size) {
+        const uint64_t begin = g_cp15.dtcm_base;
+        const uint64_t end = begin + g_cp15.dtcm_size;
+        if ((src < end && uint64_t{src} + bytes > begin) ||
+            (dst < end && uint64_t{dst} + bytes > begin)) return false;
+    }
+    const uint32_t source_offset = src & 0x003FFFFFu;
+    const uint32_t dest_offset = dst & 0x003FFFFFu;
+    if (uint64_t{source_offset} + bytes > g_main_ram.size() ||
+        uint64_t{dest_offset} + bytes > g_main_ram.size()) return false;
+    // DMA is a forward load/store stream; memmove would incorrectly replace
+    // propagation when the destination overlaps a later source word.
+    if (source_offset < uint64_t{dest_offset} + bytes &&
+        dest_offset < uint64_t{source_offset} + bytes) return false;
+    uint8_t* const destination = g_main_ram.data() + dest_offset;
+    std::memcpy(destination, g_main_ram.data() + source_offset, bytes);
+    note_ram_write(destination, bytes);
+    return true;
+}
+
 void bus_init() {
     g_last_code_pc[0] = g_last_code_pc[1] = 0xFFFFFFFFu;
     g_last_data_addr[0] = g_last_data_addr[1] = 0xFFFFFFFFu;

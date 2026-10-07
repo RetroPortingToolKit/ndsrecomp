@@ -22,6 +22,7 @@
 #include "title_patches.h"
 #include "vram.h"
 #include "emu_profile.h"
+#include "dma_ram_batch.h"
 
 // Runner-only rare-condition hint owned by runtime_arm.cpp. Generated banks
 // keep calling the unchanged runtime_should_yield ABI.
@@ -2994,6 +2995,24 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
         // units per FIFO-level request (melonDS DMA::Start IterCount cap).
         uint32_t request_units = gamecard ? 1u : gxfifo ? 112u : UINT32_MAX;
         while (d.remaining && g_runtime_cycles < target_cycles) {
+#if defined(NDS_DMA_RAM_HLE)
+            // Replace the whole ordinary main-RAM burst, including per-word
+            // bus/provenance dispatch. Device requests retain their own service.
+            if (!gamecard && !gxfifo && d.src_inc == 1 && d.dst_inc == 1 &&
+                d.cur_src >= 0x02000000u && d.cur_src < 0x03000000u &&
+                d.cur_dst >= 0x02000000u && d.cur_dst < 0x03000000u) {
+                const uint32_t before = d.remaining;
+                // uint64_t and unsigned long long are distinct on some hosts;
+                // copy the clock explicitly without aliasing the runtime ABI.
+                uint64_t clock = g_runtime_cycles;
+                if (dma_ram_batch(cpu, width, target_cycles, d.cur_src, d.cur_dst,
+                                  d.remaining, d.burst_index, d.burst_start, clock)) {
+                    g_runtime_cycles = clock;
+                    request_units -= before - d.remaining;
+                    continue;
+                }
+            }
+#endif
             const uint32_t unit = dma_unit_cycles(cpu, d, width);
             g_runtime_cycles += uint64_t{unit} << (cpu == 0 ? 1u : 0u);
             if (width == 4u) {
