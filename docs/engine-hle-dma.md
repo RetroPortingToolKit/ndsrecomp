@@ -151,3 +151,155 @@ An active Pokemon route offers greater workload diversity if that established
 MPH evidence already answers the question. Preserve the DMA pilot's experimental
 status/default LLE until its actual eligible service share, benefit and gameplay
 completion/order/progression gates justify promotion.
+
+## Production candidate milestones and owner handoff
+
+Complete one winning shared-engine candidate through actual-game comparison,
+implementation, material gain and the owner's final playable feel check. The
+three-title pool does not authorize an automatic matrix or roughly 90 legs.
+Use one production configuration per selected title, reuse valid profiles, and
+spend build/gameplay budget on the winning candidate's unanswered questions.
+
+| Title and concrete useful-work route | Production floor gap / next milestone | Candidate boundary and observable checks |
+|---|---|---|
+| Metroid Prime Hunters (primary): restore `omega-active.state`, advance one bounded active Omega boss guest-frame/event window with confirmed status/progression. | Oct3 Release production runner/profile/checkpoint are ready discovery evidence. Build a coherent maintained title/framework LLE/HLE pair for candidate comparison; carry exact renderer, BIOS, coverage and checkpoint identity. | Scheduler/event ownership or geometry submission: guest progress, command completion/order, GPU frame publication, pending IRQs and ARM9/ARM7 handoff, boss movement/combat, audio/input. |
+| Mario Kart DS (companion): GCN Luigi Circuit countdown then active driving with opponents for a bounded frame window. | Sept13 Deck profile has copied-code fallback dominance and a different host/pin. Establish functioning maintained native/coverage floor and matching route identity before using it to rank new shared service work; do not treat a coverage fix as an HLE speedup. | Event/geometry completion during racing, opponents/countdown, motion/steering, visual publication, audio and progression. Existing confirmed multiplayer evidence remains valid unless the chosen shared contract affects it. |
+| Pokemon Black (companion diversity): overworld walking plus one battle/menu transition, each with observed guest progress. | Aug13 production executable/boot log exists, but no active checkpoint/profile qualified. Establish one production pin/configuration and isolated active route before its single companion comparison. | Distinguish scheduling/event cost from 3D submission in a different workload; verify transition/menu completion, input/audio, save/load and progression. |
+
+First implementation theories are a **larger shared scheduling/event service**
+and **coarse geometry-command submission/processing**, compared using route
+cost and eligible coverage. MPH's native self profile exposes GPU3D 11.07%,
+cycle helpers 10.99%, dispatch 8.62%, scheduler 5.31% and DMA/timer/IRQ 5.77%.
+These overlapping engine categories are not additive gain ceilings. Choose a
+clear shared caller boundary with a maintained operation LLE floor and a
+measurable repeated cost whose replacement can remove meaningful total work.
+Avoid hardcoded game/routine intercepts. The ordinary-RAM DMA pilot becomes the
+first winner only if measured real-route eligibility and total cost justify it;
+component-only ratios do not establish that priority.
+
+Before implementation, declare the candidate's supported operation family,
+material useful-work goal and permitted tiny visual/timing approximations.
+Roughly 10% primary-route total-work reduction is a provisional planning target,
+not a universal acceptance threshold; gain must exceed noise. Separate diagnostic
+profiles from uninstrumented timing. Compare equal guest-frame/event work, with
+all-thread CPU and wall/framework/pacing-tail observations and eligible service
+coverage; a faster guest clock alone is not success. Primary candidate ABBA gives
+two balanced pairs; each ready companion gets one A/B pair, without automatic
+repeats, route expansion or renderer/platform matrices.
+
+Define observable caller contracts before replacement: command/buffer ownership,
+geometry completion and frame publication, scheduler pending events, IRQ and
+ARM9/ARM7/IPC ordering, visible memory/provenance and completion results. Assert
+exact outputs only where exactness is claimed; minute accepted approximation
+need not preserve all intermediate state. Automated production checks cover
+boot, active play and progression, pause/resume, reset, isolated save/load and
+persistence, audio and input at affected boundaries in both build selections.
+Keep already confirmed multiplayer coverage; rerun only a focused multiplayer
+check when the winning shared CPU/IPC/IRQ/netplay contract is specifically
+affected, not as a blanket lifetime campaign/multiplayer rule.
+
+Final playable handoff: a production **Metroid Prime Hunters** HLE package from
+coherent winning title/framework pins, with its LLE build alternative, isolated
+Omega checkpoint and instructions for active boss play followed by normal
+continued play. Automated contracts and material same-work gain must pass before
+the owner receives it for the final feel/progression playtest. Report candidate
+scope, approximations, companion outcomes and any multiplayer contract touched.
+Only after owner feedback passes should it merge, become default on the proven
+platform/workload scope with build-time LLE opt-out, and close. Until then keep
+the pilot draft/default LLE.
+
+## Measurement, decision and delivery protocol
+
+Owner completion rule: establish a material game-workload gain and automated
+compatibility, then deliver the final playable build for the owner's feel check.
+After that check passes, integrate the prepared default change and close the
+scoped work. Exhaustive game coverage and completed campaigns are not additional
+completion requirements.
+
+1. **Pin the workload and floor.** Use the three games and concrete routes above.
+   Build LLE and HLE from the same title/framework revisions, compiler/options,
+   ROM/firmware identities, presentation/audio settings and initial game state;
+   only the selected implementation differs. Keep the replaced LLE service
+   runnable. An old executable is discovery evidence, not a mismatched control.
+   Use native game saves or replayed inputs when private savestates cannot cross
+   builds. First resolve the named route/build gaps; do not perfect unrelated
+   hardware before replacing a functioning operation.
+   Verify that companion routes actually exercise the replacement; an unaffected
+   title is a regression control, not evidence for that HLE service. If the
+   chosen service changes, replace an unsuitable companion in the three-title
+   set instead of accumulating extra games or claiming unexercised coverage.
+2. **Attribute only what is missing.** Reuse suitable profiles and collect at
+   most one new active-workload attribution capture per selected game in this
+   implementation round. Identify the intended service's eligible dynamic work.
+   Include worker threads and external modules or report them unresolved; a
+   main-thread symbol histogram cannot supply a whole-process cost percentage.
+   Capture diagnostics separately from performance. End discovery when there
+   is enough evidence to select a useful service, not when every subsystem has
+   a profile. The earlier six-launch discovery cap applied to that completed
+   pass, not to the whole implementation/qualification program.
+3. **Choose one replacement.** Record its caller ABI, inputs, outputs, observable
+   side effects, supported operation scope, permitted tiny differences, expected
+   cost removed, and candidate-specific useful gain before coding. Implement a
+   shared service with build-time LLE/HLE selection and explicit build identity.
+   Do not stack several speculative replacements into the same comparison.
+4. **Measure equivalent active play.** Delimit a fixed gameplay window by guest
+   frames and meaningful game events, excluding boot, warmup and teardown.
+   Choose enough active work to dominate measurement granularity once, then keep
+   it fixed. Report total process CPU milliseconds per guest frame (all threads),
+   critical-path frame work, median/p95 frame time and missed presentation/audio
+   deadlines where available. Record peak memory and code size, since constrained
+   targets matter. Preserve normal renderer and audio production; a benchmark
+   that omits presentation/audio is a core-only diagnostic, not end-to-end proof.
+   Normal capped play can show reduced CPU/frame even when FPS stays unchanged.
+   Uncapped throughput is optional corroboration only when it performs equivalent
+   rendering/audio work. Measure GPU completion/queue cost when work moves there;
+   a shorter submission call alone is not a win. Check actual movement/progress
+   and audio duration so changed guest timing cannot inflate the result.
+5. **Use a fixed comparison budget.** The primary game gets LLE/HLE/HLE/LLE:
+   two order-balanced pairs, four measured executions. Each of the two companion
+   games gets one LLE/HLE pair, two executions each. That is eight measured runs
+   per candidate on one declared host/configuration, not a Cartesian matrix.
+   Reuse their progression telemetry and final outputs; take expensive milestone
+   captures outside timing, and use isolated LLE/HLE fixtures for detailed
+   contracts. Do not automatically add separate full campaigns or trace runs.
+   Keep team builds/profiling out of the timed window, record host load/power/
+   thermal conditions, and preserve every result. A noisy or contradictory result
+   stops that screen; fix an identified condition before a bounded replacement
+   measurement. Never repeat until a passing subset appears.
+6. **Decide from useful gain and compatibility.** Report both paired percentage
+   and absolute savings, with the observed pair spread. About 10% lower whole
+   active-workload CPU time is a planning aim, not a universal acceptance rule.
+   A candidate may instead solve a declared frame-budget or stutter problem.
+   Both primary pairs must show a clear consistent useful improvement beyond
+   observed noise; two pairs are not a formal confidence interval. Companion
+   single pairs screen for large regressions, not proof of zero performance
+   change. Explain any apparent regression before broadening defaults. Exact
+   promises require exact outputs; permitted approximations use a declared
+   practical image/audio/result comparison. Check input, audio, progression,
+   affected completion/IRQ consumers, transitions and relevant pause/reset/save
+   behavior. No crash, softlock, stale buffer, lost completion or save corruption
+   passes. A huge isolated kernel ratio cannot substitute for this decision.
+7. **Hand off the actual finished candidate.** Provide the named primary game as
+   a ready-to-launch normal-paced HLE package, an LLE comparison build, isolated
+   save/checkpoint setup, launch instructions and checksums/build identity. Include
+   a short before/after report, companion results and any tiny known differences.
+   Prepare the intended default-selection/integration change in the draft PR so
+   the owner tests the package intended to ship. Ask the owner to play normally
+   and assess response, motion/collision, camera/scrolling, stereo where relevant,
+   audio rhythm and continued progression. There is no prescribed full-campaign
+   completion or multi-game human test matrix. Owner rejection reopens the
+   affected behavior; fix and recheck that change before another handoff.
+8. **Finish the scoped delivery.** After owner acceptance, integrate the reviewed
+   candidate, make HLE the default for the supported titles/platform/service,
+   retain a documented build-time LLE opt-out, and record the measured and manual
+   evidence before closing the issue. Do not add unrelated qualification gates
+   after the agreed playtest. If the replacement cannot deliver material gain,
+   preserve its branch and draft PR with results, explain why, and choose a new
+   boundary deliberately; an unsuccessful experiment is not a completed system.
+
+Initial measurements can use Windows x64 already available here. Choose the
+first constrained target with the owner, then carry only the winning candidate
+and the relevant route to that target. Measure there before claiming mobile or
+original-Xbox savings; desktop results do not establish a port's performance.
+A target-specific build/default is qualified separately rather than multiplying
+all hosts into the discovery matrix.
