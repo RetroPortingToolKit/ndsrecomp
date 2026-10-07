@@ -318,3 +318,57 @@ emulator softlock. The observed YES interior `(70,174)` plus a bounded landing
 settle is staged; no active-field timing or gain has been claimed. Evidence is
 in `nds-gpu3d-route-exit-interior-lle`. Qualification, companion packages and
 owner playtests remain unfinished; LLE stays default and the PR stays draft.
+
+### Active-field result and disposition (2026-10-07)
+
+The observed EXIT `(120,160)` followed by YES `(70,174)`, landing settle and
+forward input successfully reached Alinos room 27: frontend state 14, one live
+player, unpaused, with actual position change. This uses a fresh copied retail
+save and normal guest input, not RAM writes or rewritten snapshot identities.
+The held setup process was closed before the single serial LLE/HLE pair.
+
+Each arm ran normal rendering/audio through an approximately 180-million-ARM9-
+instruction active window after boot/turbo ended. These are active-window
+figures, not the combined setup/soak summary printed at shutdown:
+
+| Metric | LLE | HLE |
+|---|---:|---:|
+| All-thread process CPU seconds | 13.906250 | 13.765625 |
+| Wall seconds | 25.609 | 25.625 |
+| Real presents / guest VBlanks | 1,533 | 1,534 |
+| Presented FPS | 59.8618 | 59.8634 |
+| ARM9 instructions | 180,229,281 | 180,236,257 |
+| Main emulation work seconds | 8.705607 | 8.962464 |
+| Present work seconds | 1.249656 | 1.300308 |
+| Audio drain / pacing tail seconds | 15.643929 | 15.353348 |
+
+Both arms ended in room 27/state 14, unpaused, with one player, health 56 and
+identical raw position `[-217812,807,-11470]`. Audio started with zero queue
+errors/underruns, and neither arm used synthetic presents. A single current
+HLE image shows normal terrain, gun and HUD; no image-matching sweep was used.
+
+The raw CPU reduction is **1.01%**, approximately **1.08% per guest VBlank**;
+main emulation work instead increased **2.95%**. This does not establish the
+predeclared 5% material improvement. Foreign PSX Ninja/compiler processes
+appear in endpoint inventories; those inventories do not prove contention
+throughout the active windows. GPU trace, frame hashing and host profiling were
+disabled, but the unchanged native-bank dispatcher retains its sampled cost
+counters in both arms. This is a matched full-runtime screening result, not
+wholly instrumentation-free qualification or a general game-performance claim.
+
+**Park this poll-service candidate in draft with LLE default.** No automatic
+repeat, companion build matrix or owner HLE handoff follows a nonmaterial
+primary result. A further implementation should remove broader measured
+geometry/event work rather than repeat this pre-deadline leaf experiment.
+
+Exact artifacts are under `F:/Projects/_engine-hle-bulk-20261006/`:
+`nds-gpu3d-pair-{lle,hle}/route.json`, `stdout.log`, `stderr.log`, endpoint host
+inventories where nonempty, `nds-gpu3d-pair-hle/ready.png`, and
+`nds-gpu3d-binary-manifest.json`. The LLE executable SHA256 is
+`22e252dc9e16afc4742620168e0ae17ce03ca93e9a891f92af6e95dc43626a0c`;
+HLE is `1d3568557f0bd5285fbaf0d9661d0f5a324d20c6251a2f2f609263898344abdb`.
+Their precommit build IDs are respectively `77f32e6-dirty` and
+`77f32e6-dirty-gpu3d-service-hle`; the implementation was published as
+`0ef72a8e505860777e1c7df693b063b1780ec6fb`. Binaries were not rebuilt for this
+documentation update. Focused 36-case device checks remain passed; the broader
+engine optimization and owner completion gate remain open.
