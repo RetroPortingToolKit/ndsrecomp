@@ -5,6 +5,7 @@
 // slots). The vendored translation units are unmodified melonDS 1.0rc.
 
 #include "gpu3d.h"
+#include "gpu3d_poll_service.h"
 #include "host_profile.h"
 
 #include <chrono>
@@ -1101,6 +1102,7 @@ void nds_gpu3d_write(uint32_t addr, uint32_t value, uint32_t width) {
     // (GXFIFO stall/IRQ/DMA decisions inside the vendored write paths).
     g_nds.ARM9Timestamp = g_runtime_cycles;
     auto& g3 = g_nds.GPU.GPU3D;
+#if NDS_GPU3D_TRACE
     ++g_gx_write_trace_count;
     NdsGxWriteTraceEntry& e =
         g_gx_write_trace[(g_gx_write_trace_count - 1) % kGxWriteTraceSize];
@@ -1109,13 +1111,16 @@ void nds_gpu3d_write(uint32_t addr, uint32_t value, uint32_t width) {
         g3.GeometryEnabled ? 1u : 0u, g3.GXStat, g3.CmdPIPE.Level(),
         0u, 0u,
     };
+#endif
     switch (width) {
         case 1:  g3.Write8(addr, static_cast<melonDS::u8>(value)); break;
         case 2:  g3.Write16(addr, static_cast<melonDS::u16>(value)); break;
         default: g3.Write32(addr, value); break;
     }
+#if NDS_GPU3D_TRACE
     e.gxstat_after = g3.GXStat;
     e.pipe_after = g3.CmdPIPE.Level();
+#endif
 }
 
 void nds_gpu3d_set_power(uint16_t powcnt1) {
@@ -1126,8 +1131,22 @@ void nds_gpu3d_set_power(uint16_t powcnt1) {
 void nds_gpu3d_run(unsigned long long arm9_cycles) {
     g_nds.ARM9Timestamp = arm9_cycles;
     auto& g3 = g_nds.GPU.GPU3D;
+#if NDS_GPU3D_TRACE
     const uint32_t stat_before = g3.GXStat;
     const int32_t cc_before = g3.CycleCount;
+#endif
+#if NDS_GPU3D_SERVICE_HLE
+    if (nds_gpu3d_settle_poll(g3, arm9_cycles, g_nds.ARM9ClockShift)) {
+#if NDS_GPU3D_TRACE
+        ++g_gx_run_trace_count;
+        g_gx_run_trace[(g_gx_run_trace_count - 1) % kGxRunTraceSize] = {
+            g_gx_run_trace_count, arm9_cycles, stat_before, g3.GXStat,
+            cc_before, g3.CycleCount,
+        };
+#endif
+        return;
+    }
+#endif
     // CPU-SIDE GEOMETRY ENGINE. Called once per scheduler round (~600k/s), so
     // an unconditional region would cost two tick reads per round for a bucket
     // that is usually zero. Instead the predicate replicates GPU3D::Run's own
@@ -1152,11 +1171,13 @@ void nds_gpu3d_run(unsigned long long arm9_cycles) {
     NdsEmuScopeIf emu_region(NDS_EMU_GEOM, geometry_work);
     g3.Run();
     }
+#if NDS_GPU3D_TRACE
     ++g_gx_run_trace_count;
     g_gx_run_trace[(g_gx_run_trace_count - 1) % kGxRunTraceSize] = {
         g_gx_run_trace_count, arm9_cycles,
         stat_before, g3.GXStat, cc_before, g3.CycleCount,
     };
+#endif
 }
 
 int32_t nds_gpu3d_cycles_to_run() {

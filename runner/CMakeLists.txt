@@ -7,6 +7,32 @@ include("${CMAKE_CURRENT_LIST_DIR}/../cmake/NdsTomlPlusPlus.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../external/arm-recomp-core/cmake/ArmRecompCore.cmake")
 enable_testing()
 
+set(NDS_GPU3D_SERVICE_IMPLEMENTATION "LLE" CACHE STRING
+    "Build-fixed geometry polling service: LLE or HLE")
+set_property(CACHE NDS_GPU3D_SERVICE_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
+if(NOT NDS_GPU3D_SERVICE_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
+    message(FATAL_ERROR "NDS_GPU3D_SERVICE_IMPLEMENTATION must be LLE or HLE")
+endif()
+if(NDS_GPU3D_SERVICE_IMPLEMENTATION STREQUAL "HLE")
+    set_property(SOURCE src/gpu3d.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS NDS_GPU3D_SERVICE_HLE=1)
+endif()
+option(NDS_GPU3D_TRACE "Record dense GPU3D poll/write diagnostic history" OFF)
+if(NDS_GPU3D_TRACE)
+    set_property(SOURCE src/gpu3d.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS NDS_GPU3D_TRACE=1)
+endif()
+message(STATUS "Geometry polling service: ${NDS_GPU3D_SERVICE_IMPLEMENTATION}; dense trace: ${NDS_GPU3D_TRACE}")
+set(NDS_DMA_RAM_IMPLEMENTATION "LLE" CACHE STRING
+    "Developer build choice for contiguous main-RAM DMA: LLE or HLE")
+set_property(CACHE NDS_DMA_RAM_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
+if(NOT NDS_DMA_RAM_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
+    message(FATAL_ERROR "NDS_DMA_RAM_IMPLEMENTATION must be LLE or HLE")
+endif()
+if(NDS_DMA_RAM_IMPLEMENTATION STREQUAL "HLE")
+    add_compile_definitions(NDS_DMA_RAM_HLE=1)
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -63,6 +89,21 @@ if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
         string(APPEND NDS_BUILD_VARIANT "-groups${NDS_MKDS_HLE_GROUP_MASK}")
     endif()
 endif()
+if(NDS_DMA_RAM_IMPLEMENTATION STREQUAL "HLE")
+    if(NDS_BUILD_VARIANT)
+        string(APPEND NDS_BUILD_VARIANT "-dma-ram-hle")
+    else()
+        set(NDS_BUILD_VARIANT "dma-ram-hle")
+    endif()
+endif()
+if(NDS_GPU3D_SERVICE_IMPLEMENTATION STREQUAL "HLE")
+    if(NDS_BUILD_VARIANT)
+        string(APPEND NDS_BUILD_VARIANT "-gpu3d-service-hle")
+    else()
+        set(NDS_BUILD_VARIANT "gpu3d-service-hle")
+    endif()
+endif()
+message(STATUS "Main-RAM DMA implementation: ${NDS_DMA_RAM_IMPLEMENTATION}")
 set(NDS_PGO_MODE "OFF" CACHE STRING
     "Runner-only GCC PGO mode: OFF, GENERATE, or USE")
 set_property(CACHE NDS_PGO_MODE PROPERTY STRINGS OFF GENERATE USE)
@@ -209,6 +250,24 @@ if(TITLE_GROUP_COUNT GREATER 0)
     endforeach()
     set(TITLE_BANK_SOURCES ${TITLE_BANK_BODIES} ${TITLE_BANK_DISPATCH})
 endif()
+set(NDS_PREBUILT_BANKS_ARCHIVE "" CACHE FILEPATH
+    "Optional verified native-bank archive; caller must match sources/compiler/ABI")
+set(NDS_PREBUILT_BANKS_SHA256 "" CACHE STRING
+    "Required SHA256 identity for NDS_PREBUILT_BANKS_ARCHIVE")
+if(NDS_PREBUILT_BANKS_ARCHIVE)
+    if(NOT EXISTS "${NDS_PREBUILT_BANKS_ARCHIVE}" OR
+       NOT NDS_PREBUILT_BANKS_SHA256)
+        message(FATAL_ERROR "prebuilt native banks require an existing archive and expected SHA256")
+    endif()
+    file(SHA256 "${NDS_PREBUILT_BANKS_ARCHIVE}" _banks_archive_sha256)
+    if(NOT _banks_archive_sha256 STREQUAL NDS_PREBUILT_BANKS_SHA256)
+        message(FATAL_ERROR "prebuilt native-bank archive SHA256 differs")
+    endif()
+    add_library(nds_banks STATIC IMPORTED)
+    set_target_properties(nds_banks PROPERTIES
+        IMPORTED_LOCATION "${NDS_PREBUILT_BANKS_ARCHIVE}")
+    message(STATUS "Using verified native-bank archive: ${_banks_archive_sha256}")
+else()
 add_library(nds_banks STATIC
     ${GEN}/arm9_bios.c
     ${GEN}/arm9_bios_dispatch.c
@@ -229,6 +288,7 @@ target_include_directories(nds_banks PRIVATE
     ${NDS_ARM_RECOMP_INCLUDE_DIRS}
     ${NDS_SM64DS_BANK_DIR}
     ${TITLE_GROUP_DIRS})
+endif()
 set_source_files_properties(
     ${GEN}/arm9_bios.c ${GEN}/arm9_bios_dispatch.c
     ${GEN}/arm7_bios.c ${GEN}/arm7_bios_dispatch.c
@@ -937,6 +997,15 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_link_libraries(mem_timing_test PRIVATE nds_armv4t nds_support)
   add_test(NAME mem_timing_test COMMAND mem_timing_test)
 
+  get_target_property(DMA_BATCH_SOURCES mem_timing_test SOURCES)
+  list(REMOVE_ITEM DMA_BATCH_SOURCES tests/mem_timing_test.cpp)
+  add_executable(dma_ram_batch_test tests/dma_ram_batch_test.cpp ${DMA_BATCH_SOURCES})
+  get_target_property(DMA_BATCH_INCLUDES mem_timing_test INCLUDE_DIRECTORIES)
+  target_include_directories(dma_ram_batch_test PRIVATE ${DMA_BATCH_INCLUDES})
+  ndsrecomp_link_tomlpp(dma_ram_batch_test)
+  target_link_libraries(dma_ram_batch_test PRIVATE nds_armv4t nds_support)
+  add_test(NAME dma_ram_batch_test COMMAND dma_ram_batch_test)
+
   add_executable(savestate_slots_test
       tests/savestate_slots_test.cpp
       src/savestate_slots.cpp)
@@ -979,6 +1048,15 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_compile_definitions(video_savestate_test PRIVATE
       NDS_BUILD_VIDEO_SAVESTATE_TEST=1)
   add_test(NAME video_savestate_test COMMAND video_savestate_test)
+  get_target_property(GPU3D_POLL_SOURCES video_savestate_test SOURCES)
+  list(REMOVE_ITEM GPU3D_POLL_SOURCES tests/video_savestate_test.cpp)
+  add_executable(gpu3d_poll_service_test
+      tests/gpu3d_poll_service_test.cpp ${GPU3D_POLL_SOURCES})
+  get_target_property(GPU3D_POLL_INCLUDES video_savestate_test INCLUDE_DIRECTORIES)
+  target_include_directories(gpu3d_poll_service_test PRIVATE ${GPU3D_POLL_INCLUDES})
+  target_compile_definitions(gpu3d_poll_service_test PRIVATE
+      NDS_BUILD_VIDEO_SAVESTATE_TEST=1)
+  add_test(NAME gpu3d_poll_service_test COMMAND gpu3d_poll_service_test)
 
   # AUXSPI backup-chip protocol: pins the write-enable latch's lifetime across
   # chip-select transfers, which is what silently dropped every cartridge save.

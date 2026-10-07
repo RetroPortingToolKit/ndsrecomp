@@ -112,6 +112,10 @@ extern "C" void runtime_clear_fast_limit(void);
 
 // Bus lifecycle / image loading (implemented in bus.cpp).
 void bus_init();
+// Whole contiguous main-RAM DMA copy. Returns false without writes when the
+// operation crosses a physical mirror, aliases/overlaps, or maps to TCM.
+// Publishes write provenance and code invalidation once for the copied span.
+bool bus_dma_copy_main_ram(uint32_t src, uint32_t dst, uint32_t bytes);
 void bus_debug_history_reset();
 void bus_load_arm9_bios(const uint8_t* p, uint32_t n);
 void bus_load_arm7_bios(const uint8_t* p, uint32_t n);
