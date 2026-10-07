@@ -232,3 +232,89 @@ Resolve specific owner feedback. Positive feedback plus demonstrated material
 gain supports Windows default-on promotion with build-time LLE opt-out, then
 merge and issue closure. Report the supported title/platform scope and known
 approximation. Ports follow later rather than blocking the Windows result.
+
+## Current implementation: shared geometry poll service
+
+The first production experiment replaces the shared `nds_gpu3d_run` service's
+no-event intervals. The October 3 MPH profile measured GPU3D at 11.07% of the
+native emulation thread; repeated geometry polling is a concrete opportunity,
+not a promise that this percentage can be recovered. The larger command and
+rendering service remains available for intervals that actually contain work.
+
+`NDS_GPU3D_SERVICE_IMPLEMENTATION=LLE|HLE` fixes the implementation at build time;
+LLE remains the default. HLE settles disabled, flush-waiting and empty intervals,
+and positive command countdowns before their next deadline, directly from live
+device state. Due commands, busy-pipeline completion, status/IRQ publication,
+MMIO and frame/renderer barriers retain the maintained device path. Backward
+timestamps and exceptional signed-countdown intervals fall back before mutation.
+No persistent eligibility cache, shadow execution or runtime handover is used.
+The public caller ABI and snapshot build-identity checks remain intact; the HLE
+build carries the distinct `gpu3d-service-hle` identity suffix.
+
+Dense GX diagnostic history now requires `NDS_GPU3D_TRACE=ON`. Production LLE
+and HLE both use OFF: this shared production-floor cleanup is not credited as
+an HLE gain. Normal SDL rendering, compute rendering and audio remain enabled.
+The maintained MPH math implementation and ordinary-RAM DMA choice are equal
+in both arms, so they cannot explain a pair's difference.
+
+The new geometry defines apply only to `gpu3d.cpp`, avoiding unrelated guest-bank
+recompilation. An optional `NDS_PREBUILT_BANKS_ARCHIVE` plus mandatory expected
+`NDS_PREBUILT_BANKS_SHA256` can import a separately verified archive. Its caller
+must establish matching guest sources, compiler and runtime ABI; the hash check
+establishes artifact identity, not ABI compatibility by itself. This experiment
+uses the same copied October 3 MPH archive in both arms: SHA256
+`ee36ba31bda670612de6372324eea1f236450c6840acb69838fb723030fa9f89`.
+All 1,424 recorded dependencies are present and predate the archive, current
+owned ABI headers match, the compiler executable matches, and bank dependencies
+contain neither new geometry macro. Guest bodies were not regenerated.
+
+The predeclared useful target is at least 5% less whole-process CPU or active
+frame work on MPH beyond observed noise. Normal pacing may cap reported FPS;
+all-thread process CPU and presented/emulated work counters then determine
+whether the service removed useful runtime cost. This candidate-specific target
+does not replace the owner's material-gain judgment or establish other titles'
+acceptance thresholds.
+
+The focused real-device test passed 36 idle, disabled, flush, pre-deadline,
+due-command and busy-completion cases, plus a backward-timestamp case. It checks
+the affected timestamp/countdown, status, FIFO/pipeline and matrix-command
+outcomes against the maintained device implementation. Production qualification
+is still pending; these tests do not establish a whole-game gain or playability.
+
+MPH qualification starts from normal boot and an isolated copied retail save,
+using the existing Adventure input route through SDL. Old Omega debug states
+are incompatible with these build identities and will not be rewritten or
+accepted by weakening protection. Confirm the actual active scene once, then
+run one matched full-runtime pair with equal useful guest work. Mario Kart DS
+and Pokemon Black packages follow only if this primary experiment is promising.
+
+The first current LLE SDL setup completed with normal audio after unmeasured
+turbo boot: 11,428 guest VBlanks, 3.848 billion ARM9 instructions, no underruns,
+and a clean requested exit. Setup took 124.265 seconds, including 63.843 seconds
+of turbo boot; these are route-preparation figures, not benchmark results.
+The copied retail save loaded **Alinos's ship Save Game interface**, not the
+older route's assumed Celestial Archives field. Therefore active-field
+qualification and timing remain pending. Its visible bottom-screen EXIT is a
+concrete next route action; no guessed input matrix or performance claim was
+made from the ship screen. Evidence: `nds-gpu3d-route-lle/route.json`,
+`stderr.log` and the single `ready.png` under the experiment artifact root.
+
+The first deliberate EXIT correction used an incorrectly read vertical
+coordinate `(120,184)`. It remained in ship-interface state 12 with no players
+and position `[0,0,0]` before/after forward input; it did not qualify active
+gameplay. Read-only inspection of the existing 448x384 image identifies the
+button's bottom-screen vertical edges at 143/144 and 179/180: the tap was below
+the button. The staged interior point is `(120,160)`. SDL's native-to-window
+centering/scale conversion and at least three guest-frame input hold are
+consistent; this is a route-coordinate correction, not an emulator change.
+Corrected field readiness and the production pair are still pending; evidence
+is in `nds-gpu3d-route-corrected-lle` and `nds-ui-coordinate-check.log`.
+
+The next interior EXIT setup completed in 109.547 seconds with normal audio
+and no underruns. Its image shows the native **EXIT SHIP: ARE YOU SURE? YES/NO**
+dialog: the corrected touch worked. State 12, zero players and zero position
+therefore reflect a pending confirmation, not proof of ignored input or an
+emulator softlock. The observed YES interior `(70,174)` plus a bounded landing
+settle is staged; no active-field timing or gain has been claimed. Evidence is
+in `nds-gpu3d-route-exit-interior-lle`. Qualification, companion packages and
+owner playtests remain unfinished; LLE stays default and the PR stays draft.
