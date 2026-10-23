@@ -4,6 +4,7 @@
 bool nds_arm9_native_run() { return false; }
 void nds_arm9_native_note_write() {}
 void nds_arm9_native_clear() {}
+void nds_arm9_native_census(bool, bool) {}
 std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #else
 #include "state.h"
@@ -38,11 +39,14 @@ namespace {
 constexpr uint64_t cycles_per_instruction=2;
 bool diagnostic() {static const bool on=std::getenv("NDS_ARM9_NATIVE_DIAGNOSTIC")!=nullptr;return on;}
 struct Watch { const uint32_t* generation;uint32_t value; };
+bool census_enabled=false;
 class Native final : public Dynarmic::A32::UserCallbacks {
 public:
     std::unique_ptr<Dynarmic::A32::Jit> jit;
     std::vector<Watch> watches;
     std::unordered_map<const uint32_t*,size_t> watched;
+    std::unordered_map<uint64_t,uint64_t> floor_census;
+    uint64_t checks_by_cpu[2]={};
     uint64_t remaining=0,entries=0,instructions=0,floors=0,devices=0,invalidations=0,unknown_write_checks=0;
     uint32_t pending_pc=0;
     bool pending=false,known_write=false;
@@ -51,9 +55,9 @@ public:
         Dynarmic::A32::UserConfig conf;
         conf.callbacks=this;conf.arch_version=Dynarmic::A32::ArchVersion::v5TE;
         conf.code_cache_size=32*1024*1024;
-        // Callbacks need the canonical register values at their memory op.
-        // Keep these stores until a qualified, narrower callback barrier exists.
-        conf.optimizations=Dynarmic::all_safe_optimizations&~Dynarmic::OptimizationFlag::GetSetElimination;
+        // Normal bus callbacks use address/value arguments, current PC and
+        // control state. General registers/flags are canonical at Run return.
+        conf.optimizations=Dynarmic::all_safe_optimizations;
         jit=std::make_unique<Dynarmic::A32::Jit>(conf);mapping=g_cp15;
     }
     void clear() {
@@ -116,7 +120,11 @@ public:
         uint32_t off=0;const auto* w=nds_busf_classify(addr,&off);
         return w&&w->data&&uint64_t(off)+width<=uint64_t(w->mask)+1;
     }
-    void device() {publish();++devices;jit->HaltExecution();}
+    void device() {
+        g_cpu.R[15]=jit->Regs()[15];
+        g_cpu.cpsr=(g_cpu.cpsr&~0xffu)|(jit->Cpsr()&0xffu);
+        ++devices;jit->HaltExecution();
+    }
     uint8_t MemoryRead8(uint32_t a) override {if(!ram(a,1))device();return bus_read_u8(a);}
     uint16_t MemoryRead16(uint32_t a) override {if(!ram(a&~1u,2))device();return bus_read_u16(a&~1u);}
     uint32_t MemoryRead32(uint32_t a) override {
@@ -132,9 +140,12 @@ public:
         a&=~(width-1u);
         uint32_t off=0;const auto* w=nds_busf_classify(a,&off);
         const uint32_t* generation=w&&w->data&&w->gen? w->gen+(off>>12):nullptr;
-        if(!ram(a,width))device();
+        const bool ordinary_ram=ram(a,width);
+        if(!ordinary_ram)device();
         else {g_cpu.R[15]=jit->Regs()[15];g_cpu.R[14]=jit->Regs()[14];}
-        known_write=true;
+        // Only this inline RAM store is covered by the exact generation test
+        // below. I/O may invoke another bus master, whose writes must stay visible.
+        known_write=ordinary_ram;
         if(width==4)bus_write_u32(a,value);
         else if(width==2)bus_write_u16(a,uint16_t(value));
         else bus_write_u8(a,uint8_t(value));
@@ -145,7 +156,11 @@ public:
     void MemoryWrite16(uint32_t a,uint16_t v) override {write(a,v,2);}
     void MemoryWrite32(uint32_t a,uint32_t v) override {write(a,v,4);}
     void MemoryWrite64(uint32_t a,uint64_t v) override {write(a,uint32_t(v),4);write(a+4,uint32_t(v>>32),4);}
-    void InterpreterFallback(uint32_t pc,size_t n) override {pending=true;pending_pc=pc;floors+=n;jit->HaltExecution();}
+    void InterpreterFallback(uint32_t pc,size_t n) override {
+        pending=true;pending_pc=pc;floors+=n;
+        if(census_enabled)floor_census[(uint64_t(pc)<<1)|((jit->Cpsr()&CPSR_T_BIT)?1u:0u)]+=n;
+        jit->HaltExecution();
+    }
     void CallSVC(uint32_t) override {pending=true;pending_pc=jit->Regs()[15];jit->HaltExecution();}
     void ExceptionRaised(uint32_t pc,Dynarmic::A32::Exception) override {pending=true;pending_pc=pc;jit->HaltExecution();}
     void AddTicks(uint64_t n) override {
@@ -155,10 +170,12 @@ public:
     uint64_t GetTicksRemaining() override {return remaining;}
     void unknown_write() {
         if(known_write)return;
+        const uint64_t before=unknown_write_checks;
         for(const auto& watch:watches) {
             ++unknown_write_checks;
-            if(*watch.generation!=watch.value){clear();return;}
+            if(*watch.generation!=watch.value){checks_by_cpu[g_nds_active==NDS_ARM7?1:0]+=unknown_write_checks-before;clear();return;}
         }
+        checks_by_cpu[g_nds_active==NDS_ARM7?1:0]+=unknown_write_checks-before;
     }
 };
 std::unique_ptr<Native> native;
@@ -210,16 +227,35 @@ bool nds_arm9_native_run() {
 }
 void nds_arm9_native_note_write() {if(native)native->unknown_write();}
 void nds_arm9_native_clear() {if(native)native->clear();}
+void nds_arm9_native_census(bool enabled,bool reset) {
+    census_enabled=enabled;
+    if(reset&&native)native->floor_census.clear();
+}
 std::string nds_arm9_native_json() {
     std::string out="{\"available\":"+std::string(supported_host()?"true":"false")+
         ",\"diagnostic\":"+std::string(diagnostic()?"true":"false")+
+        ",\"census_enabled\":"+std::string(census_enabled?"true":"false")+
         ",\"cycles_per_instruction\":"+std::to_string(cycles_per_instruction);
     if(native)out+=",\"entries\":"+std::to_string(native->entries)+
         ",\"instructions\":"+std::to_string(native->instructions)+
         ",\"reference_stops\":"+std::to_string(native->floors)+
         ",\"device_handoffs\":"+std::to_string(native->devices)+
         ",\"invalidations\":"+std::to_string(native->invalidations)+
-        ",\"unknown_write_checks\":"+std::to_string(native->unknown_write_checks);
+        ",\"unknown_write_checks\":"+std::to_string(native->unknown_write_checks)+
+        ",\"write_checks_arm9\":"+std::to_string(native->checks_by_cpu[0])+
+        ",\"write_checks_arm7\":"+std::to_string(native->checks_by_cpu[1]);
+    out+=",\"reference_census\":[";
+    bool comma=false;
+    if(native)for(const auto& [key,hits]:native->floor_census) {
+        const auto pc=uint32_t(key>>1);const bool thumb=(key&1)!=0;
+        uint32_t word=0;const bool valid=bus_debug_copy(0,pc&~3u,reinterpret_cast<uint8_t*>(&word),4);
+        const auto instruction=thumb?armv4t::ThumbDecoder::decode(uint16_t(word>>((pc&2)*8)),pc):armv4t::ArmDecoder::decode(word,pc);
+        if(comma)out+=",";comma=true;
+        out+="{\"pc\":"+std::to_string(pc)+",\"thumb\":"+std::to_string(thumb)+
+            ",\"hits\":"+std::to_string(hits)+",\"bytes_valid\":"+(valid?"true":"false")+
+            ",\"word\":"+std::to_string(word)+",\"op\":"+std::to_string(unsigned(instruction.op))+"}";
+    }
+    out+="]";
     return out+"}";
 }
 #endif

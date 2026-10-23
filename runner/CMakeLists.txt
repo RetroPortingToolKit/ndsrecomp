@@ -415,7 +415,7 @@ if(NDS_MKDS_PERFORMANCE)
 endif()
 
 if(NDS_ARM9_DYNARMIC_ENABLED)
-    string(APPEND NDS_BUILD_VARIANT "-arm9-native-v1-timing2-dynarmica41c380")
+    string(APPEND NDS_BUILD_VARIANT "-arm9-native-v2-timing2-dynarmica41c380")
 endif()
 
 # Build one registry translation unit from the configured dispatch filenames.

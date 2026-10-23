@@ -6,4 +6,5 @@
 bool nds_arm9_native_run();
 void nds_arm9_native_note_write();
 void nds_arm9_native_clear();
+void nds_arm9_native_census(bool enabled, bool reset);
 std::string nds_arm9_native_json();

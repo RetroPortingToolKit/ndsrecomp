@@ -71,3 +71,19 @@ Next: build the game adapter, focused current-build restore/basic visual check,
 then ONE matched NAS native candidate pair with identical features and sampled
 ARM9 attribution. No matrices. Full race and owner handoff remain conditional
 on a material qualified gain. No final integration without owner approval.
+
+Nativev1 qualification and currentv2 work
+- Nativev1 matched NAS pair had no retained overall CPU-work improvement:
+  25.486 ->25.567 process CPU ms/frame. Sampled ARM9 inclusive context estimate
+  was11.03 ->9.23ms, including2.59ms reference execution, still above5.5ms.
+  Native leg had .313fewer background cores, so FPS47.76 ->49.24 is confounded.
+- v2 enables normal native register/flag optimization. Device callbacks retain
+  current PC/control context; bus operands arrive as arguments. Complete CPU
+  state is published at Run return before exceptions or scheduler work. Exact
+  intermediate registers are not required by the Performance output contract.
+- Optimizer-enabled differential and completed-I/O/PC-context tests pass. Census
+  of owned fallback operations is explicitly armed through arm9_native_census;
+  the older Tier3 coverage API intentionally omits these already-owned bytes.
+- Generation-check counters now distinguish ARM9/ARM7. Known-write suppression
+  covers only an inline RAM store; I/O callbacks retain nested bus-master write
+  notifications. v2 has no measured game performance claim yet.

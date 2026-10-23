@@ -74,14 +74,14 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     uint8_t MemoryRead8(uint32_t a) override {return permitted(a,1,false)?ram.read8(a):0;}
     uint16_t MemoryRead16(uint32_t a) override {return permitted(a,2,false)?ram.read16(a&~1u):0;}
     uint32_t MemoryRead32(uint32_t a) override {
-        if(complete_io&&a>=0x04000000u){++device_reads;jit->HaltExecution();return device_value;}
+        if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"read callback PC survives optimization");++device_reads;jit->HaltExecution();return device_value;}
         return permitted(a,4,false)?std::rotr(ram.read32(a&~3u),int((a&3)*8)):0;
     }
     uint64_t MemoryRead64(uint32_t a) override {return uint64_t(MemoryRead32(a))|uint64_t(MemoryRead32(a+4))<<32;}
     void MemoryWrite8(uint32_t a,uint8_t v) override {if(permitted(a,1,true))ram.write8(a,v);}
     void MemoryWrite16(uint32_t a,uint16_t v) override {if(permitted(a,2,true))ram.write16(a&~1u,v);}
     void MemoryWrite32(uint32_t a,uint32_t v) override {
-        if(complete_io&&a>=0x04000000u){++device_writes;device_value=v;jit->HaltExecution();return;}
+        if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"write callback PC survives optimization");++device_writes;device_value=v;jit->HaltExecution();return;}
         if(permitted(a,4,true))ram.write32(a&~3u,v);
     }
     void MemoryWrite64(uint32_t a,uint64_t v) override {MemoryWrite32(a,uint32_t(v));MemoryWrite32(a+4,uint32_t(v>>32));}
@@ -108,7 +108,7 @@ int main() {
     Dynarmic::A32::UserConfig conf;
     conf.callbacks=&env;conf.arch_version=Dynarmic::A32::ArchVersion::v5TE;
     conf.code_cache_size=16*1024*1024;conf.check_halt_on_memory_access=true;
-    conf.optimizations=Dynarmic::all_safe_optimizations&~Dynarmic::OptimizationFlag::GetSetElimination;
+    conf.optimizations=Dynarmic::all_safe_optimizations;
     Dynarmic::A32::Jit jit(conf);env.jit=&jit;
     std::mt19937 random(0x4e445339);
     std::vector<uint32_t> arm;
