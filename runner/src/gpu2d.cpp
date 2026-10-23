@@ -141,6 +141,9 @@ NdsGpu2dDirectFrame g_direct_current_frame{};
 NdsGpu2dDirectFrame g_direct_present_frame{};
 unsigned g_direct_object_write = 0;
 bool g_direct_present_enabled = false;
+bool g_direct_windows_enabled = false;
+std::array<std::array<uint32_t, 192 * 4>, 2> g_direct_raster_params{};
+std::atomic<uint64_t> g_window_direct_unsupported_lines{0};
 bool g_direct_frame_active = false;
 
 // Internal-resolution (HD) emit. Two native-width surfaces describing the 2D
@@ -217,7 +220,8 @@ NdsGpu2dDirectClass direct_scene_class() {
     if (!bg0_3d) return NDS_GPU2D_DIRECT_NO_BG0_3D;
     // The direct OBJ presenter has no DS window mask or OBJ-window coverage.
     // Route every windowed scene through the adaptive compositor instead.
-    if (u.dispcnt & NDS_GPU2D_DISPCNT_WINDOW_ENABLE_MASK)
+    if ((!g_direct_windows_enabled || g_adaptive_skybox_fill) &&
+        (u.dispcnt & NDS_GPU2D_DISPCNT_WINDOW_ENABLE_MASK))
         return NDS_GPU2D_DIRECT_WINDOWS;
     const uint32_t extra_bg_mask = (u.dispcnt >> 9u) & 7u;
     if (extra_bg_mask != 0u) return NDS_GPU2D_DIRECT_EXTRA_BG;
@@ -1083,6 +1087,10 @@ struct LineJob {
     uint32_t capw = 0;
     uint8_t direct_class = 0;
     uint8_t direct_extra_bg_mask = 0;
+    uint32_t* direct_pixels = nullptr;
+    uint32_t* direct_params = nullptr;
+    uint16_t direct_width = 0;
+    bool direct_powered = true;
     // Staged display capture. The pixels are produced by whichever thread
     // renders the line; the write into guest VRAM, and the texture-generation
     // bump that goes with it, are applied by the scheduler thread in line
@@ -1645,6 +1653,15 @@ void latch_line(int y, LineJob& job) {
     }
     job.engine_active[0] = !g_direct_frame_active;
     job.engine_active[1] = true;
+    job.direct_pixels = nullptr;
+    job.direct_params = nullptr;
+    if (g_direct_frame_active && g_direct_current_frame.raster_params) {
+        job.direct_width = g_direct_current_frame.width;
+        job.direct_pixels = g_direct_object_frame[g_direct_object_write].data() +
+            static_cast<size_t>(y) * job.direct_width;
+        job.direct_params = g_direct_raster_params[g_direct_object_write].data() + y * 4;
+        job.direct_powered = enabled(0);
+    }
 
     // DISPCAPCNT latches at the top of the frame; setting the enable bit
     // mid-frame does not capture until the next frame. melonDS's arm skips
@@ -1665,6 +1682,9 @@ void latch_line(int y, LineJob& job) {
         job.capw = kCapW[size];
         job.cap = y < kCapH[size];
     }
+    // The optional presentation path must not suppress a newly latched
+    // guest capture. Its canonical CPU capture source remains authoritative.
+    if (job.direct_pixels && job.cap) job.engine_active[0] = true;
     job.bg0_3d = (job.unit[0].dispcnt & 0x8u) != 0 &&
                  (job.unit[0].dispcnt & 0x100u) != 0;
 
@@ -1722,13 +1742,54 @@ void latch_line(int y, LineJob& job) {
     }
 }
 
+void render_direct_window_line(const LineJob& job) {
+    const Unit& u = job.unit[0];
+    const bool views = job.palette[0] && job.oam[0] && job.vram[0];
+    const bool supported = views && job.direct_powered && job.screen[0] == 0u && !job.cap &&
+        ((u.dispcnt >> 16) & 3u) == 1u &&
+        (u.dispcnt & 0x108u) == 0x108u && !(u.dispcnt & 0xE00u);
+    if (!supported)
+        g_window_direct_unsupported_lines.fetch_add(1, std::memory_order_relaxed);
+    if (!views) {
+        std::fill_n(job.direct_pixels, job.direct_width, 0x4040u);
+        std::fill_n(job.direct_params, 4, 0u);
+        return;
+    }
+    std::array<Pixel, kMaxAdaptiveWidth> obj{};
+    std::array<uint8_t, kMaxAdaptiveWidth> obj_window{};
+    render_obj_line(u, 0, job.y, obj.data(), job.direct_width,
+        job.oam[0], job.palette[0], *job.vram[0], obj_window.data());
+    const NdsGpu2dWindowState windows{u.dispcnt, u.win};
+    const int extra = (job.direct_width - 256) / 2;
+    const bool blank = (u.dispcnt & 0x80u) != 0u;
+    for (int x = 0; x < job.direct_width; ++x) {
+        const int hud_x = nds_gpu2d_adaptive_hud_x(x, job.direct_width,
+            g_adaptive_hud_anchor, g_adaptive_hud_center_width);
+        const uint8_t mask = nds_gpu2d_window_mask(windows,
+            nds_gpu2d_adaptive_window_x(x, extra, hud_x),
+            static_cast<uint8_t>(job.y), obj_window[x] != 0u);
+        const auto& p = obj[x];
+        job.direct_pixels[x] = blank
+            ? nds_gpu2d_pack_direct_pixel(0x003F3F3Fu, 0, 0, true, 0x10u)
+            : nds_gpu2d_pack_direct_pixel(p.color, p.priority, p.alpha, p.valid, mask);
+    }
+    job.direct_params[0] = rgb6(view16(job.palette[0], 0));
+    job.direct_params[1] = blank ? 0u :
+        uint32_t(u.bldcnt) | (uint32_t(u.master_bright) << 16);
+    job.direct_params[2] = uint32_t(u.eva) | (uint32_t(u.evb) << 8) |
+        (uint32_t(u.evy) << 16) | (uint32_t(u.bgcnt[0] & 3u) << 24);
+    job.direct_params[3] = u.bgx[0] & 0x1FFu;
+}
+
 void render_line_job(LineJob& job, LineScratch& sc) {
     if (!profiling()) {
+        if (job.direct_pixels) render_direct_window_line(job);
         if (job.engine_active[0]) render_engine_line(job, 0, sc);
         if (job.engine_active[1]) render_engine_line(job, 1, sc);
         return;
     }
     const auto start = std::chrono::steady_clock::now();
+    if (job.direct_pixels) render_direct_window_line(job);
     if (job.engine_active[0]) render_engine_line(job, 0, sc);
     const auto middle = std::chrono::steady_clock::now();
     if (job.engine_active[1]) render_engine_line(job, 1, sc);
@@ -2066,6 +2127,7 @@ void nds_gpu2d_reset(){
     g_no_effect_lines[0] = g_no_effect_lines[1] = 0;
     g_render_scanlines = 0;
     g_direct_frames = 0;
+    g_window_direct_unsupported_lines.store(0, std::memory_order_relaxed);
     g_direct_overlay_ns = 0;
     std::fill_n(g_direct_class_frames,
                 NDS_GPU2D_DIRECT_CLASS_COUNT, 0u);
@@ -2276,6 +2338,16 @@ void prepare_direct_frame() {
     g_direct_object_write ^= 1u;
     AdaptiveFrame& object_frame =
         g_direct_object_frame[g_direct_object_write];
+    if (g_direct_windows_enabled) {
+        // Each worker emits only its own scanline from the same immutable
+        // register/memory latch used by native rendering. No frame-wide
+        // assumption about windows, palette, OAM or blend registers is made.
+        g_direct_current_frame.object_pixels = object_frame.data();
+        g_direct_current_frame.raster_params =
+            g_direct_raster_params[g_direct_object_write].data();
+        g_direct_current_frame.width = static_cast<uint16_t>(output_width);
+        return;
+    }
     std::array<Pixel, kMaxAdaptiveWidth> obj{};
     for (int y = 0; y < 192; ++y) {
         render_obj_line(u, 0, y, obj.data(), output_width,
@@ -2396,6 +2468,10 @@ void nds_gpu2d_set_direct_present(bool enabled) {
         g_direct_current_frame = {};
         g_direct_present_frame = {};
     }
+}
+
+void nds_gpu2d_set_direct_windows(bool enabled) {
+    g_direct_windows_enabled = enabled;
 }
 
 bool nds_gpu2d_direct_frame_active() {
@@ -3055,6 +3131,8 @@ void nds_gpu2d_profile(NdsGpu2dProfile* out) {
     out->no_effect_lines[1] = g_no_effect_lines[1];
     out->scanlines = g_render_scanlines;
     out->direct_frames = g_direct_frames;
+    out->window_direct_unsupported_lines =
+        g_window_direct_unsupported_lines.load(std::memory_order_relaxed);
     out->hd_frames = g_hd_frames;
     out->hd_presented = g_hd_presented;
     out->direct_overlay_ns = g_direct_overlay_ns;

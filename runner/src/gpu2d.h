@@ -95,6 +95,9 @@ void nds_gpu2d_set_adaptive_center_max_polygons(uint32_t max_polygons);
 // surface. Any unsupported state keeps the normal CPU compositor/readback.
 struct NdsGpu2dDirectFrame {
     const uint32_t* object_pixels;  // RGBA8UI: RGB6/priority + OBJ alpha code
+    // Optional 1x192 RGBA32UI scanline parameters: backdrop, BLDCNT/brightness,
+    // EVA/EVB/EVY/3D priority, RenderXPos. Object R[6]/G[6] carry window masks.
+    const uint32_t* raster_params;
     uint16_t width;
     uint32_t backdrop_color;        // RGB6 channels in bits 0/8/16
     uint16_t bldcnt;
@@ -159,6 +162,7 @@ bool nds_gpu2d_hd_frame_peek(NdsGpu2dHdFrame* out);
 void nds_gpu2d_invalidate_hd_frame();
 
 void nds_gpu2d_set_direct_present(bool enabled);
+void nds_gpu2d_set_direct_windows(bool enabled);
 bool nds_gpu2d_direct_frame_active();
 // Presentation trails rasterization by one frame boundary. This reports the
 // eligibility latched for the framebuffer currently exposed by
@@ -220,6 +224,7 @@ struct NdsGpu2dProfile {
     uint64_t no_effect_lines[2];
     uint64_t scanlines;
     uint64_t direct_frames;
+    uint64_t window_direct_unsupported_lines;
     // Frames the adaptive compositor emitted HD layer surfaces for.
     uint64_t hd_frames;
     // Frames the presenter actually consumed those surfaces for.

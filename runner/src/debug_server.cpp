@@ -25,6 +25,9 @@
 #include "io.h"
 #include "frontend.h"
 #include "gpu2d.h"
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+#include "melonds_compute/ComputeHost.h"
+#endif
 #include "gpu3d.h"
 #include "hle_profile.h"
 #if defined(NDS_MPH_MATH_HLE)
@@ -1636,6 +1639,8 @@ std::string handle(const std::string& line) {
                std::to_string(gpu.direct_overlay_ns) +
                ",\"direct_frames\":" +
                std::to_string(gpu.direct_frames) +
+               ",\"window_direct_unsupported_lines\":" +
+               std::to_string(gpu.window_direct_unsupported_lines) +
                ",\"direct_class_frames\":" + direct_class_frames +
                ",\"adaptive_fallback_frames\":" +
                adaptive_fallback_frames +
@@ -2057,6 +2062,25 @@ std::string handle(const std::string& line) {
         return out;
     }
 
+    if (cmd == "presented_framebuffer") {
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+        std::vector<uint32_t> pixels;
+        unsigned width = 0, height = 0;
+        if (!nds_compute_host_read_presented(pixels, width, height))
+            return "{\"error\":\"no readable visible compute presentation\"}";
+        std::string rgb;
+        rgb.reserve(pixels.size() * 6);
+        for (uint32_t p : pixels) {
+            const uint8_t c[3] = {static_cast<uint8_t>(p >> 16),
+                static_cast<uint8_t>(p >> 8), static_cast<uint8_t>(p)};
+            append_hex(rgb, c, sizeof(c));
+        }
+        return "{\"w\":" + std::to_string(width) + ",\"h\":" +
+            std::to_string(height) + ",\"rgb\":\"" + rgb + "\"}";
+#else
+        return "{\"error\":\"compute presentation not compiled\"}";
+#endif
+    }
     if (cmd == "framebuffer") {
         const std::string engine = json_str(line, "engine", "A");
         const int screen = (engine == "B" || engine == "b") ? 1 : 0;

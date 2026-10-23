@@ -4,6 +4,32 @@
 
 constexpr uint32_t NDS_GPU2D_DISPCNT_WINDOW_ENABLE_MASK = 0xE000u;
 
+// Unused RGB6 transport bits carry BG0 visibility in R[6] and ordinary
+// effects permission in G[6], including pixels without a visible OBJ.
+constexpr uint32_t nds_gpu2d_pack_direct_pixel(uint32_t color, uint8_t priority,
+    uint8_t alpha, bool valid, uint8_t window_mask) {
+    uint32_t value = ((window_mask & 1u) ? 0u : 0x40u) |
+                     ((window_mask & 0x20u) ? 0u : 0x4000u);
+    if (!valid || !(window_mask & 0x10u)) return value;
+    const uint32_t code = alpha == 0u ? 17u : alpha == 0xFFu ? 255u :
+                          alpha > 16u ? 16u : alpha;
+    return value | (color & 0x003F3F3Fu) |
+           (uint32_t(priority & 3u) << 22) | (code << 24);
+}
+
+constexpr int nds_gpu2d_adaptive_hud_x(int x, int width, bool anchor,
+                                      int center_width) {
+    const int extra = (width - 256) / 2;
+    const int left = (256 - center_width) / 2;
+    const int right = left + center_width;
+    if (anchor) {
+        if (x < left) return x;
+        if (x >= extra + left && x < extra + right) return x - extra;
+        if (x >= width - (256 - right)) return x - (width - 256);
+    } else if (x >= extra && x < extra + 256) return x - extra;
+    return -1;
+}
+
 // Shared, side-effect-free DS window selection. Keeping this separate from
 // the scanline renderer lets the eligibility check use precisely the same
 // precedence and register interpretation as native composition.

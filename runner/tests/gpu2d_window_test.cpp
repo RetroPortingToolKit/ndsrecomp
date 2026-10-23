@@ -806,6 +806,45 @@ bool nds_gpu3d_projection_has_perspective() {
 bool nds_title_patches_mph_adaptive_centered_native() { return false; }
 void nds_gpu3d_set_render_xpos(uint16_t) {}
 
+bool test_direct_window_scanline_latch() {
+    std::array<uint8_t,0x4000> obj_vram{};
+    reset_obj_fixture(obj_vram);
+    g_unit[0].dispcnt=0x0001F108u;
+    g_unit[0].win[8]=g_unit[0].win[9]=0x3F;
+    g_unit[0].win[10]=0x2F;g_unit[0].win[11]=0x32;
+    g_direct_windows_enabled=true;g_direct_present_enabled=true;
+    g_3d_output_width=448;g_3d_render_xpos=0;
+    g_adaptive_skybox_fill=false;g_direct_force_cpu_frames=0;
+    if(!require(direct_scene_class()==NDS_GPU2D_DIRECT_SUPPORTED))return false;
+    nds_gpu2d_start_frame();
+    LineJob line{};latch_line(0,line);
+    // Mutating live registers after the latch must not change this job.
+    g_unit[0].win[10]=0x3F;g_unit[0].bldcnt=0x1234;
+    render_direct_window_line(line);
+    if(!require((line.direct_pixels[100]>>24)==0u))return false;
+    if(!require((line.direct_params[1]&65535u)==0u))return false;
+    latch_line(1,line);render_direct_window_line(line);
+    if(!require((line.direct_params[1]&65535u)==0x1234u))return false;
+    const uint32_t* completed=g_direct_current_frame.raster_params;
+    nds_gpu2d_start_frame();
+    NdsGpu2dDirectFrame a{},b{};
+    if(!require(nds_gpu2d_direct_frame(&a)&&nds_gpu2d_direct_frame(&b)))return false;
+    if(!require(a.raster_params==completed&&a.raster_params==b.raster_params))return false;
+    const uint32_t old_params=a.raster_params[5];
+    g_unit[0].bldcnt=0x2345;latch_line(1,line);render_direct_window_line(line);
+    if(!require(a.raster_params[5]==old_params&&line.direct_params[1]!=old_params))return false;
+    // Capture keeps the original CPU/readback eligibility.
+    g_unit[0].capture=0x80000000u;
+    if(!require(direct_scene_class()==NDS_GPU2D_DIRECT_CAPTURE))return false;
+    NdsGpu2dSaveState state{};gpu2d_savestate_export(&state);
+    std::string error;if(!require(gpu2d_savestate_import(state,&error)))return false;
+    if(!require(!nds_gpu2d_direct_present_frame_active()&&g_direct_force_cpu_frames>0))return false;
+    g_direct_windows_enabled=false;g_direct_present_enabled=false;
+    g_3d_output_width=256;g_unit={};
+    return true;
+}
+
+#ifndef NDS_GPU2D_REFERENCE_ONLY
 int main() {
     if (!test_window_raw_decode()) return 1;
     if (!test_window_enable_and_precedence()) return 2;
@@ -822,5 +861,7 @@ int main() {
     if (!test_adaptive_low_polygon_perspective_stays_wide()) return 13;
     if (!test_adaptive_windowed_scene_composites_wide()) return 14;
     if (!test_capture_uses_reference()) return 15;
+    if (!test_direct_window_scanline_latch()) return 16;
     return 0;
 }
+#endif

@@ -1314,6 +1314,17 @@ ndsrecomp_link_tomlpp(frontend_config_test)
       ${NDS_ARM_RECOMP_INCLUDE_DIRS})
   add_test(NAME gpu2d_window_test COMMAND gpu2d_window_test)
 
+  if(NDS_BUILD_NATIVE_GL_TESTS AND NDS_ENABLE_COMPUTE_RENDERER AND NDS_SDL_BACKEND STREQUAL "SDL3")
+    add_executable(gpu2d_direct_gl_test tests/gpu2d_direct_gl_test.cpp
+        src/emu_profile.cpp src/dispatch_timing.cpp src/host_profile.cpp
+        src/host_prof_ring.cpp src/host_unwind_x64.cpp vendor/melonds/glad/glad.c)
+    target_include_directories(gpu2d_direct_gl_test PRIVATE src vendor/melonds
+        ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+    target_link_libraries(gpu2d_direct_gl_test PRIVATE SDL3::SDL3)
+    add_test(NAME gpu2d_direct_gl_test COMMAND gpu2d_direct_gl_test)
+    set_tests_properties(gpu2d_direct_gl_test PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
+
   if(Python3_Interpreter_FOUND)
     # The deadline-bounded per-instruction machinery has no value anyone can
     # assert; its correctness is a set of structural properties (fast path

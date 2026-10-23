@@ -176,6 +176,22 @@ fails; do not claim its performance without an equivalent-feature measurement.
 Qualification
 -------------
 
+The third flat CPU candidate also lacks a material gain. Its first pair looked
+5% better, but one necessary Faithful A/A control under similar background load
+used less process CPU work than Performance. Do not retain that apparent win.
+The current opt-in graphics probe (NDS_COMPUTE_WINDOW_DIRECT=1) extends direct
+presentation to window masks at1x/separate GL top. It emits OBJ visibility,
+BG0 visibility and effects permission from the existing scanline register and
+memory latches, with per-line blend/brightness/scroll parameters. Capture and
+frame eligibility keep their existing CPU paths. Unexpected unsupported
+scanlines are counted and invalidate qualification; this is an experimental
+probe, disabled by default, not a promise of arbitrary raster-mode switching.
+Skybox-repair/window combinations retain the existing compositor. Actual-GL
+tests compare the new and legacy integer blend paths with native CPU composition;
+RGB6 must match exactly, allowing only one-byte UNORM8 transport rounding.
+The observer-only presented_framebuffer query reads the last swapped GL image
+without advancing/re-rendering a frame; keep it outside timing windows.
+
 Use focused semantic/output tests and one matched NAS pair per candidate, with
 identical settings, recorded contention and necessary noise controls. Reuse the
 existing evidence; no routine benchmark matrix. After material gain, qualify the
