@@ -1793,7 +1793,7 @@ int main(int argc, char** argv) {
             std::getenv("NDS_SAVESTATE_BUILD_ID");
         frontend_options.savestate_build_id =
             (savestate_id_override && savestate_id_override[0])
-                ? savestate_id_override
+                ? std::string(savestate_id_override) + "-" + nds_execution_model_identity()
                 : execution_build_id;
         frontend_options.savestate_rom_sha1 = rom_sha1;
     }
