@@ -102,3 +102,10 @@ Nativev1 qualification and currentv2 work
   remain unchanged. Code-generation pointers and JIT CPU windows remain owned
   by the JIT instance; cached register-window references avoid getter calls in
   the hot bridge. Reset/restore invalidates code before backing replacement.
+- Race construction exposed a Thumb decoding boundary: a standalone ARMv5 call
+  suffix can be a resume PC after faithful execution. It must not be decoded
+  with the next halfword as an unrelated newer Thumb32 instruction. Native
+  compilation now permits only valid BL/BLX pairs in that encoding space;
+  standalone suffixes and all raw ARM coprocessor classes use the faithful path.
+  The targeted suffix-stop regression and actual race-construction/restore
+  check pass. No unsupported coprocessor operation is ignored.

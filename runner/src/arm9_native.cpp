@@ -96,7 +96,7 @@ public:
         // Exception returns/banked accesses remain in the faithful runtime.
         if(i.op==Op::MRS||i.op==Op::MSR||i.op==Op::MCR||i.op==Op::MRC||i.op==Op::CDP||
            i.op==Op::SWI||i.op==Op::SWP||i.op==Op::SWPB||
-           i.op==Op::LDRD||i.op==Op::STRD||i.is_undefined)return true;
+           i.op==Op::LDRD||i.op==Op::STRD||i.op==Op::BL_suffix||i.is_undefined)return true;
         if((i.op==Op::LDM||i.op==Op::STM)&&(i.block.s_bit||
            (i.block.writeback&&(i.block.reg_list&(1u<<i.block.rn)))))return true;
         if(memory(i)&&i.rd==15)return true;
@@ -114,7 +114,20 @@ public:
             return false;
         }
         const auto bytes=code(pc&~3u,false);
-        if(!bytes||floor(decode(thumb,pc))||(!thumb&&mkds_hle::resolve(NDS_ARM9,pc,false).function)) {
+        bool native_encoding=bool(bytes);
+        if(bytes&&thumb) {
+            const uint16_t first=uint16_t(*bytes>>((pc&2u)*8u));
+            if(first>=0xe800u) {
+                // ARMv5 has only BL/BLX pairs here. A suffix can be a real
+                // resume PC from faithful execution; newer Thumb32 decoding
+                // must not consume it together with the following instruction.
+                const auto next=code((pc+2)&~3u,false);
+                const uint16_t second=next?uint16_t(*next>>(((pc+2)&2u)*8u)):0;
+                native_encoding=nds_arm9_thumb_native_encoding(first,second,bool(next));
+            }
+        }
+        if(bytes&&!thumb&&(*bytes&0x0c000000u)==0x0c000000u)native_encoding=false;
+        if(!native_encoding||floor(decode(thumb,pc))||(!thumb&&mkds_hle::resolve(NDS_ARM9,pc,false).function)) {
             ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;
         }
         return true;

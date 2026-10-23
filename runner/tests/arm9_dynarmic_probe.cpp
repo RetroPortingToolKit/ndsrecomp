@@ -43,12 +43,16 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     uint64_t rejected_reads=0,rejected_writes=0;
     bool complete_io=false;
     bool bounded_memory=false;
+    bool isa_guard=false;
     uint32_t device_value=0;
     unsigned device_reads=0,device_writes=0;
     unsigned device_read8=0,device_read16=0;
     std::optional<uint32_t> MemoryReadCode(uint32_t a) override {return ram.read32(a);}
     bool PreCodeReadHook(bool thumb,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {
         if(forced_floor==pc){ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;}
+        if(isa_guard&&thumb&&!nds_arm9_thumb_native_encoding(ram.read16(pc),ram.read16(pc+2),true)) {
+            ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;
+        }
         const auto start=Dynarmic::A32::LocationDescriptor{ir.block.Location()}.PC();
         bool end=complete_io&&pc==code_pc+4&&pc!=start;
         if(bounded_memory&&pc!=start) {
@@ -286,5 +290,17 @@ int main() {
     require(jit.Regs()[0]==0&&env.ram.read32(0x4000)==1,"conditional memory/flags result");
     require(env.ticks-conditional_before>=32&&env.ticks-conditional_before<=35,"conditional block cannot become zero-work self loop");
     std::puts("CONDITIONAL_MEMORY_BUDGET passed: no zero-work self link, last conditional store preserved");
+    require(nds_arm9_thumb_native_encoding(0xf000,0xf800,true)&&
+        nds_arm9_thumb_native_encoding(0xf7ff,0xeffe,true)&&
+        !nds_arm9_thumb_native_encoding(0xf800,0xffff,true)&&
+        !nds_arm9_thumb_native_encoding(0xe800,0xf800,true)&&
+        !nds_arm9_thumb_native_encoding(0xf000,0xf800,false),"ARMv5 Thumb pair encoding gate");
+    env.bounded_memory=false;env.isa_guard=true;jit.ClearCache();
+    env.ram.write32(code_pc,0xfffff800u);
+    armv4t::CPUState suffix{};suffix.R[14]=0x800;suffix.R[15]=code_pc;
+    suffix.cpsr.mode=0x1f;suffix.cpsr.t=true;suffix.thumb=true;
+    const auto old_floors=env.floors;set_state(jit,suffix);env.remaining=10;jit.Run();
+    require(env.floors==old_floors+1&&env.floor_pc==code_pc&&equal(suffix,jit),"standalone Thumb suffix stops before newer decoding");
+    std::puts("ARMV5_THUMB_RESUME passed: paired calls accepted, standalone suffix returns to faithful step");
     std::puts("PRIVILEGED_STOP passed; no MKDS timing or performance claim from this probe");
 }
