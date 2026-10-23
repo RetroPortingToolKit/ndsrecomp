@@ -102,6 +102,14 @@ owner instruction. Real Wiimmfi peer gameplay on this retained build is still
 unverified. The old M7 acceptance is historical baseline evidence only.
 The final gate is the windowed, normal-audio owner playtest, including real
 peer gameplay when available, followed by explicit approval before integration.
+MPH has been launched for that handoff with Wiimmfi enabled. It uses copies
+of the existing paired `mph-prime-visible-wfc-yjp82/A` native save and firmware
+in `owner-playtest/profile-A`; source files remain untouched. An initial launch
+correctly rejected the game root's older 128 KiB firmware profile before the
+supported 256 KiB pair was selected. The interactive frontend is active with
+both retained options, no instruction hook, no synthetic presentations and
+the governor at stage 0. Two startup audio underruns were observed; actual
+audible quality and online gameplay await owner feedback.
 
 Private raw evidence is under
 `G:/Temp/Codex/ndsrecomp/accuracy-perf-20261022`: `initial-evidence` (248 files,

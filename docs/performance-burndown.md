@@ -20,7 +20,7 @@ pass qualification and the owner approves final integration.
 | Versioned capture snapshots / texture coherence | 7www | Complete; selected for review | Unit and clean MPH game checks pass; snapshot copies 375 MiB to 2.5 MiB | Individual 5.42% less CPU; clean combination confirms a useful saving |
 | Lean production diagnostics / honest event hooks | bbm9 | Complete; selected for review | Arming and clean game checks pass; FIFO padding difference identified | Individual MKDS 2.65% less CPU; clean MPH combination passes |
 | Pinned artifacts and quiet SERVER A/A / A/B harness | hucn | Complete; hashes/manifests pinned | Reference bank byte-identical; occupied-host samples rejected; final pair shares NES queue's file lock | Individual samples, A/A controls and clean combined pair complete |
-| Two-game bundle, authentic Wiimmfi and owner handoff | wtdd | Clean MPH combination built without rejected experiments | Automated checks complete; 3 focused tests, fresh restore/game comparison and combined pair pass | Normal-audio/windowed owner handoff being prepared; live WFC and approval pending |
+| Two-game bundle, authentic Wiimmfi and owner handoff | wtdd | Clean MPH combination built without rejected experiments | Automated checks complete; 3 focused tests, fresh restore/game comparison and combined pair pass | MPH owner playtest launched windowed with normal audio; live WFC and approval pending |
 
 ## Remaining-task record
 
