@@ -61,6 +61,11 @@ Focused evidence so far
 - Privileged stop returns before executing the instruction. Odd halfword loads,
   banked operations, PC loads/exception returns and swaps conservatively use the
   faithful instruction implementation in this first game adapter.
+- First game boot exposed a leading-conditional translation bug in the adapter's
+  instruction-position hook: a zero-cycle block linked to itself. Native machine
+  code and CPU/context snapshots identified it. Memory-context stores now insert
+  after predication is established, using the same helper as the regression probe.
+  Conditional memory/loop-budget regression and one bounded native boot frame pass.
 
 Next: build the game adapter, focused current-build restore/basic visual check,
 then ONE matched NAS native candidate pair with identical features and sampled

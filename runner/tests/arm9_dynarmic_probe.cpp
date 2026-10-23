@@ -15,6 +15,7 @@
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/frontend/A32/a32_ir_emitter.h"
 #include "dynarmic/ir/terminal.h"
+#include "../src/arm9_native_ir.h"
 
 namespace {
 constexpr uint32_t code_pc=0x100;
@@ -41,16 +42,22 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     size_t floors=0;
     uint64_t rejected_reads=0,rejected_writes=0;
     bool complete_io=false;
+    bool bounded_memory=false;
     uint32_t device_value=0;
     unsigned device_reads=0,device_writes=0;
     std::optional<uint32_t> MemoryReadCode(uint32_t a) override {return ram.read32(a);}
-    void PreCodeTranslationHook(bool,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {ir.BranchWritePC(ir.Imm32(pc));}
     bool PreCodeReadHook(bool,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {
         if(forced_floor==pc){ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;}
-        if(complete_io&&pc==code_pc+4&&pc!=Dynarmic::A32::LocationDescriptor{ir.block.Location()}.PC()) {
+        const auto start=Dynarmic::A32::LocationDescriptor{ir.block.Location()}.PC();
+        bool end=complete_io&&pc==code_pc+4&&pc!=start;
+        if(bounded_memory&&pc!=start) {
+            const auto prev=armv4t::ArmDecoder::decode(ram.read32(pc-4),pc-4);
+            end=pc-start>=64||(prev.op>=armv4t::IrOp::LDR&&prev.op<=armv4t::IrOp::STM);
+        }
+        if(end) {
             // The controlled fixture's first instruction accesses memory.
             // Commit its next PC, then stop if the device requested a handoff.
-            ir.BranchWritePC(ir.Imm32(pc));
+            nds_arm9_stamp_memory_context(ir);ir.BranchWritePC(ir.Imm32(pc));
             ir.SetTerm(Dynarmic::IR::Term::CheckHalt{Dynarmic::IR::Term::LinkBlock{ir.current_location}});
             return false;
         }
@@ -202,5 +209,30 @@ int main() {
         require(operations==env.device_reads+env.device_writes,"device operation was replayed");
     }
     std::puts("COMPLETED_IO_HANDOFF passed: four addressing forms, device once, following instruction waits");
+    env.complete_io=false;env.forced_floor=0;jit.ClearCache();
+    env.ram.write32(0x200,0xe3a00000u); // mov r0,#0
+    env.ram.write32(0x204,0xe2800001u); // add r0,r0,#1
+    env.ram.write32(0x208,0xeafffffdu); // b 0x204
+    armv4t::CPUState loop{};loop.R[15]=0x200;loop.cpsr.mode=0x1f;
+    set_state(jit,loop);env.remaining=32;const auto ticks_before=env.ticks;
+    jit.Run();
+    require(env.ticks-ticks_before>=32&&env.ticks-ticks_before<=34,"native loop obeys work budget");
+    require(jit.Regs()[0]>=15&&jit.Regs()[0]<=17,"native loop completed real instructions");
+    std::printf("NATIVE_LOOP_BUDGET passed: ticks=%llu additions=%u\n",static_cast<unsigned long long>(env.ticks-ticks_before),jit.Regs()[0]);
+    // Real boot failed at a leading conditional instruction when context IR was
+    // inserted before predication. Exercise a conditional store/back edge with
+    // the production post-translation stamping helper and a bounded work budget.
+    env.bounded_memory=true;jit.ClearCache();
+    env.ram.write32(0x300,0xe3a00004u); // mov r0,#4
+    env.ram.write32(0x304,0xe2500001u); // subs r0,r0,#1
+    env.ram.write32(0x308,0x15810000u); // strne r0,[r1]
+    env.ram.write32(0x30c,0x1afffffcu); // bne 0x304
+    env.ram.write32(0x310,0xeafffffeu); // b .
+    loop={};loop.R[15]=0x300;loop.R[1]=0x4000;loop.cpsr.mode=0x1f;
+    set_state(jit,loop);env.remaining=32;const auto conditional_before=env.ticks;
+    jit.Run();
+    require(jit.Regs()[0]==0&&env.ram.read32(0x4000)==1,"conditional memory/flags result");
+    require(env.ticks-conditional_before>=32&&env.ticks-conditional_before<=35,"conditional block cannot become zero-work self loop");
+    std::puts("CONDITIONAL_MEMORY_BUDGET passed: no zero-work self link, last conditional store preserved");
     std::puts("PRIVILEGED_STOP passed; no MKDS timing or performance claim from this probe");
 }

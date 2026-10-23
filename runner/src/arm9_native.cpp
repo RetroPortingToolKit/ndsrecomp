@@ -12,6 +12,7 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #include "arm_decode.h"
 #include "thumb_decode.h"
 #include "hle_mkds.h"
+#include "arm9_native_ir.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/frontend/A32/a32_ir_emitter.h"
 #include "dynarmic/frontend/A32/a32_types.h"
@@ -19,6 +20,8 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -33,6 +36,7 @@ namespace {
 // Guest time remains independent of host elapsed time. Device accesses complete
 // through the existing bus, then leave JIT execution at the instruction boundary.
 constexpr uint64_t cycles_per_instruction=2;
+bool diagnostic() {static const bool on=std::getenv("NDS_ARM9_NATIVE_DIAGNOSTIC")!=nullptr;return on;}
 struct Watch { const uint32_t* generation;uint32_t value; };
 class Native final : public Dynarmic::A32::UserCallbacks {
 public:
@@ -97,6 +101,7 @@ public:
         const uint32_t start=Dynarmic::A32::LocationDescriptor{ir.block.Location()}.PC();
         const unsigned width=thumb?2:4;
         if(pc!=start&&(pc-start>=16*width||memory(decode(thumb,pc-width)))) {
+            nds_arm9_stamp_memory_context(ir);
             ir.BranchWritePC(ir.Imm32(pc));
             ir.SetTerm(Dynarmic::IR::Term::CheckHalt{Dynarmic::IR::Term::LinkBlock{ir.current_location}});
             return false;
@@ -106,11 +111,6 @@ public:
             ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;
         }
         return true;
-    }
-    void PreCodeTranslationHook(bool,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {
-        // Dynarmic's CPU window is canonical at memory callbacks because its
-        // get/set elimination is disabled above. Needed for write provenance.
-        ir.BranchWritePC(ir.Imm32(pc));
     }
     bool ram(uint32_t addr,unsigned width) {
         uint32_t off=0;const auto* w=nds_busf_classify(addr,&off);
@@ -183,7 +183,7 @@ bool nds_arm9_native_run() {
     runtime_tick(0);
     if(runtime_unwinding()||runtime_should_yield())return true;
     if(g_cpu.R[15]!=before_poll)return true;
-    if(g_nds_fast_limit<=g_runtime_cycles)return true;
+    if(g_nds_fast_limit<=g_runtime_cycles)return false;
     if(!native)native=std::make_unique<Native>();
     auto& n=*native;
     if(n.mapping.control!=g_cp15.control||n.mapping.itcm_size!=g_cp15.itcm_size||
@@ -194,7 +194,12 @@ bool nds_arm9_native_run() {
     std::copy(std::begin(g_cpu.R),std::end(g_cpu.R),n.jit->Regs().begin());n.jit->SetCpsr(g_cpu.cpsr);
     n.jit->ClearHalt(Dynarmic::HaltReason::UserDefined1|Dynarmic::HaltReason::MemoryAbort);
     n.remaining=std::max<uint64_t>(1,(g_nds_fast_limit-g_runtime_cycles)/cycles_per_instruction);
-    n.pending=false;++n.entries;n.jit->Run();n.publish();
+    n.pending=false;++n.entries;
+    if(diagnostic()&&n.entries<=32)std::fprintf(stderr,"[arm9-native] enter %llu pc=%08x cycles=%llu limit=%llu budget=%llu\n",
+        static_cast<unsigned long long>(n.entries),g_cpu.R[15],g_runtime_cycles,g_nds_fast_limit,static_cast<unsigned long long>(n.remaining));
+    n.jit->Run();n.publish();
+    if(diagnostic()&&n.entries<=32)std::fprintf(stderr,"[arm9-native] leave pc=%08x cycles=%llu pending=%u floorpc=%08x\n",
+        g_cpu.R[15],g_runtime_cycles,unsigned(n.pending),n.pending_pc);
     if(n.pending&&!runtime_should_yield()) {
         g_cpu.R[15]=n.pending_pc;
         const auto hle=mkds_hle::resolve(NDS_ARM9,n.pending_pc,(g_cpu.cpsr&CPSR_T_BIT)!=0);
@@ -207,6 +212,7 @@ void nds_arm9_native_note_write() {if(native)native->unknown_write();}
 void nds_arm9_native_clear() {if(native)native->clear();}
 std::string nds_arm9_native_json() {
     std::string out="{\"available\":"+std::string(supported_host()?"true":"false")+
+        ",\"diagnostic\":"+std::string(diagnostic()?"true":"false")+
         ",\"cycles_per_instruction\":"+std::to_string(cycles_per_instruction);
     if(native)out+=",\"entries\":"+std::to_string(native->entries)+
         ",\"instructions\":"+std::to_string(native->instructions)+
