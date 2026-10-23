@@ -43,6 +43,8 @@ bool census_enabled=false;
 class Native final : public Dynarmic::A32::UserCallbacks {
 public:
     std::unique_ptr<Dynarmic::A32::Jit> jit;
+    std::array<uint32_t,16>* registers=nullptr;
+    std::array<uint32_t,64>* extensions=nullptr;
     std::vector<Watch> watches;
     std::unordered_map<const uint32_t*,size_t> watched;
     std::unordered_map<uint64_t,uint64_t> floor_census;
@@ -58,13 +60,14 @@ public:
         // Normal bus callbacks use address/value arguments, current PC and
         // control state. General registers/flags are canonical at Run return.
         conf.optimizations=Dynarmic::all_safe_optimizations;
-        jit=std::make_unique<Dynarmic::A32::Jit>(conf);mapping=g_cp15;
+        jit=std::make_unique<Dynarmic::A32::Jit>(conf);
+        registers=&jit->Regs();extensions=&jit->ExtRegs();mapping=g_cp15;
     }
     void clear() {
         jit->ClearCache();watches.clear();watched.clear();++invalidations;
     }
     void publish() {
-        std::copy(jit->Regs().begin(),jit->Regs().end(),g_cpu.R);g_cpu.cpsr=jit->Cpsr();
+        std::copy(registers->begin(),registers->end(),g_cpu.R);g_cpu.cpsr=jit->Cpsr();
     }
     std::optional<uint32_t> code(uint32_t addr,bool watch) {
         uint32_t off=0;const auto* win=nds_busf_classify(addr,&off);
@@ -90,10 +93,9 @@ public:
     }
     bool floor(const armv4t::Instr& i) {
         using Op=armv4t::IrOp;
-        // Halfword load alignment differs from newer ARM user-mode semantics;
-        // exception returns/banked accesses also belong to the faithful runtime.
+        // Exception returns/banked accesses remain in the faithful runtime.
         if(i.op==Op::MRS||i.op==Op::MSR||i.op==Op::MCR||i.op==Op::MRC||i.op==Op::CDP||
-           i.op==Op::SWI||i.op==Op::LDRH||i.op==Op::LDRSH||i.op==Op::SWP||i.op==Op::SWPB||
+           i.op==Op::SWI||i.op==Op::SWP||i.op==Op::SWPB||
            i.op==Op::LDRD||i.op==Op::STRD||i.is_undefined)return true;
         if((i.op==Op::LDM||i.op==Op::STM)&&(i.block.s_bit||
            (i.block.writeback&&(i.block.reg_list&(1u<<i.block.rn)))))return true;
@@ -105,7 +107,8 @@ public:
         const uint32_t start=Dynarmic::A32::LocationDescriptor{ir.block.Location()}.PC();
         const unsigned width=thumb?2:4;
         if(pc!=start&&(pc-start>=16*width||memory(decode(thumb,pc-width)))) {
-            nds_arm9_stamp_memory_context(ir);
+            const auto previous=decode(thumb,pc-width);
+            nds_arm9_finish_memory(ir,previous.op==armv4t::IrOp::LDM?NdsArm9ReadKind::BlockWord:NdsArm9ReadKind::Word);
             ir.BranchWritePC(ir.Imm32(pc));
             ir.SetTerm(Dynarmic::IR::Term::CheckHalt{Dynarmic::IR::Term::LinkBlock{ir.current_location}});
             return false;
@@ -121,18 +124,22 @@ public:
         return w&&w->data&&uint64_t(off)+width<=uint64_t(w->mask)+1;
     }
     void device() {
-        g_cpu.R[15]=jit->Regs()[15];
+        g_cpu.R[15]=(*registers)[15];
         g_cpu.cpsr=(g_cpu.cpsr&~0xffu)|(jit->Cpsr()&0xffu);
         ++devices;jit->HaltExecution();
     }
     uint8_t MemoryRead8(uint32_t a) override {if(!ram(a,1))device();return bus_read_u8(a);}
     uint16_t MemoryRead16(uint32_t a) override {if(!ram(a&~1u,2))device();return bus_read_u16(a&~1u);}
     uint32_t MemoryRead32(uint32_t a) override {
-        if(!ram(a&~3u,4))device();
-        if(a&3u) {
-            const auto i=decode((jit->Cpsr()&CPSR_T_BIT)!=0,jit->Regs()[15]);
-            if(i.op==armv4t::IrOp::LDM)return bus_read_u32(a&~3u);
+        const auto kind=NdsArm9ReadKind((*extensions)[0]);
+        if(kind==NdsArm9ReadKind::HalfUnsigned||kind==NdsArm9ReadKind::HalfSigned) {
+            const bool sign=kind==NdsArm9ReadKind::HalfSigned;
+            const bool byte=sign&&(a&1u);
+            if(!ram(byte?a:(a&~1u),byte?1:2))device();
+            return nds_arm9_read_halfword(a,sign,[](uint32_t x){return bus_read_u8(x);},[](uint32_t x){return bus_read_u16(x);});
         }
+        if(!ram(a&~3u,4))device();
+        if(kind==NdsArm9ReadKind::BlockWord)return bus_read_u32(a&~3u);
         return std::rotr(bus_read_u32(a&~3u),int((a&3)*8));
     }
     uint64_t MemoryRead64(uint32_t a) override {return uint64_t(MemoryRead32(a))|uint64_t(MemoryRead32(a+4))<<32;}
@@ -142,7 +149,7 @@ public:
         const uint32_t* generation=w&&w->data&&w->gen? w->gen+(off>>12):nullptr;
         const bool ordinary_ram=ram(a,width);
         if(!ordinary_ram)device();
-        else {g_cpu.R[15]=jit->Regs()[15];g_cpu.R[14]=jit->Regs()[14];}
+        else {g_cpu.R[15]=(*registers)[15];g_cpu.R[14]=(*registers)[14];}
         // Only this inline RAM store is covered by the exact generation test
         // below. I/O may invoke another bus master, whose writes must stay visible.
         known_write=ordinary_ram;
@@ -193,7 +200,7 @@ bool supported_host() {
 
 bool nds_arm9_native_run() {
     if(g_nds_active!=NDS_ARM9||!nds_performance_execution()||g_insn_hook_armed||
-       g_runtime_deep_trace||runtime_deferred_cycles()!=0||!supported_host())return false;
+       g_runtime_deep_trace||(g_cpu.cpsr&0x200u)||runtime_deferred_cycles()!=0||!supported_host())return false;
     uint32_t off=0;const auto* w=nds_busf_classify(g_cpu.R[15],&off);
     if(!w||!w->data||!bus_range_has_write_provenance(g_cpu.R[15],4))return false;
     const uint32_t before_poll=g_cpu.R[15];
@@ -208,7 +215,7 @@ bool nds_arm9_native_run() {
         n.clear();n.mapping=g_cp15;
     }
     runtime_call_stack_restore(nullptr,0);
-    std::copy(std::begin(g_cpu.R),std::end(g_cpu.R),n.jit->Regs().begin());n.jit->SetCpsr(g_cpu.cpsr);
+    std::copy(std::begin(g_cpu.R),std::end(g_cpu.R),n.registers->begin());n.jit->SetCpsr(g_cpu.cpsr);
     n.jit->ClearHalt(Dynarmic::HaltReason::UserDefined1|Dynarmic::HaltReason::MemoryAbort);
     n.remaining=std::max<uint64_t>(1,(g_nds_fast_limit-g_runtime_cycles)/cycles_per_instruction);
     n.pending=false;++n.entries;
@@ -250,7 +257,8 @@ std::string nds_arm9_native_json() {
         const auto pc=uint32_t(key>>1);const bool thumb=(key&1)!=0;
         uint32_t word=0;const bool valid=bus_debug_copy(0,pc&~3u,reinterpret_cast<uint8_t*>(&word),4);
         const auto instruction=thumb?armv4t::ThumbDecoder::decode(uint16_t(word>>((pc&2)*8)),pc):armv4t::ArmDecoder::decode(word,pc);
-        if(comma)out+=",";comma=true;
+        if(comma)out+=",";
+        comma=true;
         out+="{\"pc\":"+std::to_string(pc)+",\"thumb\":"+std::to_string(thumb)+
             ",\"hits\":"+std::to_string(hits)+",\"bytes_valid\":"+(valid?"true":"false")+
             ",\"word\":"+std::to_string(word)+",\"op\":"+std::to_string(unsigned(instruction.op))+"}";

@@ -45,19 +45,21 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     bool bounded_memory=false;
     uint32_t device_value=0;
     unsigned device_reads=0,device_writes=0;
+    unsigned device_read8=0,device_read16=0;
     std::optional<uint32_t> MemoryReadCode(uint32_t a) override {return ram.read32(a);}
-    bool PreCodeReadHook(bool,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {
+    bool PreCodeReadHook(bool thumb,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {
         if(forced_floor==pc){ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;}
         const auto start=Dynarmic::A32::LocationDescriptor{ir.block.Location()}.PC();
         bool end=complete_io&&pc==code_pc+4&&pc!=start;
         if(bounded_memory&&pc!=start) {
-            const auto prev=armv4t::ArmDecoder::decode(ram.read32(pc-4),pc-4);
-            end=pc-start>=64||(prev.op>=armv4t::IrOp::LDR&&prev.op<=armv4t::IrOp::STM);
+            const auto width=thumb?2u:4u;
+            const auto prev=thumb?armv4t::ThumbDecoder::decode(ram.read16(pc-width),pc-width):armv4t::ArmDecoder::decode(ram.read32(pc-width),pc-width);
+            end=pc-start>=16*width||(prev.op>=armv4t::IrOp::LDR&&prev.op<=armv4t::IrOp::STM);
         }
         if(end) {
             // The controlled fixture's first instruction accesses memory.
             // Commit its next PC, then stop if the device requested a handoff.
-            nds_arm9_stamp_memory_context(ir);ir.BranchWritePC(ir.Imm32(pc));
+            nds_arm9_finish_memory(ir);ir.BranchWritePC(ir.Imm32(pc));
             ir.SetTerm(Dynarmic::IR::Term::CheckHalt{Dynarmic::IR::Term::LinkBlock{ir.current_location}});
             return false;
         }
@@ -71,9 +73,19 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
         jit->HaltExecution(Dynarmic::HaltReason::MemoryAbort);
         return false;
     }
-    uint8_t MemoryRead8(uint32_t a) override {return permitted(a,1,false)?ram.read8(a):0;}
-    uint16_t MemoryRead16(uint32_t a) override {return permitted(a,2,false)?ram.read16(a&~1u):0;}
+    uint8_t MemoryRead8(uint32_t a) override {
+        if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"byte callback PC");++device_reads;++device_read8;jit->HaltExecution();return uint8_t(device_value>>((a&1u)*8));}
+        return permitted(a,1,false)?ram.read8(a):0;
+    }
+    uint16_t MemoryRead16(uint32_t a) override {
+        if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"half callback PC");++device_reads;++device_read16;jit->HaltExecution();return uint16_t(device_value);}
+        return permitted(a,2,false)?ram.read16(a&~1u):0;
+    }
     uint32_t MemoryRead32(uint32_t a) override {
+        const auto kind=NdsArm9ReadKind(jit->ExtRegs()[0]);
+        if(kind==NdsArm9ReadKind::HalfUnsigned||kind==NdsArm9ReadKind::HalfSigned)
+            return nds_arm9_read_halfword(a,kind==NdsArm9ReadKind::HalfSigned,
+                [this](uint32_t x){return MemoryRead8(x);},[this](uint32_t x){return MemoryRead16(x);});
         if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"read callback PC survives optimization");++device_reads;jit->HaltExecution();return device_value;}
         return permitted(a,4,false)?std::rotr(ram.read32(a&~3u),int((a&3)*8)):0;
     }
@@ -98,6 +110,7 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
 void set_state(Dynarmic::A32::Jit& jit,const armv4t::CPUState& state) {
     jit.ClearHalt(Dynarmic::HaltReason::UserDefined1|Dynarmic::HaltReason::MemoryAbort);
     std::copy(std::begin(state.R),std::end(state.R),jit.Regs().begin());jit.SetCpsr(flags(state));
+    jit.ExtRegs()[0]=uint32_t(NdsArm9ReadKind::Word);
 }
 bool equal(const armv4t::CPUState& expected,const Dynarmic::A32::Jit& jit) {
     return std::equal(std::begin(expected.R),std::end(expected.R),jit.Regs().begin())&&flags(expected)==jit.Cpsr();
@@ -170,6 +183,34 @@ int main() {
     }
     require(!env.floors&&!env.rejected_reads&&!env.rejected_writes,"ordinary cases unexpectedly fell back");
     std::printf("ARM9 native translation differential cases passed: %llu\n",static_cast<unsigned long long>(cases));
+    env.bounded_memory=true;
+    const uint32_t half_arm[]={0xe1d120b0u,0xe1d120f0u,0xe19120b3u,0xe19120f3u,
+        0xe1f120b2u,0xe1f120f2u,0xe0d120b2u,0xe0d120f2u,0xe15120b2u,0xe15120f2u,
+        0x11d120b0u,0x11d120f0u,0xe1df20b0u,0xe1df20f0u};
+    uint64_t half_cases=0;
+    for(bool thumb:{false,true}) {
+        const unsigned count=thumb?3:unsigned(std::size(half_arm));
+        for(unsigned instruction=0;instruction<count;++instruction)for(unsigned sample=0;sample<32;++sample) {
+            const uint32_t word=thumb?uint32_t(std::array<uint16_t,3>{0x880au,0x5a0au,0x5e0au}[instruction]):half_arm[instruction];
+            armv4t::CPUState original{};
+            for(auto& r:original.R)r=random();
+            original.R[0]=0;original.R[1]=0x4000+(sample&3);original.R[3]=0;original.R[15]=code_pc;
+            original.cpsr.mode=0x1f;original.cpsr.t=thumb;original.thumb=thumb;
+            original.cpsr.n=sample&1;original.cpsr.z=(sample>>1)&1;original.cpsr.c=(sample>>2)&1;original.cpsr.v=(sample>>3)&1;
+            for(unsigned at=0x3ff0;at<0x4010;++at)env.ram.data[at]=uint8_t(random());
+            env.ram.write32(code_pc,word);env.ram.write32(code_pc+4,0xeafffffeu);
+            Ram reference=env.ram;auto expected=original;
+            const auto decoded=thumb?armv4t::ThumbDecoder::decode(uint16_t(word),code_pc):armv4t::ArmDecoder::decode(word,code_pc);
+            require(armv4t::Interpreter::step(expected,reference,decoded)==armv4t::Interpreter::Result::Normal,"halfword reference case");
+            jit.InvalidateCacheRange(code_pc,8);set_state(jit,original);env.remaining=1;jit.Run();
+            if(!equal(expected,jit)||reference.data!=env.ram.data) {
+                std::fprintf(stderr,"Halfword mismatch %08x T=%u sample=%u result %08x != %08x\n",word,unsigned(thumb),sample,expected.R[2],jit.Regs()[2]);return 1;
+            }
+            ++half_cases;
+        }
+    }
+    env.bounded_memory=false;
+    std::printf("ARM9 halfword native addressing/alignment/predication cases passed: %llu\n",static_cast<unsigned long long>(half_cases));
     // Does an I/O abort really leave a restartable instruction? This is a
     // research result, not a passing assertion about an unimplemented adapter.
     for(uint32_t word:{0xe5912000u,0xe4912004u,0xe5b12004u,0xe4812004u}) {
@@ -209,6 +250,17 @@ int main() {
         require(operations==env.device_reads+env.device_writes,"device operation was replayed");
     }
     std::puts("COMPLETED_IO_HANDOFF passed: four addressing forms, device once, following instruction waits");
+    for(bool sign:{false,true})for(unsigned odd=0;odd<2;++odd) {
+        armv4t::CPUState state{};state.R[1]=0x04000000u+odd;state.R[2]=0x12345678u;state.R[15]=code_pc;state.cpsr.mode=0x1f;
+        env.ram.write32(code_pc,sign?0xe1d120f0u:0xe1d120b0u);env.ram.write32(code_pc+4,0xeafffffeu);
+        env.device_value=0xa1b2;env.device_reads=env.device_writes=env.device_read8=env.device_read16=0;
+        jit.InvalidateCacheRange(code_pc,8);set_state(jit,state);env.remaining=100;jit.Run();
+        const uint32_t expected=sign?(odd?0xffffffa1u:0xffffa1b2u):(odd?0xb20000a1u:0xa1b2u);
+        require(jit.Regs()[2]==expected&&jit.Regs()[15]==code_pc+4,"halfword I/O result and completed PC");
+        require(env.device_reads==1&&env.device_writes==0,"one halfword device operation");
+        require(env.device_read8==unsigned(sign&&odd)&&env.device_read16==unsigned(!(sign&&odd)),"halfword device read width");
+    }
+    std::puts("HALFWORD_IO_WIDTH passed: signed odd byte access, other halfword access, operation once");
     env.complete_io=false;env.forced_floor=0;jit.ClearCache();
     env.ram.write32(0x200,0xe3a00000u); // mov r0,#0
     env.ram.write32(0x204,0xe2800001u); // add r0,r0,#1

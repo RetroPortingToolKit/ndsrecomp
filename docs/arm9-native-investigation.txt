@@ -87,3 +87,18 @@ Nativev1 qualification and currentv2 work
 - Generation-check counters now distinguish ARM9/ARM7. Known-write suppression
   covers only an inline RAM store; I/O callbacks retain nested bus-master write
   notifications. v2 has no measured game performance claim yet.
+- One608-frame local owned-stop census identified halfword loads as~81% of
+  stops (LDRH2.875million + LDRSH2.070million of6.127million stops). Most
+  generation checks in that sample were ARM7, not ARM9 (~817k vs279k/frame).
+- v2 lowers halfword reads into wide native callbacks after ARM predication is
+  established. Aligned and odd-address unsigned/signed outcomes match the
+  faithful interpreter; odd signed I/O reads exactly one byte, other halfword
+  cases read exactly one aligned halfword.544 addressing/alignment/condition
+  cases and explicit device-width fixtures pass in addition to3912 cases.
+  Private native S0 carries the read kind: ARM9 has no guest VFP state. It is
+  written once per memory instruction before its accesses, including multiword
+  transfers, so register optimization cannot discard an earlier required tag.
+- No dependency fork or synthetic guest address alias is used. Device addresses
+  remain unchanged. Code-generation pointers and JIT CPU windows remain owned
+  by the JIT instance; cached register-window references avoid getter calls in
+  the hot bridge. Reset/restore invalidates code before backing replacement.
