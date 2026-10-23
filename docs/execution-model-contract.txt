@@ -85,16 +85,22 @@ rendezvous. Unsupported instructions use the independent interpreter for one
 instruction. Reference/HLE returns unwind obsolete host continuations in the
 performance model and resume through the completed guest PC.
 
-The local register block is initialized inline after a pointer-free setup call;
-its address is not exposed to external helpers before exit. This allows the C
-compiler to keep registers private across timing and bus calls. The initial
+The local register block is initialized and published inline, with pointer-free
+external setup and finish calls. Its address never reaches external helpers.
+GCC's scalar-replacement dump for the semantic fixture rejected the original
+block as escaping even when only the exit helper accepted its address. The
+value-only finish interface removes that rejection and permits individual
+register values to be optimized; it does not guarantee every value fits in a
+physical host register. The initial
 prototype keeps the existing scheduler quantum, with bounded instruction
 checkpoints; broader job-based simulated timing remains a possible next step.
 
 Focused synthetic instruction/interworking/IO/invalidation checks and unchanged
-faithful code-generation checks pass. Actual MKDS boot/device behavior,
-current-build state restoration, visual sanity, NAS performance and full-race
-qualification are still pending. No speedup or interoperability is established.
+faithful code-generation checks pass. Both prior candidates booted MKDS, passed
+current-build save/load and cross-model rejection checks, preserved native saves,
+and showed sane graphics. Both failed their matched NAS speed comparison below.
+The virtual-work revision requires fresh focused checks and a matched comparison;
+full-race qualification is pending. No speedup or interoperability is established.
 
 First measured probe and boundary revision
 -----------------------------------------

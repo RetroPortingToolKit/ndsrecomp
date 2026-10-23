@@ -67,8 +67,8 @@ extern "C" void runtime_region_single_step() {
     ++fallback_calls;armv4t::CPUState c{};import_cpu(c);TestBus b(ram);step(c,b);
     memcpy(g_cpu.R,c.R,sizeof(c.R));g_cpu.cpsr=pack(c);++g_insn_count[0];++g_runtime_cycles;
 }
-extern "C" void nds_region_end(NdsExecRegion* r) {
-    nds_region_publish(r);if(r->single_step)runtime_region_single_step();
+extern "C" void nds_region_finish(uint32_t single_step,uint32_t) {
+    if(single_step)runtime_region_single_step();
 }
 extern "C" void runtime_note_code_write() {
     ++code_writes;if(invalidate)g_nds_fast_limit=0;

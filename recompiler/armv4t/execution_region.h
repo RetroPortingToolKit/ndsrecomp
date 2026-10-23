@@ -15,7 +15,7 @@ typedef struct NdsExecRegion {
 extern "C" {
 #endif
 bool nds_region_prepare(void);
-void nds_region_end(NdsExecRegion* r);
+void nds_region_finish(uint32_t single_step, uint32_t io);
 void runtime_region_single_step(void);
 extern uint32_t g_nds_region_hle_vectors;
 extern uint64_t g_nds_region_entries, g_nds_region_reference_steps;
@@ -23,9 +23,10 @@ extern uint64_t g_nds_region_entries, g_nds_region_reference_steps;
 }
 #endif
 
-// Keep this register block's address inside the generated translation unit
-// until the exit. An external begin(r) could retain its address, requiring
-// register reloads around every subsequent external timing/bus helper.
+// Never pass this register block's address outside the generated translation
+// unit. Even an external end(r) makes it escape in GCC's aggregate analysis,
+// preventing scalar replacement throughout the body. Boundary helpers take
+// values only; publish all state before entering external hardware code.
 NDS_MACHINERY_INLINE bool nds_region_begin(NdsExecRegion* r) {
     if (!nds_region_prepare()) return false;
     memcpy(r->cpu.R, g_cpu.R, sizeof(r->cpu.R));
@@ -42,6 +43,10 @@ NDS_MACHINERY_INLINE void nds_region_publish(NdsExecRegion* r) {
     g_runtime_cycles = r->cycles;
     g_insn_count[g_nds_active] += r->insn_counts[g_nds_active];
     r->insn_counts[g_nds_active] = 0;
+}
+NDS_MACHINERY_INLINE void nds_region_end(NdsExecRegion* r) {
+    nds_region_publish(r);
+    nds_region_finish(r->single_step, r->io);
 }
 NDS_MACHINERY_INLINE void nds_region_charge(NdsExecRegion* r, uint32_t n) {
     r->cycles += n;

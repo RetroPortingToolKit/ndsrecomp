@@ -57,14 +57,14 @@ extern "C" void runtime_region_single_step() {
     g_nds_unwinding = 1;
 }
 
-extern "C" void nds_region_end(NdsExecRegion* r) {
-    nds_region_publish(r);
-    if (r->single_step) {
+extern "C" void nds_region_finish(uint32_t single_step, uint32_t io) {
+    // The generated inline exit has already published registers and cycles.
+    if (single_step) {
         ++unsupported_exits;
         runtime_region_single_step();
         return;
     }
-    if (r->io) ++io_exits;
+    if (io) ++io_exits;
     runtime_tick(0);
     if (runtime_unwinding() || runtime_should_yield()) return;
     // I/O exits publish all effects before redispatch. Preserve the hardware
