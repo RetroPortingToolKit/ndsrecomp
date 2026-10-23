@@ -21,6 +21,9 @@
 #include "pc_profile.h"
 #include "spu.h"
 #include "wifi.h"
+#if defined(NDS_ARM9_DYNARMIC)
+#include "arm9_native.h"
+#endif
 
 namespace {
 
@@ -222,7 +225,10 @@ void run_slice(int cpu, uint32_t quantum) {
         nds_clear_unwinding();   // a fresh dispatch is a real entry, not an unwind
         ++g_nds_dispatch_stats[cpu & 1].resume_dispatch;
         nds_dispatch_tag(NDS_DISPATCH_CLASS_RESUME);
-        runtime_dispatch(pc | t);
+#if defined(NDS_ARM9_DYNARMIC)
+        if (!nds_arm9_native_run())
+#endif
+            runtime_dispatch(pc | t);
         // An exact-index stop reached in Tier 3 may have unwound through a
         // nested static IRQ dispatch. Restore the captured guest state after
         // those host frames return so the observer lands on the true PC.

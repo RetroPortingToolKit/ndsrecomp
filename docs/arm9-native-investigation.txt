@@ -1,0 +1,68 @@
+Experimental ARM9 native execution -- owner priority 2026-10-23
+
+Acceptance: ARM9 execution <=5.5ms/frame on the same NAS eight-kart150cc
+Waluigi Pinball workload, separately from graphics savings. Overall goal remains
+sustained60FPS with approximately13.3ms active work/frame. No gain claimed yet.
+
+The three rejected CPU candidates were generated-C revisions of one model.
+Their failure does not establish an irreducible ARM9 cost. The new candidate
+uses Dynarmic's native code generation, block linking and return prediction.
+Source: https://github.com/lioncash/dynarmic
+Pin: a41c380246d3d9f9874f0f792d234dc0cc17c180 (6.7.0, 0BSD).
+Its own sources disclose user-mode limitations; banking, privileged operations
+and exception returns stay in the existing runtime. Other dependency licenses
+must accompany any eventual delivery. The research copy's CMake adds a local
+probe target only; no production dependency fork is currently required.
+
+Selection and portability
+- NDS_ARM9_DYNARMIC_ROOT is empty by default. Only Windows x64 builds link this
+  experiment. Other hosts keep the portable faithful implementation.
+- The compiled native implementation checks SSE3 once before constructing JIT
+  code; Dynarmic detects optional later CPU features internally.
+- --execution-model faithful retains the existing execution. Performance uses
+  native ARM9 where eligible; ARM7 retains its current implementation. Old flat
+  ARM9 banks are not registered for the native profile.
+- Native caches are disposable. Current CPU state stays canonical at scheduler
+  boundaries; cache reset is explicit before memory restore/reset. State identity
+  contains native implementation/timing identity. Native saves are separate.
+
+Authorized timing tradeoff
+- Translated instructions use fixed two-ARM9-cycle virtual costs, independent
+  of host speed. Exact instruction/bus-wait timing is not this profile's contract.
+- Existing 64-system-cycle scheduler slices and device event deadlines remain.
+  Native blocks are bounded to16 guest instructions and stop after memory ops.
+- Device access executes the existing bus operation once, commits its CPU state
+  and exits native execution. Existing device rescheduling decides CPU handoff.
+  Within-run device timestamps are coarser than the faithful implementation.
+  Device/status/interrupt/DMA/IPC/FIFO effects are retained; their practical
+  outcome still requires gameplay qualification. Live Wiimmfi remains waived
+  and explicitly unverified; there is no interoperability claim from compilation.
+
+Code invalidation
+- Code translation records physical backing-generation pointers, including
+  mirrored aliases. Native stores retain the original bus/provenance path and
+  invalidate on overlap with translated code.
+- Prebuilt ARM7/faithful writers have the older addressless notification ABI.
+  Their write notification conservatively checks watched generations. Its CPU
+  cost is a measured-candidate concern, not silently ignored or assumed free.
+- CP15 mappings and memory restore/reset clear the cache. No guest code bytes
+  are trusted solely from a title/version string.
+
+Focused evidence so far
+- Native dependency builds with MinGW on the local host.
+-3912 synthetic ARM/Thumb comparisons against the independent portable IR
+  interpreter pass, including arithmetic/flags, RAM, multiply, ARMv5 saturation,
+  CLZ and interworking. This is not a complete ISA qualification.
+- A generic memory-abort/retry approach was rejected: postindexed and preindexed
+  writeback registers can already change at an abort, making naive retry wrong.
+- Completing the device operation followed by an instruction-boundary stop
+  passes four read/write addressing fixtures: one device effect, correct next
+  PC/base/destination, and the following instruction waits until resume.
+- Privileged stop returns before executing the instruction. Odd halfword loads,
+  banked operations, PC loads/exception returns and swaps conservatively use the
+  faithful instruction implementation in this first game adapter.
+
+Next: build the game adapter, focused current-build restore/basic visual check,
+then ONE matched NAS native candidate pair with identical features and sampled
+ARM9 attribution. No matrices. Full race and owner handoff remain conditional
+on a material qualified gain. No final integration without owner approval.

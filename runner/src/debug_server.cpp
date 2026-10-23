@@ -20,6 +20,9 @@
 #include "savestate.h"
 #include "state.h"
 #include "execution_model.h"
+#if defined(NDS_ARM9_DYNARMIC)
+#include "arm9_native.h"
+#endif
 #include "execution_region.h"
 #include "execution_region_stats.h"
 #include "io.h"
@@ -1518,6 +1521,13 @@ std::string handle(const std::string& line) {
     // is it costing? Asked before trusting a table, and the answer carries the
     // observer's own measured overhead.
     if (cmd == "hostprof_status") return nds_hostprof_status_json();
+    if (cmd == "arm9_native") {
+#if defined(NDS_ARM9_DYNARMIC)
+        return nds_arm9_native_json();
+#else
+        return "{\"available\":false}";
+#endif
+    }
     if (cmd == "execution_model") {
         return std::string("{\"ok\":true,\"model\":\"") +
             nds_execution_model_identity() + "\",\"native_regions\":" +

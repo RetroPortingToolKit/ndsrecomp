@@ -31,5 +31,9 @@ bool nds_performance_execution() {
     return selected == NdsExecutionModel::Performance;
 }
 const char* nds_execution_model_identity() {
+#if defined(NDS_ARM9_DYNARMIC)
+    return nds_performance_execution() ? "performance-arm9-native-v1-timing2" : "faithful-v1";
+#else
     return nds_performance_execution() ? "performance-flat-aot-v3-timing-v3" : "faithful-v1";
+#endif
 }

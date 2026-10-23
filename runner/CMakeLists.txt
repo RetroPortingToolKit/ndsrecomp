@@ -41,6 +41,23 @@ option(NDS_MKDS_PERFORMANCE
     "Include selectable portable flat-AOT MKDS execution alongside faithful banks" OFF)
 set(NDS_MKDS_PERFORMANCE_BANK_DIR "" CACHE PATH
     "Generated mkds_perf_arm9 and mkds_perf_arm9_itcm banks")
+set(NDS_ARM9_DYNARMIC_ROOT "" CACHE PATH "Optional pinned Dynarmic source for experimental ARM9 native execution")
+set(NDS_ARM9_DYNARMIC_ENABLED OFF)
+if(NDS_ARM9_DYNARMIC_ROOT)
+    if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
+        if(NOT NDS_MKDS_PERFORMANCE)
+            message(FATAL_ERROR "ARM9 native prototype requires the MKDS performance model")
+        endif()
+        set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
+        set(DYNARMIC_FRONTENDS A32 CACHE STRING "" FORCE)
+        set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+        set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
+        add_subdirectory("${NDS_ARM9_DYNARMIC_ROOT}" "${CMAKE_BINARY_DIR}/optional/dynarmic" EXCLUDE_FROM_ALL)
+        set(NDS_ARM9_DYNARMIC_ENABLED ON)
+    else()
+        message(STATUS "Optional ARM9 native host unavailable; retaining portable faithful execution")
+    endif()
+endif()
 if(NOT NDS_ACCELERATED_RENDERER MATCHES "^(COMPUTE|OPENGL)$")
     message(FATAL_ERROR "NDS_ACCELERATED_RENDERER must be COMPUTE or OPENGL")
 endif()
@@ -397,6 +414,10 @@ if(NDS_MKDS_PERFORMANCE)
     string(APPEND NDS_BUILD_VARIANT "-flat${_perf_short}")
 endif()
 
+if(NDS_ARM9_DYNARMIC_ENABLED)
+    string(APPEND NDS_BUILD_VARIANT "-arm9-native-v1-timing2-dynarmica41c380")
+endif()
+
 # Build one registry translation unit from the configured dispatch filenames.
 # This keeps game names and the number of overlay/runtime generations out of
 # shared runner source. Every generated table is registered only after the
@@ -444,7 +465,7 @@ if(TITLE_BANK_DISPATCH)
         file(APPEND "${TITLE_BANK_REGISTRY}"
             "    if (std::strcmp(rom_sha1, "
             "\"${TITLE_GROUP_${_gi}_SHA1}\") == 0) {\n")
-        if(NDS_MKDS_PERFORMANCE AND TITLE_GROUP_${_gi}_SHA1 STREQUAL "691e00d9a5dd80b04f80cc7559503e8b06848785")
+        if(NDS_MKDS_PERFORMANCE AND NOT NDS_ARM9_DYNARMIC_ENABLED AND TITLE_GROUP_${_gi}_SHA1 STREQUAL "691e00d9a5dd80b04f80cc7559503e8b06848785")
             file(APPEND "${TITLE_BANK_REGISTRY}" "        if (nds_performance_execution()) {\n")
             foreach(_bank mkds_perf_arm9 mkds_perf_arm9_itcm)
                 file(APPEND "${TITLE_BANK_REGISTRY}"
@@ -527,6 +548,7 @@ target_include_directories(nds_armv4t PUBLIC
     ${NDS_ARM_RECOMP_INCLUDE_DIRS})
 
 add_executable(nds_runner
+    src/arm9_native.cpp
     src/runtime_arm.cpp
     src/execution_region.cpp
     src/execution_model.cpp
@@ -860,6 +882,19 @@ target_link_libraries(nds_runner PRIVATE nds_banks nds_support nds_armv4t slirp)
 if(NDS_MKDS_PERFORMANCE)
     target_link_libraries(nds_runner PRIVATE nds_performance_banks)
     target_compile_definitions(nds_runner PRIVATE NDS_MKDS_PERFORMANCE=1)
+endif()
+if(NDS_ARM9_DYNARMIC_ENABLED)
+    if(NOT NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
+        message(FATAL_ERROR "ARM9 native prototype currently requires retained MKDS HLE kernels")
+    endif()
+    target_compile_definitions(nds_runner PRIVATE NDS_ARM9_DYNARMIC=1)
+    target_include_directories(nds_runner PRIVATE ${Boost_INCLUDE_DIR} ${Boost_INCLUDE_DIRS})
+    target_link_libraries(nds_runner PRIVATE dynarmic merry::mcl)
+    add_executable(arm9_native_probe tests/arm9_dynarmic_probe.cpp)
+    target_include_directories(arm9_native_probe PRIVATE ${NDS_ARM_RECOMP_INCLUDE_DIRS} ${Boost_INCLUDE_DIR} ${Boost_INCLUDE_DIRS})
+    target_link_libraries(arm9_native_probe PRIVATE dynarmic merry::mcl nds_armv4t)
+    add_test(NAME arm9_native_probe COMMAND arm9_native_probe)
+    set_tests_properties(arm9_native_probe PROPERTIES TIMEOUT 30)
 endif()
 if(NDS_BOOTSTRAP_FIRMWARE)
     target_compile_definitions(nds_runner PRIVATE NDS_BOOTSTRAP_FIRMWARE=1)

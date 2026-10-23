@@ -21,6 +21,9 @@
 #include <vector>
 
 #include "state.h"
+#if defined(NDS_ARM9_DYNARMIC)
+#include "arm9_native.h"
+#endif
 #include "savestate.h"
 #include "runtime_arm.h"
 #include "io.h"
@@ -456,6 +459,9 @@ extern "C" uint32_t g_last_data_addr[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
 static void reset_arm9_code_timing();
 
 void bus_init() {
+#if defined(NDS_ARM9_DYNARMIC)
+    nds_arm9_native_clear();
+#endif
     g_last_code_pc[0] = g_last_code_pc[1] = 0xFFFFFFFFu;
     g_last_data_addr[0] = g_last_data_addr[1] = 0xFFFFFFFFu;
     reset_arm9_code_timing();
@@ -675,6 +681,10 @@ bool bus_savestate_export(NdsBusMemorySnapshot* out) {
 }
 
 bool bus_savestate_import(const NdsBusMemorySnapshot& in, std::string* error) {
+#if defined(NDS_ARM9_DYNARMIC)
+    // Cached generation pointers must die before backing vectors are replaced.
+    nds_arm9_native_clear();
+#endif
     auto fail = [&](const char* message) {
         if (error) *error = message;
         return false;

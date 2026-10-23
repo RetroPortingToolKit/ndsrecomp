@@ -8,6 +8,9 @@
 // always-on trace ring, the cooperative yield/halt, and lifecycle.
 
 #include "runtime_arm.h"
+#if defined(NDS_ARM9_DYNARMIC)
+#include "arm9_native.h"
+#endif
 #include "guest_job_profile.h"
 #if defined(NDS_MKDS_PERFORMANCE)
 #include "execution_model.h"
@@ -997,6 +1000,9 @@ extern "C" void runtime_request_yield_poll(void) { request_yield_poll(); }
 extern "C" void runtime_clear_fast_limit(void) { g_nds_fast_limit = 0u; }
 
 extern "C" void runtime_note_code_write(void) {
+#if defined(NDS_ARM9_DYNARMIC)
+    nds_arm9_native_note_write();
+#endif
     // beads-yjp.28: every guest RAM write funnels through here -- the slow bus
     // path (bus.cpp note_ram_write) and the generated-bank inline fast path
     // (runtime_arm.h nds_busf_note_write) alike -- so this single counter is
@@ -2319,6 +2325,9 @@ extern "C" void runtime_unimplemented_op(const char* op_name, uint32_t pc) {
     nds_halt("unimplemented op");
 }
 extern "C" void runtime_init(void*) {
+#if defined(NDS_ARM9_DYNARMIC)
+    nds_arm9_native_clear();
+#endif
     g_cpu_fast_poll = configured_cpu_fast_poll();
     g_cycle_fast_limit_enabled = configured_cycle_fast_limit();
     request_yield_poll();       // re-arm site: machine reset
@@ -2387,6 +2396,9 @@ bool runtime_savestate_import(const NdsRuntimeSaveState& in,
 }
 
 void runtime_savestate_invalidate_host_caches() {
+#if defined(NDS_ARM9_DYNARMIC)
+    nds_arm9_native_clear();
+#endif
     request_yield_poll();
     g_static_guard = nullptr;
     clear_dispatch_cache_all();
