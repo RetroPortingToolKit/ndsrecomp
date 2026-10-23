@@ -90,6 +90,12 @@ bool nds_hostprof_running();
 void nds_hostprof_register_current_thread(NdsHostProfRole role);
 void nds_hostprof_unregister_current_thread();
 
+// Optional diagnostic context capture, installed before start and removed after
+// stop. Runs only for the suspended emulation thread, after GetThreadContext.
+// The hook must not allocate, lock, perform I/O, or execute guest/device code.
+using NdsHostProfGuestCapture = void (*)(uint64_t qpc);
+void nds_hostprof_set_guest_capture(NdsHostProfGuestCapture capture);
+
 // RAII form, and the one worker threads should use. A thread that registers and
 // then exits without retiring its slot leaves a dead thread handle in the
 // target table: the sampler then pays a failing SuspendThread every tick for

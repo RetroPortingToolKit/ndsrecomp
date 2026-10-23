@@ -27,6 +27,8 @@
 
 namespace {
 
+std::atomic<NdsHostProfGuestCapture> g_guest_capture{nullptr};
+
 std::string json_escape_str(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -53,6 +55,10 @@ std::string json_escape_str(const std::string& s) {
 }
 
 }  // namespace
+
+void nds_hostprof_set_guest_capture(NdsHostProfGuestCapture capture) {
+    g_guest_capture.store(capture, std::memory_order_release);
+}
 
 #if !NDS_HOSTPROF_SUPPORTED
 
@@ -613,6 +619,10 @@ void sample_target(Target& t) {
             // from a shallow stack.
             stack_rejected = true;
         }
+    }
+    if (got && t.role == NDS_HOSTPROF_ROLE_EMU) {
+        if (auto capture = g_guest_capture.load(std::memory_order_acquire))
+            capture(t0);
     }
     ResumeThread(t.handle);
     const uint64_t t1 = qpc();

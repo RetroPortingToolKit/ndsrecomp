@@ -28,6 +28,10 @@
 namespace {
 
 int g_failures = 0;
+std::atomic<uint32_t> g_guest_context_samples{0};
+void probe_guest_context(uint64_t qpc) {
+    if (qpc) g_guest_context_samples.fetch_add(1, std::memory_order_relaxed);
+}
 
 #define CHECK(condition)                                                  \
     do {                                                                  \
@@ -483,6 +487,7 @@ void test_sampler_end_to_end() {
     _putenv_s("NDS_HOSTPROF", "on");
     _putenv_s("NDS_HOSTPROF_HZ", "1000");
     _putenv_s("NDS_HOSTPROF_RING", "16384");
+    nds_hostprof_set_guest_capture(probe_guest_context);
     nds_hostprof_start();
     CHECK(nds_hostprof_running());
     if (!nds_hostprof_running()) return;
@@ -545,6 +550,8 @@ void test_sampler_end_to_end() {
     }
     nds_hostprof_stop();
     CHECK(!nds_hostprof_running());
+    CHECK(g_guest_context_samples.load(std::memory_order_relaxed) > 0);
+    nds_hostprof_set_guest_capture(nullptr);
 }
 
 // ── beads-yjp.70: an unloaded module must never fault the sampler ────────

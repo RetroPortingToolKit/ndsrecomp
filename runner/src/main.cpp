@@ -40,6 +40,7 @@
 #include "io.h"
 #include "debug_server.h"
 #include "host_profile.h"
+#include "guest_job_profile.h"
 #include "diagnostics.h"
 #include "dispatch_timing.h"
 #include "emu_profile.h"
@@ -1279,7 +1280,18 @@ int main(int argc, char** argv) {
     //
     // This call also registers the calling thread -- the emu/frontend thread --
     // as the primary sampling target.
+    if (nds_guest_jobs_start(runtime_guest_job_profile_sources(),
+                             std::getenv("NDS_GUEST_JOB_PROFILE_OUTPUT")))
+        nds_hostprof_set_guest_capture(nds_guest_jobs_capture);
     nds_hostprof_start();
+    struct GuestProfileShutdown {
+        ~GuestProfileShutdown() {
+            nds_hostprof_stop();
+            nds_hostprof_set_guest_capture(nullptr);
+            if (!nds_guest_jobs_finish())
+                std::fprintf(stderr, "[guest-jobs] failed to write profile\n");
+        }
+    } guest_profile_shutdown;
 
     // Resolve the network config to backend-ready numeric form. Provider
     // name -> table lookup, optional dns_server string -> IPv4, matching
@@ -2309,10 +2321,14 @@ int main(int argc, char** argv) {
         // written the hostprof bundle), so the dump covers the whole session
         // including its last frames.
         nds_hostprof_stop();
+        nds_hostprof_set_guest_capture(nullptr);
+        const bool guest_profile_ok = nds_guest_jobs_finish();
+        if (!guest_profile_ok)
+            std::fprintf(stderr, "[guest-jobs] failed to write profile\n");
         const bool save_ok = nds_io_flush_cartridge_save();
         const bool firmware_ok = nds_io_flush_firmware_save();
         write_coverage_manifest();
-        return rc != 0 ? rc : (save_ok && firmware_ok) ? 0 : 1;
+        return rc != 0 ? rc : (save_ok && firmware_ok && guest_profile_ok) ? 0 : 1;
     }
 
     if (serve) {

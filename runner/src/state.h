@@ -98,6 +98,10 @@ extern "C" int nds_slice_over(void);
 // Clear the slice-yield unwind flag (scheduler calls this before each
 // dispatch so normal returns aren't mistaken for a preemption unwind).
 extern "C" void nds_clear_unwinding(void);
+
+// Optional diagnostic sources; addresses remain stable across CPU slice swaps.
+struct NdsGuestJobSources;
+NdsGuestJobSources runtime_guest_job_profile_sources();
 // Tier-3 can be nested under a static BIOS IRQ dispatch. An exact-index stop
 // must unwind those host frames without allowing their saved continuation PC
 // to overwrite the interpreted state at which observation stopped.

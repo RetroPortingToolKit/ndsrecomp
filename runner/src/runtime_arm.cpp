@@ -8,6 +8,7 @@
 // always-on trace ring, the cooperative yield/halt, and lifecycle.
 
 #include "runtime_arm.h"
+#include "guest_job_profile.h"
 #if defined(NDS_MPH_MATH_HLE)
 #include "hle_mph_math.h"
 #endif
@@ -2131,6 +2132,12 @@ extern "C" void runtime_call_cancel_return(uint32_t return_pc) {
     }
 }
 extern "C" uint32_t runtime_call_stack_depth(void) { return g_crs_depth; }
+
+NdsGuestJobSources runtime_guest_job_profile_sources() {
+    static_assert(sizeof(g_nds_active) == sizeof(uint32_t));
+    return {&g_cpu.R[15], &g_cpu.cpsr,
+        &g_nds_active, g_crs, &g_crs_depth, kCRS};
+}
 extern "C" const uint32_t* runtime_call_stack_data(void) { return g_crs; }
 extern "C" void runtime_call_stack_restore(const uint32_t* e, uint32_t d) {
     if (d > kCRS) d = kCRS; g_crs_depth = d;

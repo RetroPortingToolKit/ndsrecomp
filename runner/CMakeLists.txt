@@ -508,6 +508,7 @@ add_executable(nds_runner
     src/host_prof_ring.cpp
     src/host_unwind_x64.cpp
     src/host_profile.cpp
+    src/guest_job_profile.cpp
     src/host_info.cpp
     src/perf_governor.cpp
     src/profile_report.cpp
@@ -967,6 +968,11 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   # the one that actually needs proving -- the x64 .pdata/.xdata unwinder, both
   # against a synthetic table the test builds itself AND against the OS's own
   # RtlCaptureStackBackTrace over real compiler-generated prologues.
+  add_executable(guest_job_profile_test
+      tests/guest_job_profile_test.cpp src/guest_job_profile.cpp)
+  target_include_directories(guest_job_profile_test PRIVATE src)
+  add_test(NAME guest_job_profile_test COMMAND guest_job_profile_test)
+
   add_executable(host_prof_test
       tests/host_prof_test.cpp
       src/host_prof_ring.cpp
