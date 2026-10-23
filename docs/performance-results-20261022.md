@@ -4,7 +4,8 @@
 `perf/nds-retained-hostwork-20261022`, tested engine head
 `a4db725837f4d18234e01564dd03c340fca46a88`, based on `ab5e593`.
 The original checkout, its owner AGENTS.md edit and original native saves are
-preserved. No source integration has occurred. [Burndown](performance-burndown.md).
+preserved. The owner subsequently approved the retained Windows release;
+publication details follow below. [Burndown](performance-burndown.md).
 
 ## Decision
 
@@ -127,3 +128,19 @@ presented NAS run was launched. This does not establish sustained interactive
 about 104.8 to 106.2 VBlanks/s, with no interactive presentation. MKDS's lean
 sample was close to 60 VBlanks/s and leaves little measured headroom.
 Publish the bounded gains as such; do not mark the waived checks as passed.
+
+Windows [v0.7.8-alpha](https://github.com/mstan/MetroidPrimeHuntersRecomp/releases/tag/v0.7.8-alpha)
+is published. Title `e1b3976fa01883b5d665b79ad0b5430733381d4a` pins engine
+`6721d74cc168564373839510fa93df0ce2be090d`; the retained engine code is unchanged
+from qualification, with release identity refreshed. The package retains all
+266 required banks and the nine shards from the SHA-256-verified public v0.7.7
+archive. Their runtime headers and compiler bytes match the new package and
+the provider remains `2c7d6723a8d15cbb823c`. The working cache had a different
+six-shard projection, so the published set was preserved explicitly.
+
+The complete DLL closure, ZIP integrity, source/licenses and private-payload
+checks pass. GitHub reports matching sizes and SHA-256 digests for the Windows
+ZIP, complete source ZIP and checksums file. No new gameplay or performance run
+was performed during release packaging. The investigation is complete under
+the owner's accepted scope; sustained presented 60 FPS and fresh Wiimmfi
+qualification remain unverified.
