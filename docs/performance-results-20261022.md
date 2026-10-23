@@ -116,3 +116,14 @@ Private raw evidence is under
 all hashes verified), `final-evidence`, `clean-*-state`, `clean-tests.log`,
 `clean-policy.log`, and per-build artifact manifests. Raw states, native saves,
 ROMs, BIOS/firmware and network identities must stay private.
+
+## Owner release decision
+
+The owner confirmed that the desktop presentation looks fine and authorized
+release/integration on the measured improvement. The owner explicitly waived a
+fresh Wiimmfi test and canceled further measurement work. No additional
+presented NAS run was launched. This does not establish sustained interactive
+60 FPS under load: the final MPH figures are uncapped simulation throughput,
+about 104.8 to 106.2 VBlanks/s, with no interactive presentation. MKDS's lean
+sample was close to 60 VBlanks/s and leaves little measured headroom.
+Publish the bounded gains as such; do not mark the waived checks as passed.

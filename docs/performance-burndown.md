@@ -20,7 +20,7 @@ pass qualification and the owner approves final integration.
 | Versioned capture snapshots / texture coherence | 7www | Complete; selected for review | Unit and clean MPH game checks pass; snapshot copies 375 MiB to 2.5 MiB | Individual 5.42% less CPU; clean combination confirms a useful saving |
 | Lean production diagnostics / honest event hooks | bbm9 | Complete; selected for review | Arming and clean game checks pass; FIFO padding difference identified | Individual MKDS 2.65% less CPU; clean MPH combination passes |
 | Pinned artifacts and quiet SERVER A/A / A/B harness | hucn | Complete; hashes/manifests pinned | Reference bank byte-identical; occupied-host samples rejected; final pair shares NES queue's file lock | Individual samples, A/A controls and clean combined pair complete |
-| Two-game bundle, authentic Wiimmfi and owner handoff | wtdd | Clean MPH combination built without rejected experiments | Automated checks complete; 3 focused tests, fresh restore/game comparison and combined pair pass | MPH owner playtest launched windowed with normal audio; live WFC and approval pending |
+| Two-game bundle, authentic Wiimmfi and owner handoff | wtdd | Clean MPH combination built without rejected experiments | Automated checks complete; owner says it looks fine | Owner approved release and waived new Wiimmfi / further NAS checks; packaging in progress |
 
 ## Remaining-task record
 
@@ -149,3 +149,10 @@ elapsed time; both screens, audio tail, guest state and event deltas agree
 not a whole-game or all-hardware speedup. See [results](performance-results-20261022.md).
 Final normal-audio/windowed owner playtest and authentic WFC verification remain
 pending; no source integration or compatibility claim has been approved.
+
+Owner subsequently accepted the desktop visual playtest and instructed:
+"we're good. jsut cut the release. we'll skip my wimmfi" and "if we measured
+increase, let's be done. cut it and move on". Release/integration is authorized.
+The proposed additional NAS presented run was canceled before launch. Fresh
+Wiimmfi and sustained presented 60-FPS qualification remain unverified, explicitly
+waived for this release. Windows v0.7.8-alpha packaging is in progress.
