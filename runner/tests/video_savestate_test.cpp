@@ -2,11 +2,14 @@
 #include "gpu3d.h"
 #include "savestate.h"
 #include "vram.h"
+#include "NDS.h"
+#include "Savestate.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -214,6 +217,66 @@ void gpu3d_submit_triangle(uint64_t& cycles) {
     gpu3d_cmd(0x41u, 0u, cycles);
 }
 
+bool gpu3d_multiple_polygons_roundtrip() {
+    nds_vram_reset();
+    nds_gpu3d_reset();
+    nds_gpu3d_set_power((1u << 2u) | (1u << 3u));
+    uint64_t cycles = 0;
+    gpu3d_run_for(cycles);
+    gpu3d_cmd(0x60u, 0xBFFF0000u, cycles);
+    gpu3d_cmd(0x29u, (31u << 16u) | (1u << 6u) | (1u << 7u), cycles);
+    gpu3d_cmd(0x40u, 0u, cycles); // One BEGIN, two complete triangles.
+    for (unsigned i = 0; i < 6; ++i) {
+        const int16_t x = i % 3 == 0 ? -0x400 : i % 3 == 1 ? 0x400 : 0;
+        const int16_t y = i % 3 == 2 ? 0x400 : -0x400;
+        gpu3d_fifo_write(0x23u, cycles);
+        gpu3d_fifo_write(pack_i16(x, y), cycles);
+        gpu3d_fifo_write(0u, cycles);
+    }
+    NdsGxStateSnapshot before{};
+    nds_gpu3d_state(&before);
+    bool ok = expect(before.num_vertices == 6u && before.num_polygons == 2u,
+                     "six submitted vertices form two polygons under one BEGIN");
+    NdsGpu3dSaveState saved{};
+    std::string error;
+    ok &= expect(gpu3d_savestate_export(&saved, &error), error.c_str()) &&
+        expect(gpu3d_savestate_validate(saved, &error),
+               "total vertex count above four is a valid device state");
+    nds_gpu3d_reset();
+    ok &= expect(gpu3d_savestate_import(saved, &error),
+                 "multi-polygon state restores");
+    NdsGxStateSnapshot after{};
+    nds_gpu3d_state(&after);
+    ok &= expect(after.num_vertices == before.num_vertices &&
+                 after.num_polygons == before.num_polygons,
+                 "restored geometry retains both polygons");
+
+    // Corrupt only actual array cursors through the vendored stream writer.
+    // The cumulative VertexNum is not an array cursor and has no such bound.
+    auto device = std::make_unique<melonDS::NDS>();
+    for (unsigned which = 0; which < 3; ++which) {
+        melonDS::Savestate input(saved.device.data(),
+                                 static_cast<melonDS::u32>(saved.device.size()), false);
+        device->GPU.GPU3D.DoSavestate(&input);
+        if (which == 0) device->GPU.GPU3D.VertexNumInPoly = 4u;
+        else if (which == 1) device->GPU.GPU3D.ExecParamCount = 32u;
+        else device->GPU.GPU3D.PolygonMode = 4u;
+        melonDS::Savestate output;
+        device->GPU.GPU3D.DoSavestate(&output);
+        output.Finish();
+        NdsGpu3dSaveState corrupt = saved;
+        const auto* data = static_cast<const uint8_t*>(output.Buffer());
+        corrupt.device.assign(data, data + output.Length());
+        ok &= expect(!gpu3d_savestate_import(corrupt, &error),
+                     "out-of-range primitive mode or temporary cursor is rejected");
+        nds_gpu3d_state(&after);
+        ok &= expect(after.num_vertices == before.num_vertices &&
+                     after.num_polygons == before.num_polygons,
+                     "invalid cursor rejection leaves live geometry unchanged");
+    }
+    return ok;
+}
+
 bool gpu3d_rendered_projection_flag_follows_submitted_geometry() {
     constexpr int32_t orthographic[16] = {
         0x1000, 0,      0,      0,
@@ -274,6 +337,7 @@ bool gpu3d_rendered_projection_flag_follows_submitted_geometry() {
 int main() {
     bool ok = vram_and_midframe_capture_roundtrip();
     ok &= gpu3d_device_roundtrip();
+    ok &= gpu3d_multiple_polygons_roundtrip();
     ok &= gpu3d_rendered_projection_flag_follows_submitted_geometry();
     return ok ? 0 : 1;
 }

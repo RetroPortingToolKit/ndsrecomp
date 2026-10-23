@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -109,8 +110,11 @@ bool validate_gpu3d_device(const melonDS::GPU3D& gpu,
         gpu.PosMatrixStackPointer > 63 ||
         gpu.TexMatrixStackPointer < 0 ||
         gpu.TexMatrixStackPointer > 1 ||
-        gpu.MatrixMode > 3u || gpu.VertexNum > 4u ||
-        gpu.VertexNumInPoly > 10u || gpu.ExecParamCount > 32u ||
+        gpu.MatrixMode > 3u || gpu.PolygonMode > 3u ||
+        // VertexNum is the cumulative total since BEGIN, not an array index.
+        // These two cursors index their buffers before the next increment.
+        gpu.VertexNumInPoly >= std::size(gpu.TempVertexBuffer) ||
+        gpu.ExecParamCount >= std::size(gpu.ExecParams) ||
         gpu.ParamCount > 32u || gpu.TotalParams > 32u)
         return fail("savestate GPU3D command state is invalid");
     const melonDS::Vertex* expected_vertex =
