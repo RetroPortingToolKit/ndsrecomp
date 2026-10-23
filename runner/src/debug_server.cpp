@@ -1113,6 +1113,23 @@ std::string handle(const std::string& line) {
     }
     if (cmd == "io_state") return io_state_json();
     if (cmd == "scheduler_state") return scheduler_state_json();
+    if (cmd == "frontend_pacing") {
+        NdsFrontendPacingStats s{};
+        nds_frontend_pacing_stats(&s, json_bool(line, "reset", false));
+        std::string out = "{\"armed\":" + std::to_string(s.armed ? 1 : 0) +
+            ",\"frequency\":" + std::to_string(s.frequency) +
+            ",\"samples\":" + std::to_string(s.samples) +
+            ",\"max_interval_ticks\":" + std::to_string(s.max_interval_ticks) +
+            ",\"max_emu_ticks\":" + std::to_string(s.max_emu_ticks) +
+            ",\"max_present_ticks\":" + std::to_string(s.max_present_ticks) +
+            ",\"work_over_budget\":" + std::to_string(s.work_over_budget) +
+            ",\"interval_buckets\":[";
+        for (unsigned i = 0; i < 6; ++i) {
+            if (i) out += ",";
+            out += std::to_string(s.interval_buckets[i]);
+        }
+        return out + "]}";
+    }
     if (cmd == "frontend_stats") {
         // Cumulative frontend counters; sample twice and diff for fps /
         // phase shares over the window. active=0 → headless (all zeros).

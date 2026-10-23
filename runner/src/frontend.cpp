@@ -39,6 +39,32 @@ namespace {
 // thread by the `frontend_stats` debug command at the debug_pump() safe
 // point. Stays all-zero (active=0) when no frontend is running.
 NdsFrontendLiveStats g_live_stats{};
+NdsFrontendPacingStats g_pacing_stats{};
+uint64_t g_pacing_previous_counter = 0;
+
+void record_frontend_pacing(uint64_t counter, uint64_t emu_ticks,
+                            uint64_t present_ticks, uint64_t frequency) {
+    if (!g_pacing_stats.armed) return;
+    g_pacing_stats.frequency = frequency;
+    g_pacing_stats.max_emu_ticks =
+        std::max(g_pacing_stats.max_emu_ticks, emu_ticks);
+    g_pacing_stats.max_present_ticks =
+        std::max(g_pacing_stats.max_present_ticks, present_ticks);
+    if (emu_ticks + present_ticks > frequency / 60u)
+        ++g_pacing_stats.work_over_budget;
+    if (g_pacing_previous_counter != 0 && counter >= g_pacing_previous_counter) {
+        const uint64_t delta = counter - g_pacing_previous_counter;
+        g_pacing_stats.max_interval_ticks =
+            std::max(g_pacing_stats.max_interval_ticks, delta);
+        const uint64_t microseconds = delta * 1000000u / frequency;
+        constexpr uint64_t bounds[] = {17000, 20000, 25000, 33334, 50000};
+        unsigned bucket = 0;
+        while (bucket < 5 && microseconds > bounds[bucket]) ++bucket;
+        ++g_pacing_stats.interval_buckets[bucket];
+        ++g_pacing_stats.samples;
+    }
+    g_pacing_previous_counter = counter;
+}
 NdsFrontendBlackBandCapture g_black_band{};
 NdsFrontendInputDebugState g_input_debug{};
 
@@ -4025,6 +4051,8 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         g_live_stats.perf_governor_transitions =
             nds_perf_governor_history_total();
         const uint64_t counter = SDL_GetPerformanceCounter();
+        record_frontend_pacing(counter, frame_emu_ticks, phase2 - phase1,
+                               frequency);
         if (!savestate_notice.empty() && counter >= savestate_notice_until)
             savestate_notice.clear();
         g_live_stats.now_ticks = counter;
@@ -4363,6 +4391,16 @@ void nds_frontend_live_stats(NdsFrontendLiveStats* out) {
     if (g_live_stats.active)
         out->now_ticks = SDL_GetPerformanceCounter();
 #endif
+}
+
+void nds_frontend_pacing_stats(NdsFrontendPacingStats* out, bool reset) {
+    if (reset) {
+        g_pacing_stats = {};
+        g_pacing_stats.armed = true;
+        g_pacing_stats.frequency = g_live_stats.freq;
+        g_pacing_previous_counter = 0;
+    }
+    if (out) *out = g_pacing_stats;
 }
 
 void nds_frontend_input_debug_state(NdsFrontendInputDebugState* out) {

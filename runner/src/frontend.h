@@ -420,6 +420,21 @@ struct NdsFrontendLiveStats {
 };
 void nds_frontend_live_stats(NdsFrontendLiveStats* out);
 
+// Presentation-only timing, explicitly armed/reset by the diagnostic command.
+// Reuses existing frontend clocks; never installs a guest instruction hook.
+struct NdsFrontendPacingStats {
+    bool armed;
+    uint64_t frequency;
+    uint64_t samples;
+    uint64_t max_interval_ticks;
+    uint64_t max_emu_ticks;
+    uint64_t max_present_ticks;
+    uint64_t work_over_budget;
+    // <=17, <=20, <=25, <=33.334, <=50, >50 milliseconds.
+    uint64_t interval_buckets[6];
+};
+void nds_frontend_pacing_stats(NdsFrontendPacingStats* out, bool reset);
+
 // SDL-event injection and counters for play-mode TCP validation. These
 // commands intentionally enter through the frontend's normal event path, so
 // game-specific input layers such as MPH Prime Controls are exercised the same
