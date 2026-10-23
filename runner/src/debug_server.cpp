@@ -21,6 +21,7 @@
 #include "state.h"
 #include "execution_model.h"
 #include "execution_region.h"
+#include "execution_region_stats.h"
 #include "io.h"
 #include "frontend.h"
 #include "gpu2d.h"
@@ -1519,6 +1520,7 @@ std::string handle(const std::string& line) {
             nds_execution_model_identity() + "\",\"native_regions\":" +
             std::to_string(g_nds_region_entries) + ",\"reference_steps\":" +
             std::to_string(g_nds_region_reference_steps) +
+            nds_region_diagnostic_fields() +
             ",\"live_wiimmfi_verified\":false}";
     }
     // Write the ring for a window plus the module map (base/size/path of the

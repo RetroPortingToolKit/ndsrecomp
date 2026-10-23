@@ -96,6 +96,25 @@ faithful code-generation checks pass. Actual MKDS boot/device behavior,
 current-build state restoration, visual sanity, NAS performance and full-race
 qualification are still pending. No speedup or interoperability is established.
 
+First measured probe and boundary revision
+-----------------------------------------
+
+The flat-AOT-v2/timing-v1 probe failed its first matched NAS comparison:
+49.19 ->42.30FPS, active work20.30 ->23.62ms/frame, process CPU work25.00
+->27.54ms/frame. Background load was0.458 ->0.602cores, so the difference is
+not a pure contention-free regression estimate. There is no gain to retain.
+Both modes advanced one native race frame per present and used all four
+retained vector HLE routines, both screens, top448, 1x compute and GX cache.
+
+Counters identify unnecessary framework work: CPU switches/frame grew about
+2.5x, ARM9 interpreter floors reached roughly4200/frame from zero, and deadline
+publication/frame increased about6.6x. timing-v2 removes the prototype's forced
+CPU-round termination after ordinary I/O and reference instructions. State is
+still published at those exits; actual device requests still shorten the live
+cap. Ordinary fast deadline/tick checks replace forced full polls at each region
+boundary. The reference fallback still unwinds obsolete host continuations.
+This revision is a new unqualified candidate, not an established improvement.
+
 Evidence informing the choice
 ----------------------------
 
