@@ -115,6 +115,31 @@ cap. Ordinary fast deadline/tick checks replace forced full polls at each region
 boundary. The reference fallback still unwinds obsolete host continuations.
 This revision is a new unqualified candidate, not an established improvement.
 
+Virtual-work profile (flat-AOT-v3/timing-v3)
+------------------------------------------
+
+The handoff revision also failed:48.42 ->44.00FPS and25.54 ->27.02processCPU
+ms/frame despite lower background load in the performance leg. A bounded608-frame
+host/guest capture then joined3448/3448 samples without invalid/truncated/evicted
+records. It estimates only about1.2ms/frame in the interpreter floor. Most time
+remains in generated native execution and dispatch; a floor-only fix cannot
+close the gap.
+
+The next profile groups same-mode/proven-source code within a4KiB page and uses
+fixed virtual work costs for ordinary ARM9 instructions: one code-fetch unit
+(zero for the existing Thumb odd-halfword sentinel), one ordinary-memory unit,
+the generated internal-work units and three branch-refill units. The cost sum
+does not simulate cache-wait/overlap timing. Nonordinary data accesses still ask
+the existing bus timing service and invoke its real device behavior. Privileged
+instructions retain the reference floor. ARM7, device clocks, timer/DMA/IRQ
+services, graphics FIFO execution/backpressure and readbacks remain modeled.
+
+This deliberately changes CPU-job completion and CPU/device interleaving, and
+does not promise instruction/cache timing or intermediate CPU state. It never
+uses host time to advance the guest. Native race-frame progression, reasonable
+graphics/audio, current-build restore and native saves must qualify it. The
+faithful profile remains unchanged and available. Live Wiimmfi remains unverified.
+
 Evidence informing the choice
 ----------------------------
 

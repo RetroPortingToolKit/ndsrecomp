@@ -247,10 +247,10 @@ SuperblockPlan build_flat_regions(const std::vector<Function>& funcs) {
     plan.end.resize(funcs.size());
     for (std::size_t first=0; first<funcs.size();) {
         std::size_t last=first+1;
-        const uint32_t page=funcs[first].addr>>10;
+        const uint32_t page=funcs[first].addr>>12;
         const int64_t delta=int64_t(funcs[first].source_addr?funcs[first].source_addr:funcs[first].addr)-funcs[first].addr;
         while(last<funcs.size() && funcs[last].mode==funcs[first].mode &&
-              (funcs[last].addr>>10)==page &&
+              (funcs[last].addr>>12)==page &&
               int64_t(funcs[last].source_addr?funcs[last].source_addr:funcs[last].addr)-funcs[last].addr==delta) ++last;
         for(auto i=first;i<last;++i){plan.leader[i]=first;plan.end[i]=i+1;}
         plan.end[first]=last;
@@ -944,7 +944,7 @@ void write_bank_dispatch(const std::string& dir,
 
     std::vector<std::string> validation_symbols(funcs.size());
     if (g_flat_execution)
-        std::fprintf(f, "/* execution profile: ndsrecomp-flat-aot-v2 */\n");
+        std::fprintf(f, "/* execution profile: ndsrecomp-flat-aot-v3 */\n");
     if (validate_live_bytes) {
         struct ValidationRecord {
             std::string symbol;
@@ -1301,7 +1301,7 @@ int main(int argc, char** argv) {
     }
     for (int i = 1; i < argc; i++) {
         if (std::string(argv[i]) == "--codegen-identity") {
-            if (g_flat_execution) std::printf("ndsrecomp-flat-aot-v2-base-");
+            if (g_flat_execution) std::printf("ndsrecomp-flat-aot-v3-base-");
             std::printf("%s%u\n", kCodegenIdentityPrefix, kCodegenVersion);
             return 0;
         }

@@ -46,6 +46,16 @@ NDS_MACHINERY_INLINE void nds_region_publish(NdsExecRegion* r) {
 NDS_MACHINERY_INLINE void nds_region_charge(NdsExecRegion* r, uint32_t n) {
     r->cycles += n;
 }
+// Performance profile timing units are fixed guest work, never host elapsed
+// time. Ordinary BIOS/TCM/RAM work uses cache-hit-like costs. Device/VRAM/cart
+// accesses still consult the original bus timing service and execute through
+// the original bus/device model; their status/IRQ/DMA effects are unchanged.
+NDS_MACHINERY_INLINE uint32_t nds_region_virtual_mem(NdsExecRegion* r,
+    uint32_t addr, uint32_t width, uint32_t sequential) {
+    if (addr < 0x04000000u) return 1u;
+    g_last_code_pc[g_nds_active] = r->cpu.R[15];
+    return runtime_mem_cycles_slow(addr, width, sequential);
+}
 NDS_MACHINERY_INLINE bool nds_region_needs_exit(const NdsExecRegion* r) {
     return r->io || r->cycles >= g_nds_fast_limit;
 }
@@ -157,6 +167,11 @@ NDS_MACHINERY_INLINE uint32_t nds_region_shift(uint32_t*f,uint32_t v,uint32_t n,
 #define runtime_should_yield() false
 #define runtime_unwinding() false
 #define runtime_tick(n) nds_region_charge(&_region,(n))
+#define nds_code_numc(pc,k) ((k)==0u?0u:1u)
+#define runtime_code_cycles(pc) 1u
+#define runtime_mem_cycles(a,w,s) nds_region_virtual_mem(&_region,(a),(w),(s))
+#define arm9_refill_cycles(pc) 3u
+#define arm9_cycle_combine(c,d,i,h) ((c)+(d)+(i))
 #define runtime_slice_yield() nds_region_needs_exit(&_region)
 #define runtime_trace_event(...) ((void)0)
 #define runtime_live_transfer(...) ((void)0)
