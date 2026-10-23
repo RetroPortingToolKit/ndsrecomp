@@ -22,6 +22,15 @@ unimplemented upstream in this backend, uses the retained software renderer.
 `CaptureReference` adapter anchors guest VRAM capture to a frozen integer
 software job; it does not read the native output or internal resolution.
 
+## 0023-capture-view-versions.patch
+
+2026-10-22: the project GPU shim gains host-only texture/palette coherent-view
+versions. The bridge advances each version when its coherent bytes change.
+The explicit `NDS_CAPTURE_VIEW_REUSE` experiment uses them to retain an owned,
+immutable capture snapshot when bytes are unchanged. The versions are derived
+host history, are not modeled GPU state, and do not enter the serializer.
+Capture reset/load invalidates the snapshot independently of these versions.
+
 ## 0001-wifi-ap-identity.patch
 
 `src/WifiAP.cpp`: changes the hardcoded AP identity from melonDS's default

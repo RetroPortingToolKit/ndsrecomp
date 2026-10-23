@@ -1,6 +1,7 @@
 // host_profile.cpp -- see host_profile.h.
 
 #include "host_profile.h"
+#include "observation_policy.h"
 
 #include "host_unwind_x64.h"
 
@@ -276,7 +277,7 @@ void load_config() {
 
     // Default ON. The whole value of this subsystem is that the answer already
     // exists when the question is asked, which an opt-in flag destroys.
-    bool on = true;
+    bool on = !kNdsLeanDiagnostics;
     if (const char* v = std::getenv("NDS_HOSTPROF")) {
         if (!parse_on_off(v, &on)) on = true;
     }

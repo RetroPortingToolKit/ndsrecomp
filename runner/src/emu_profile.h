@@ -106,6 +106,7 @@
 // Ring-buffer philosophy (DEBUG.md): always on, Release included, never
 // armed, no start/stop, no reset. Probes snapshot twice and subtract.
 #pragma once
+#include "observation_policy.h"
 
 #include <cstdint>
 #include <string>
@@ -279,6 +280,7 @@ extern uint64_t g_bus_modulus;
 // run once per scheduler round (~600k/s), and an out-of-line call there costs
 // more than the tick reads it exists to take.
 extern uint64_t g_modulus;
+extern bool g_enabled;
 extern uint64_t g_round_counter;
 
 void ensure_configured();
@@ -294,6 +296,8 @@ void nds_emu_profile_init();
 // (scheduler.cpp GXFIFO branch). Exact whole-run counter; an increment is too
 // cheap to gate.
 inline void nds_emu_note_gxstall_round() {
+    if constexpr (kNdsLeanDiagnostics)
+        if (!nds_emu_detail::g_enabled) return;
     ++nds_emu_detail::g_profile.gxstall_rounds;
 }
 
@@ -305,6 +309,8 @@ inline void nds_emu_note_gxstall_round() {
 // from the region being closed compensates the instrumentation exactly.
 inline uint8_t nds_emu_enter(NdsEmuBucket bucket) {
     using namespace nds_emu_detail;
+    if constexpr (kNdsLeanDiagnostics)
+        if (!g_enabled) return NDS_EMU_INACTIVE;
     const bool exact = (kExactMask >> bucket) & 1u;
     if (!exact && !g_sampling) return NDS_EMU_INACTIVE;
     const uint64_t t = nds_dispatch_timing_detail::tick_now();
@@ -375,6 +381,9 @@ class NdsEmuRound {
   public:
     NdsEmuRound() {
         using namespace nds_emu_detail;
+        sampling_ = false;
+        if constexpr (kNdsLeanDiagnostics)
+            if (!g_enabled) return;
         ++g_profile.rounds;
         const uint64_t modulus = g_modulus;
         sampling_ = modulus && ((g_round_counter++ % modulus) == 0u);
@@ -438,6 +447,8 @@ class NdsEmuBusRegion {
   public:
     explicit NdsEmuBusRegion(uint32_t addr) {
         using namespace nds_emu_detail;
+        if constexpr (kNdsLeanDiagnostics)
+            if (!g_bus_modulus) return;
         ++g_profile.bus_events;
         const uint64_t modulus = g_bus_modulus;
         if (!modulus) return;

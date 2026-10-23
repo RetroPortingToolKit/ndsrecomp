@@ -495,6 +495,9 @@ bool GPU::MakeVRAMFlat_TextureCoherent(
                     VRAMDirtyGranularity);
         changed = true;
     }
+#if defined(NDS_CAPTURE_VIEW_REUSE)
+    if (changed) ++TextureViewVersion;
+#endif
     return changed;
 }
 
@@ -517,6 +520,9 @@ bool GPU::MakeVRAMFlat_TexPalCoherent(
                     VRAMDirtyGranularity);
         changed = true;
     }
+#if defined(NDS_CAPTURE_VIEW_REUSE)
+    if (changed) ++TexPalViewVersion;
+#endif
     return changed;
 }
 
@@ -863,6 +869,17 @@ bool nds_gpu3d_use_compute_renderer() {
     g_compute_frame_ready = false;
     return true;
 #else
+    return false;
+#endif
+}
+
+bool nds_gpu3d_capture_copy_counts(uint64_t* texture, uint64_t* palette) {
+#if defined(NDS_USE_NATIVE_GL)
+    *texture = g_capture_reference.TextureBytesCopied();
+    *palette = g_capture_reference.PaletteBytesCopied();
+    return g_capture_reference.HasFrame();
+#else
+    *texture = *palette = 0;
     return false;
 #endif
 }

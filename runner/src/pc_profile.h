@@ -201,6 +201,7 @@ unsigned nds_pc_profile_top_delta(const NdsPcHotTable& now,
 std::string nds_pc_profile_json(NdsPcHotKind kind, int cpu, unsigned top);
 
 namespace nds_pc_detail {
+extern const bool g_enabled;
 
 extern NdsPcHotTable g_table[NDS_PC_HOT_KIND_COUNT][2];
 // EXEC countdown, per CPU. Per-CPU rather than shared so a core that dispatches
@@ -262,6 +263,7 @@ inline void nds_pc_profile_note(int cpu, uint32_t pc) {
 // nds_dispatch_timing_detail::gate_fires -- no modulo on the hot path, and the
 // modulus may therefore be any prime without paying for a division.
 inline void nds_pc_profile_note_exec(int cpu, uint32_t pc) {
+    if (!nds_pc_detail::g_enabled) return;
     uint64_t& gate = nds_pc_detail::g_exec_gate[cpu & 1];
     if (gate > 1u) {
         --gate;
@@ -278,6 +280,7 @@ inline void nds_pc_profile_note_exec(int cpu, uint32_t pc) {
 // which registers it serves. The key packs the register address's low 24 bits
 // with bit 31 set for a write; a consumer splits it back the same way.
 inline void nds_pc_profile_note_mmio(int cpu, uint32_t addr, bool write) {
+    if (!nds_pc_detail::g_enabled) return;
     uint64_t& gate = nds_pc_detail::g_mmio_gate[cpu & 1];
     if (gate > 1u) {
         --gate;

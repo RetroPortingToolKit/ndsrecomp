@@ -14,13 +14,14 @@ uint8_t  g_cur = NDS_EMU_NONE;
 uint64_t g_last = 0;
 
 uint64_t g_bus_gate = 0;
-uint64_t g_bus_modulus = 1009u;
+uint64_t g_bus_modulus = kNdsLeanDiagnostics ? 0u : 1009u;
 // Seeded to the defaults, not to 0, so a build that somehow reaches a
 // scheduler round before nds_emu_profile_init() still measures rather than
 // silently accumulating nothing -- the same reasoning as dispatch_timing's
 // g_ns_per_tick = 1.0 seed. The env overrides are applied by
 // ensure_configured() at start-up.
-uint64_t g_modulus = 31u;
+uint64_t g_modulus = kNdsLeanDiagnostics ? 0u : 31u;
+bool g_enabled = !kNdsLeanDiagnostics;
 uint64_t g_round_counter = 0;
 
 namespace {
@@ -44,7 +45,7 @@ bool g_configured = false;
 // structure (the 64-cycle rendezvous grid, the 1024-cycle SPU deadline).
 uint64_t parse_modulus() {
     const char* v = std::getenv("NDS_PROFILE_EMU");
-    if (!v || !v[0]) return 31u;
+    if (!v || !v[0]) return kNdsLeanDiagnostics ? 0u : 31u;
     if (std::strcmp(v, "off") == 0 || std::strcmp(v, "0") == 0) return 0u;
     if (std::strcmp(v, "exact") == 0 || std::strcmp(v, "every") == 0)
         return 1u;
@@ -59,7 +60,7 @@ uint64_t parse_modulus() {
 // breakdown. Left at the 1009 house modulus: this gate IS per guest access.
 uint64_t parse_bus_modulus() {
     const char* v = std::getenv("NDS_PROFILE_EMU_BUS");
-    if (!v || !v[0]) return 1009u;
+    if (!v || !v[0]) return kNdsLeanDiagnostics ? 0u : 1009u;
     if (std::strcmp(v, "off") == 0 || std::strcmp(v, "0") == 0) return 0u;
     if (std::strcmp(v, "exact") == 0 || std::strcmp(v, "every") == 0)
         return 1u;
@@ -93,6 +94,10 @@ void ensure_configured() {
     // that are meant to be comparable.
     nds_dispatch_timing_init();
     g_modulus = parse_modulus();
+    const char* requested = std::getenv("NDS_PROFILE_EMU");
+    g_enabled = !kNdsLeanDiagnostics ||
+        (requested && requested[0] && std::strcmp(requested, "off") != 0 &&
+         std::strcmp(requested, "0") != 0);
     g_bus_modulus = parse_bus_modulus();
     g_bus_gate = 0;
 }
@@ -140,7 +145,8 @@ std::string nds_emu_profile_json() {
     nds_emu_profile(&p);
     const double ns_per_tick = nds_dispatch_timing_ns_per_tick();
     char buf[512];
-    std::string out = "{";
+    std::string out = std::string("{\"enabled\":") +
+        (nds_emu_detail::g_enabled ? "true," : "false,");
     std::snprintf(buf, sizeof(buf),
                   "\"modulus\":%llu,\"bus_modulus\":%llu,"
                   "\"ns_per_tick\":%.6f,\"clock_overhead_ticks\":%llu,"

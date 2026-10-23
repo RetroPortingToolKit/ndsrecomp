@@ -1654,6 +1654,35 @@ std::string handle(const std::string& line) {
                ",\"switches\":" + std::to_string(sched.switches) +
                ",\"crs_words\":" + std::to_string(sched.crs_words) + "}}";
     }
+    if (cmd == "capture_snapshot") {
+        uint64_t texture = 0, palette = 0;
+        const bool available = nds_gpu3d_capture_copy_counts(&texture, &palette);
+        return std::string("{\"available\":") + (available ? "true" : "false") +
+            ",\"texture_bytes_copied\":" + std::to_string(texture) +
+            ",\"palette_bytes_copied\":" + std::to_string(palette) + "}";
+    }
+    if (cmd == "performance_policy") {
+#if defined(NDS_LEAN_DIAGNOSTICS)
+        constexpr bool lean = true;
+#else
+        constexpr bool lean = false;
+#endif
+        constexpr bool periodic = false;
+#if defined(NDS_CAPTURE_VIEW_REUSE)
+        constexpr bool capture_reuse = true;
+#else
+        constexpr bool capture_reuse = false;
+#endif
+        return std::string("{\"lean_diagnostics\":") + (lean ? "true" : "false") +
+            ",\"periodic_deadline_cache\":" + (periodic ? "true" : "false") +
+            ",\"capture_view_reuse\":" + (capture_reuse ? "true" : "false") +
+            ",\"instruction_hook_armed\":" + std::to_string(g_insn_hook_armed) +
+            ",\"deep_trace\":" + std::to_string(g_runtime_deep_trace) +
+            ",\"pc_sampling\":" + (nds_pc_detail::g_enabled ? "true" : "false") +
+            ",\"host_sampler\":" + (nds_hostprof_running() ? "true" : "false") +
+            ",\"dispatch_modulus\":" + std::to_string(nds_dispatch_timing_modulus()) +
+            ",\"emu_modulus\":" + std::to_string(nds_emu_modulus()) + "}";
+    }
     if (cmd == "deep_trace") {
         // Live toggle for the per-access payload policy (bus ring, mem_r/w
         // events, per-insn register images + the B3 inline bus fast path,
@@ -1743,6 +1772,7 @@ std::string handle(const std::string& line) {
         // the next round boundary. The loop condition (checked each round)
         // guarantees we exit once the target is reached.
         nds_event_break_arm(ev.c_str(), target);
+        const bool instruction_hook = g_insn_hook_armed != 0u;
         uint64_t rounds = 0;
         // Long firmware-menu waits eventually exceed the original fixed 5M
         // scheduler-round ceiling even though both CPUs and devices are still
@@ -1793,6 +1823,7 @@ std::string handle(const std::string& line) {
         bool reached = nds_event_value(ev.c_str()) >= target;
         bool exhausted = !reached && !stalled && rounds >= max_rounds;
         return std::string("{\"reached\":") + (reached ? "true" : "false") +
+            ",\"instruction_hook\":" + (instruction_hook ? "true" : "false") +
             ",\"stalled\":" + (stalled ? "true" : "false") +
             ",\"terminal\":" + (terminal ? "true" : "false") +
             ",\"reason9\":\"" + scheduler_cpu_halt_reason(0) + "\"" +

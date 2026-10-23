@@ -122,6 +122,35 @@ void tests() {
     std::fill_n(gpu.VRAMFlat_Texture, sizeof gpu.VRAMFlat_Texture, 0);
     require(frozenBitmap.GetLine(0, 0, false)[0] == 0x1F00003Fu,
             "deferred guest capture used newer texture memory");
+#if defined(NDS_CAPTURE_VIEW_REUSE)
+    const u64 textureBytes = frozenBitmap.TextureBytesCopied();
+    const u64 paletteBytes = frozenBitmap.PaletteBytesCopied();
+    // This fixture supplies coherent flat arrays directly, so it publishes
+    // their owner content versions at the same boundary as the real bridge.
+    ++gpu.TextureViewVersion;
+    frozenBitmap.Latch(gpu);
+    require(frozenBitmap.GetLine(0, 0, false)[0] == 0,
+            "next capture retained a previous texture generation");
+    require(frozenBitmap.TextureBytesCopied() == textureBytes + sizeof gpu.VRAMFlat_Texture,
+            "texture mutation did not refresh the immutable snapshot");
+    require(frozenBitmap.PaletteBytesCopied() == paletteBytes,
+            "texture mutation unnecessarily copied palette data");
+    frozenBitmap.Latch(gpu);
+    require(frozenBitmap.TextureBytesCopied() == textureBytes + sizeof gpu.VRAMFlat_Texture,
+            "unchanged texture snapshot copied again");
+    gpu.VRAMFlat_TexPal[0] ^= 0x5A;
+    ++gpu.TexPalViewVersion;
+    frozenBitmap.Latch(gpu);
+    require(frozenBitmap.PaletteBytesCopied() == paletteBytes + sizeof gpu.VRAMFlat_TexPal,
+            "palette-only generation was not copied independently");
+    require(frozenBitmap.TextureBytesCopied() == textureBytes + sizeof gpu.VRAMFlat_Texture,
+            "palette-only mutation copied texture data");
+    frozenBitmap.Reset();
+    frozenBitmap.Latch(gpu);
+    require(frozenBitmap.TextureBytesCopied() == textureBytes + 2u * sizeof gpu.VRAMFlat_Texture &&
+            frozenBitmap.PaletteBytesCopied() == paletteBytes + 2u * sizeof gpu.VRAMFlat_TexPal,
+            "reset reused a snapshot with repeated content versions");
+#endif
     require(glGetError() == GL_NO_ERROR, "GL error after fallback");
     // Destroy GL objects before destroying the context (also exercises the
     // renderer destructor with both native and software jobs completed).

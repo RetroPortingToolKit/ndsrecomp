@@ -1,12 +1,19 @@
 // pc_profile.cpp -- see pc_profile.h.
 
 #include "pc_profile.h"
+#include "observation_policy.h"
+#include <cstdlib>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 
 namespace nds_pc_detail {
+const bool g_enabled = [] {
+    const char* value = std::getenv("NDS_PC_PROFILE");
+    if (!value || !*value) return !kNdsLeanDiagnostics;
+    return std::strcmp(value, "0") != 0 && std::strcmp(value, "off") != 0;
+}();
 
 // Two megabytes of BSS for the four tables (two populations x two CPUs).
 // Static rather than heap so the first sampled round costs nothing but a

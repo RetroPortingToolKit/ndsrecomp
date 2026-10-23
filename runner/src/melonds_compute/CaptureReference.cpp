@@ -14,8 +14,26 @@ void CaptureReference::Latch(GPU& source) {
     NonStupidBitField<256> paletteDirty;
     source.MakeVRAMFlat_TextureCoherent(textureDirty);
     source.MakeVRAMFlat_TexPalCoherent(paletteDirty);
-    std::memcpy(target.VRAMFlat_Texture, source.VRAMFlat_Texture, sizeof target.VRAMFlat_Texture);
-    std::memcpy(target.VRAMFlat_TexPal, source.VRAMFlat_TexPal, sizeof target.VRAMFlat_TexPal);
+    // Frame owns immutable copies. A renderer may already have consumed the
+    // live dirty flags, so use owner content versions rather than those flags.
+    // A changed render list/register set is still latched on every frame.
+#if defined(NDS_CAPTURE_VIEW_REUSE)
+    if (!SnapshotValid || TextureVersion != source.TextureViewVersion)
+#endif
+    {
+        std::memcpy(target.VRAMFlat_Texture, source.VRAMFlat_Texture, sizeof target.VRAMFlat_Texture);
+        TextureCopies += sizeof target.VRAMFlat_Texture;
+    }
+#if defined(NDS_CAPTURE_VIEW_REUSE)
+    if (!SnapshotValid || PaletteVersion != source.TexPalViewVersion)
+#endif
+    {
+        std::memcpy(target.VRAMFlat_TexPal, source.VRAMFlat_TexPal, sizeof target.VRAMFlat_TexPal);
+        PaletteCopies += sizeof target.VRAMFlat_TexPal;
+    }
+    TextureVersion = source.TextureViewVersion;
+    PaletteVersion = source.TexPalViewVersion;
+    SnapshotValid = true;
     out.SetEnabled(true, true);
     out.SetRenderWidth(in.GetRenderWidth());
     out.RenderDispCnt = in.RenderDispCnt;

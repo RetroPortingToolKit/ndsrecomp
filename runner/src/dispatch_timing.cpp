@@ -1,6 +1,7 @@
 // dispatch_timing.cpp -- see dispatch_timing.h.
 
 #include "dispatch_timing.h"
+#include "observation_policy.h"
 
 #include <chrono>
 #include <cstdio>
@@ -20,7 +21,7 @@ uint64_t g_cache_gate[2] = {};
 // counter surface, not an armed probe. 1009 is the modulus already used by
 // the scheduler sampler (prime, so it does not phase-lock to any power-of-two
 // periodicity in dispatch volume).
-uint64_t g_modulus = 1009u;
+uint64_t g_modulus = kNdsLeanDiagnostics ? 0u : 1009u;
 // Seeded to 1.0 (ticks treated as ns), never 0.0: the sampling gate on the
 // hot path must not call ensure_calibrated(), so if a build ever reaches a
 // dispatch before nds_dispatch_timing_init() runs, the fallback must still
@@ -37,7 +38,7 @@ bool g_calibrated = false;
 
 uint64_t parse_modulus() {
     const char* v = std::getenv("NDS_PROFILE_DISPATCH");
-    if (!v || !v[0]) return 1009u;
+    if (!v || !v[0]) return kNdsLeanDiagnostics ? 0u : 1009u;
     if (std::strcmp(v, "off") == 0 || std::strcmp(v, "0") == 0)
         return 0u;
     if (std::strcmp(v, "exact") == 0 || std::strcmp(v, "every") == 0)

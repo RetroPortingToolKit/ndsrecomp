@@ -64,6 +64,10 @@ public:
     // Private reference-capture jobs own immutable texture views. Their
     // coherence calls must never pull newer live VRAM into the latched job.
     bool FrozenTextureViews = false;
+    // Host-only content identities. Incremented when coherence actually
+    // changes bytes, independently of which renderer requested that update.
+    u64 TextureViewVersion = 1;
+    u64 TexPalViewVersion = 1;
 
     template<typename T>
     T ReadVRAMFlat_Texture(u32 addr) const

@@ -351,7 +351,7 @@ void scheduler_run_round() {
     // histogram onto the last switch point.
     {
         static uint64_t pc_note_counter = 0;
-        if ((pc_note_counter++ % 31u) == 0u) {
+        if (nds_pc_detail::g_enabled && (pc_note_counter++ % 31u) == 0u) {
             nds_pc_profile_note(0, g_cur == 0 ? g_cpu.R[15]
                                               : g_slot[0].state.R[15]);
             nds_pc_profile_note(1, g_cur == 1 ? g_cpu.R[15]
