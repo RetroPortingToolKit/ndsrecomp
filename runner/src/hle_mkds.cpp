@@ -18,10 +18,9 @@ struct Binding {
 };
 // ROM hashes only; the proof bytes are read from the verified resident image.
 Binding bindings[] = {
-    {0x02147FD8, 0x02147FD8, 96, "a62a720989cd408241a1acc35520b93d866bf7df", scale_add},
-    {0x021483A0, 0x021483A0, 156, "8a97f6bdacd40175ea4f577788a82635a8057984", cross_product},
-    {0x02147288, 0x02147288, 180, "fe182d57e45fd6086b43f0b98ac689d14b815365", transform_translate},
-    {0x0214733C, 0x0214733C, 544, "33407f601fee3cc8d211ff511f571e141ebec689", matrix_concat},
+#define NDS_MKDS_VECTOR_ENTRY(entry, size, hash, function) {entry, entry, size, hash, function},
+#include "mkds_vector_entries.inc"
+#undef NDS_MKDS_VECTOR_ENTRY
 };
 } // namespace
 

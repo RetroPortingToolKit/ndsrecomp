@@ -31,5 +31,5 @@ bool nds_performance_execution() {
     return selected == NdsExecutionModel::Performance;
 }
 const char* nds_execution_model_identity() {
-    return nds_performance_execution() ? "performance-flat-aot-v1-timing-v1" : "faithful-v1";
+    return nds_performance_execution() ? "performance-flat-aot-v2-timing-v1" : "faithful-v1";
 }

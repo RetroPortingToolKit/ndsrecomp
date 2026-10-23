@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <iterator>
 #include <map>
 #include <set>
 #include <sstream>
@@ -12,6 +13,11 @@
 
 namespace {
 using namespace armv4t;
+constexpr uint32_t retained_hle_entries[] = {
+#define NDS_MKDS_VECTOR_ENTRY(entry, size, hash, function) entry,
+#include "mkds_vector_entries.inc"
+#undef NDS_MKDS_VECTOR_ENTRY
+};
 // Preserve source comments and strings; only the C return keyword is rewritten.
 std::string region_returns(const std::string& input) {
     std::string out;
@@ -107,7 +113,8 @@ std::string nds_emit_flat_region(const std::vector<ndsrecomp::Function>& functio
     for(const auto& [pc,in]:instructions) {
         bool missing=false;const std::string body=ArmCodegen::emit_instr(in,ctx,&missing);
         out<<label(pc)<<": {\n";
-        if(!thumb && (pc==0x02147FD8u || pc==0x021483A0u || pc==0x02147288u))
+        if(!thumb && std::find(std::begin(retained_hle_entries),
+            std::end(retained_hle_entries),pc)!=std::end(retained_hle_entries))
             out<<"    if (g_nds_region_hle_vectors) { _region.cpu.R[15]="<<hex(pc)<<"; goto NDS_REGION_EXIT; }\n";
         if(missing || !admitted(in,body)) {
             out<<"    _region.cpu.R[15]="<<hex(pc)<<"; _region.single_step=1; goto NDS_REGION_EXIT;\n";

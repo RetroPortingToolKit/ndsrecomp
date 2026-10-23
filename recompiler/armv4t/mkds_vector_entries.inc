@@ -1,0 +1,5 @@
+// Shared entry/proof metadata. Define NDS_MKDS_VECTOR_ENTRY before including.
+NDS_MKDS_VECTOR_ENTRY(0x02147FD8u, 96u, "a62a720989cd408241a1acc35520b93d866bf7df", scale_add)
+NDS_MKDS_VECTOR_ENTRY(0x021483A0u, 156u, "8a97f6bdacd40175ea4f577788a82635a8057984", cross_product)
+NDS_MKDS_VECTOR_ENTRY(0x02147288u, 180u, "fe182d57e45fd6086b43f0b98ac689d14b815365", transform_translate)
+NDS_MKDS_VECTOR_ENTRY(0x0214733Cu, 544u, "33407f601fee3cc8d211ff511f571e141ebec689", matrix_concat)

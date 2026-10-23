@@ -944,7 +944,7 @@ void write_bank_dispatch(const std::string& dir,
 
     std::vector<std::string> validation_symbols(funcs.size());
     if (g_flat_execution)
-        std::fprintf(f, "/* execution profile: ndsrecomp-flat-aot-v1 */\n");
+        std::fprintf(f, "/* execution profile: ndsrecomp-flat-aot-v2 */\n");
     if (validate_live_bytes) {
         struct ValidationRecord {
             std::string symbol;
@@ -1301,7 +1301,7 @@ int main(int argc, char** argv) {
     }
     for (int i = 1; i < argc; i++) {
         if (std::string(argv[i]) == "--codegen-identity") {
-            if (g_flat_execution) std::printf("ndsrecomp-flat-aot-v1-base-");
+            if (g_flat_execution) std::printf("ndsrecomp-flat-aot-v2-base-");
             std::printf("%s%u\n", kCodegenIdentityPrefix, kCodegenVersion);
             return 0;
         }
