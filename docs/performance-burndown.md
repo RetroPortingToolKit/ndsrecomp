@@ -17,10 +17,10 @@ pass qualification and the owner approves final integration.
 | Independent architecture and historical-profile audit | k775 | Complete | Evidence limitations recorded | Complete |
 | Register-local, event-bounded CPU execution | 5npn | Built; 551 MKDS ITCM sites | 368,640 unit checks; game state/pixels/audio match | Rejected for retention: initial saving did not repeat |
 | Exact periodic deadline reuse | p14w | Built | Unit checks and 600-frame game state/pixels/audio/event deltas match | Rejected: 2.21% more CPU in clean balanced sample |
-| Versioned capture snapshots / texture coherence | 7www | Built | Unit checks and MPH 600-frame state/pixels/audio/event deltas match | Candidate: 5.42% less CPU, 3.42% less time; bundled qualification pending |
-| Lean production diagnostics / honest event hooks | bbm9 | Built | Arming checks and game state/pixels/audio match; FIFO padding difference identified | Candidate: 2.65% less CPU, 1.21% less time; bundled qualification pending |
-| Pinned artifacts and quiet SERVER A/A / A/B harness | hucn | Eight artifacts built; hashes/manifests pinned | Bank reference byte-identical; quiet gate rejects occupied hosts | Quiet timing slot pending |
-| Two-game bundle, authentic Wiimmfi and owner handoff | wtdd | Both bundles built | MKDS/MPH fixture state/pixels/audio/event deltas match | Timing, WFC and owner handoff pending |
+| Versioned capture snapshots / texture coherence | 7www | Complete; selected for review | Unit and clean MPH game checks pass; snapshot copies 375 MiB to 2.5 MiB | Individual 5.42% less CPU; clean combination confirms a useful saving |
+| Lean production diagnostics / honest event hooks | bbm9 | Complete; selected for review | Arming and clean game checks pass; FIFO padding difference identified | Individual MKDS 2.65% less CPU; clean MPH combination passes |
+| Pinned artifacts and quiet SERVER A/A / A/B harness | hucn | Complete; hashes/manifests pinned | Reference bank byte-identical; occupied-host samples rejected; final pair shares NES queue's file lock | Individual samples, A/A controls and clean combined pair complete |
+| Two-game bundle, authentic Wiimmfi and owner handoff | wtdd | Clean MPH combination built without rejected experiments | Automated checks complete; 3 focused tests, fresh restore/game comparison and combined pair pass | Normal-audio/windowed owner handoff being prepared; live WFC and approval pending |
 
 ## Remaining-task record
 
@@ -35,6 +35,8 @@ burns down. Updates retain rejected candidates and unverified coverage.
 | 2026-10-22, artifacts and initial game checks | 2 | 6 | Eight builds ready; CPU/scheduler/diagnostic MKDS checks pass; both timing hosts occupied |
 | 2026-10-22, first balanced results | 3 | 5 | Deadline probe rejected; CPU pilot inconclusive; remaining samples underway |
 | 2026-10-22, individual probes measured | 4 | 4 | CPU/deadline probes excluded; diagnostics/capture retained for clean qualification |
+| 2026-10-22, clean combined build | 4 | 4 | Clean reference/retained builds ready; focused tests pass; fresh game comparison and one combined pair remain |
+| 2026-10-22, automated qualification complete | 7 | 1 | Retained combination passes; real Wiimmfi gameplay and owner approval remain |
 
 ## Measurement boundary
 
@@ -73,8 +75,9 @@ All artifacts and raw evidence are in
 `G:/Temp/Codex/ndsrecomp/accuracy-perf-20261022`; SERVER uses the same G: path.
 `mkds-candidates/artifacts.json` pins five executables and
 `mph-candidates/artifacts.json` pins three. Every candidate has an independent
-selection and build identity. The current runtime and live codegen identities
-were advanced, and the codegen golden/provider identity checks pass.
+selection and build identity. The experiment tree advanced runtime and live
+codegen identities, with passing golden/provider checks. The clean retained
+branch excludes those CPU changes and preserves the existing codegen and ABI.
 
 `first-state-comparisons.json` records CPU enabled/disabled and scheduler game
 checks. All guest sections, pixels, recent audio and event deltas match.
@@ -136,7 +139,13 @@ still points toward CPU execution work; a broader CPU architecture/HLE effort
 remains a separate follow-up rather than pretending these small changes solve
 low-end NDS performance.
 
-Fresh clean-build qualification and the retained MPH combination's matched
-pair are next. Final normal-audio/windowed owner playtest and authentic WFC
-verification remain pending; no source integration or compatibility claim has
-been approved.
+The clean source head is `a4db725837f4d18234e01564dd03c340fca46a88`.
+Its native-GL, save-state and video save-state tests pass (3/3), and its lean
+diagnostic/event-hook arming check passes. Fresh same-build game qualification
+and the retained MPH combination's single matched pair pass. The final pair
+uses 5.08% less process CPU time, 2.22% fewer process cycles and 1.31% less
+elapsed time; both screens, audio tail, guest state and event deltas agree
+(only the documented unused FIFO padding differs). This is bounded evidence,
+not a whole-game or all-hardware speedup. See [results](performance-results-20261022.md).
+Final normal-audio/windowed owner playtest and authentic WFC verification remain
+pending; no source integration or compatibility claim has been approved.
