@@ -61,6 +61,7 @@
 #include "profile_report.h"
 #include "sha1.h"
 #include "title_banks.h"
+#include "execution_model.h"
 #include "coverage_manifest.h"
 #include "title_patches.h"
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
@@ -429,6 +430,7 @@ int main(int argc, char** argv) {
     bool cli_freebios = false;
     std::string cli_instance_index;
     std::string cli_save_path;
+    std::string cli_execution_model = "faithful";
     std::string cli_diagnostics;
     std::string cli_diagnostics_dir;
     std::string cli_diagnostics_interval_ms;
@@ -507,6 +509,8 @@ int main(int argc, char** argv) {
             port = static_cast<uint16_t>(std::strtoul(argv[++i], nullptr, 0));
         } else if (a == "--rom" && i + 1 < argc) {
             rom_path = argv[++i];
+        } else if (a == "--execution-model" && i + 1 < argc) {
+            cli_execution_model = argv[++i];
         } else if (a == "--save-path" && i + 1 < argc) {
             cli_save_path = argv[++i];
         } else if (a == "--diagnostics" && i + 1 < argc) {
@@ -679,6 +683,7 @@ int main(int argc, char** argv) {
                 "usage: %s [bios-dir] [cycle-budget] [--rom game.nds] "
                 "[--serve|--interactive] [--port 19842] "
                 "[--save-path game.sav|--no-save] "
+                "[--execution-model faithful|performance] "
                 "[--diagnostics on|off] [--diagnostics-dir dir] "
                 "[--diagnostics-interval-ms ms] "
                 "[--runtime-settings-path FILE] "
@@ -1733,6 +1738,14 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    std::string execution_error;
+    if (!nds_execution_model_select(cli_execution_model, rom_sha1, execution_error)) {
+        std::fprintf(stderr, "refusing to start: %s\n", execution_error.c_str());
+        return 1;
+    }
+    const std::string execution_build_id = std::string(NDS_RUNNER_BUILD_ID) +
+        "-" + nds_execution_model_identity();
+    std::fprintf(stderr, "[execution] %s\n", nds_execution_model_identity());
     std::string save_path;
     if (!rom.empty() && !save_disabled) {
         if (!cli_save_path.empty()) {
@@ -1748,8 +1761,8 @@ int main(int argc, char** argv) {
             ? std::string()
             : std::filesystem::path(rom_path).filename().string();
     nds_diagnostics_set_identity(rom_sha1.c_str(), rom_name.c_str(),
-                                 NDS_RUNNER_BUILD_ID);
-    debug_set_savestate_identity(NDS_RUNNER_BUILD_ID, rom_sha1);
+                                 execution_build_id.c_str());
+    debug_set_savestate_identity(execution_build_id, rom_sha1);
 #if defined(NDS_MPH_SUBMIT_HLE)
     if (mph_submit::initialize(rom_sha1.c_str()))
         std::fprintf(stderr, "[hle] MPH submission selected at build time (mph-submit-hle-v3)\n");
@@ -1781,7 +1794,7 @@ int main(int argc, char** argv) {
         frontend_options.savestate_build_id =
             (savestate_id_override && savestate_id_override[0])
                 ? savestate_id_override
-                : NDS_RUNNER_BUILD_ID;
+                : execution_build_id;
         frontend_options.savestate_rom_sha1 = rom_sha1;
     }
     nds_diagnostics_set_versions(NDS_FRAMEWORK_VERSION, NDS_GAME_VERSION);

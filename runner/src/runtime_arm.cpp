@@ -9,6 +9,9 @@
 
 #include "runtime_arm.h"
 #include "guest_job_profile.h"
+#if defined(NDS_MKDS_PERFORMANCE)
+#include "execution_model.h"
+#endif
 #if defined(NDS_MPH_MATH_HLE)
 #include "hle_mph_math.h"
 #endif
@@ -1756,7 +1759,18 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
         cost_region.close();
         if (entering_static) {
             guard_scope.invoke();
-            if (!tail.state.pending) return;
+            if (!tail.state.pending) {
+#if defined(NDS_MKDS_PERFORMANCE)
+                // Flat regions carry returns in guest LR/stack, not the old
+                // host call stack. A reference/HLE callee can complete while
+                // an older native caller is still on that host stack. Unwind
+                // those implementation continuations and resume the completed
+                // guest PC through the scheduler instead of running them twice.
+                if (g_nds_active == NDS_ARM9 && nds_performance_execution())
+                    g_nds_unwinding = 1u;
+#endif
+                return;
+            }
             target_pc = tail.state.target_pc;
             linked = tail.state.linked;
             continue;
@@ -1792,6 +1806,18 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
 }  // namespace
 
 extern "C" void runtime_dispatch(uint32_t target_pc) {
+    runtime_dispatch_impl(target_pc, nullptr);
+}
+
+// Flat regions exit through the existing iterative trampoline. No host call or
+// hidden guest return is introduced for an architectural BL/BX transfer.
+extern "C" void runtime_region_tail(uint32_t target_pc) {
+    if (g_tail_dispatch && g_tail_dispatch->cpu == int(g_nds_active)) {
+        g_tail_dispatch->target_pc = target_pc;
+        g_tail_dispatch->linked = nullptr;
+        g_tail_dispatch->pending = true;
+        return;
+    }
     runtime_dispatch_impl(target_pc, nullptr);
 }
 

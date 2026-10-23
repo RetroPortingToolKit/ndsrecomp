@@ -1,0 +1,137 @@
+Swappable execution models: MKDS-first performance work
+======================================================
+
+Owner-approved scope, 2026-10-23 (beads-yjp.97, beads-6r3o, beads-q4q.10)
+
+Faithful and Performance are selectable implementations behind the same game
+runner contract. Internal representations, instruction execution and scheduling
+may differ. Internal APIs, generated-code identities, caches and disposable
+save-state formats may change between versions. This interface is an engineering
+boundary, not a promise of a permanently stable binary plugin ABI.
+
+The existing retained execution path is the reference. It is not an assertion of
+perfect hardware fidelity; retained VECTOR HLE and renderer features must be
+enabled equally in matched comparisons. Keep this implementation functioning.
+
+Shared observable contract
+--------------------------
+
+Inputs: cartridge identity, controls/touch, configuration, native persistent
+storage, network events and virtual-time advancement.
+
+Outputs: authentic gameplay and progression; both screens with reasonably
+matching effects/layouts; synchronized, correctly paced audio; compatible online
+messages/behavior; native persistent storage operations.
+
+Virtual time is independent of host wall time. Faster host execution must not
+accelerate race time, skip simulation updates, remove opponents, omit a screen,
+silence emulated audio or reduce enabled features to manufacture a result.
+
+Exact instruction counts, intermediate CPU state, per-opcode cycle equivalence,
+and universal pixel/sample identity are not requirements of Performance.
+Simulated job/region/event timing is authorized. Required externally visible
+status, interrupt, DMA, IPC, graphics FIFO/readback and raster effects remain
+part of the outcome contract. Their internal implementation may change.
+
+Live Wiimmfi testing is waived. Original-client gameplay interoperability is
+still required, and remains unverified until appropriate evidence exists. A
+connection or identical packet format alone does not prove gameplay compatibility.
+Our own netplay engine, rewind and rollback are out of scope.
+
+Native saves remain a shared, protected contract. Current-build save/load must
+work for the selected backend. Old-version and cross-backend state conversion
+are not required. Identify the selected model/timing revision in execution-state
+identity; reject incompatible execution snapshots without modifying native saves.
+
+Selection is coherent for a run, with MKDS image validation and a retained
+portable/reference fallback. A request for an unsupported profile/image must be
+reported explicitly. Mid-race seamless switching is not an initial requirement.
+Defaults and final integration remain subject to owner approval.
+
+Architecture selected for the first prototype
+---------------------------------------------
+
+A portable flat AOT execution-region backend, reusing the existing decoded ARM
+semantics and hardware-facing services. Carry registers/flags through useful
+control-flow regions. Represent guest calls and returns through the guest's own
+LR/stack/control flow, rather than requiring recursive host function calls and a
+second call-return stack. Publish architectural state at exits/observers instead
+of every instruction. Do not duplicate speculative whole-region work and restart
+it after stores.
+
+Provide precise exits before unsupported/device operations and code-invalidating
+effects. The reference path remains available for those operations. Deliver
+modeled events at explicit checkpoints; timing and CPU interleaving may differ
+within the approved output contract. Qualify any coarser interleave against IPC,
+DMA, FIFO, timers and useful game-frame progression rather than assuming it safe.
+
+This is a hypothesis to implement and measure, not a demonstrated speedup.
+
+Prototype interface and current qualification
+--------------------------------------------
+
+Build with NDS_MKDS_PERFORMANCE=ON and NDS_MKDS_PERFORMANCE_BANK_DIR pointing
+to mkds_perf_arm9 / mkds_perf_arm9_itcm generated with --flat-execution and
+--validate-live-bytes. Both original banks and the separate portable performance
+archive remain linked. --execution-model faithful|performance selects one fixed
+profile before boot; faithful remains the default. Explicit unsupported ROM or
+build requests fail. The execution_model debug query reports the selected
+revision, native region entries and reference instruction steps.
+
+Save-state identity includes the selected model/timing revision; cross-model
+states are rejected before mutation. Native save persistence is unchanged.
+Regions publish state before hardware accesses, complete the instruction and
+rendezvous. Unsupported instructions use the independent interpreter for one
+instruction. Reference/HLE returns unwind obsolete host continuations in the
+performance model and resume through the completed guest PC.
+
+The local register block is initialized inline after a pointer-free setup call;
+its address is not exposed to external helpers before exit. This allows the C
+compiler to keep registers private across timing and bus calls. The initial
+prototype keeps the existing scheduler quantum, with bounded instruction
+checkpoints; broader job-based simulated timing remains a possible next step.
+
+Focused synthetic instruction/interworking/IO/invalidation checks and unchanged
+faithful code-generation checks pass. Actual MKDS boot/device behavior,
+current-build state restoration, visual sanity, NAS performance and full-race
+qualification are still pending. No speedup or interoperability is established.
+
+Evidence informing the choice
+----------------------------
+
+The existing NAS reference costs about20.4ms active work/frame versus a13.3ms
+target. The earlier function profile attributed about14.3ms to CPU execution and
+its machinery. It found roughly38,000 dispatches/frame, about6 instructions per
+entry. The rejected speculative region prototype averaged3.4 instructions and
+grew .text25%; its instrumented version was slower. Do not reproduce that design.
+
+The new bounded1804-frame host/guest caller capture recovered9388/9388 windowed
+sample pairs, with no invalid, truncated or evicted guest records. After host
+execution classification, estimated CPU execution is about10.8ms ARM9 and2.9ms
+ARM7 in that sample. Inclusive ARM9 jobs at02062464 and02062284 account for about
+4.8ms and3.3ms respectively; these include callees and must not be added again
+to CPU totals. A copied ITCM SBC command interpreter at01FF8FF8 lies under a
+roughly2.2ms model-drawing job. Those are sampled estimates with profiling/load
+effects, not exact timings or projected savings. EU reference names are hints;
+AMCE0 instruction bytes are the implementation authority.
+
+Native SBC replacement remains a useful possible specialization, but even
+eliminating its whole sampled job cannot close the roughly7ms gap alone.
+The upstream melonDS JIT is another architectural option; its CPU/memory/JIT
+objects depend on the full NDS model, while this runner currently vendors GPU3D
+and Wi-Fi through a smaller shim. Dropping it into the current runner is not a
+one-function substitution. Preserve it as an option if the flat AOT approach
+fails; do not claim its performance without an equivalent-feature measurement.
+
+Qualification
+-------------
+
+Use focused semantic/output tests and one matched NAS pair per candidate, with
+identical settings, recorded contention and necessary noise controls. Reuse the
+existing evidence; no routine benchmark matrix. After material gain, qualify the
+final combined candidate in one full native eight-kart150cc Waluigi Pinball race,
+both screens/top448/1x/compute/retained features, with emulated audio active and
+muted host output. Report frame progression, sustained FPS, active-work and
+presentation distributions/headroom, audio underruns and coverage limitations.
+Prepare one normal-window, normal-audio owner playtest when ready. Stop before
+final integration for approval. Never synthesize a passing performance gate.

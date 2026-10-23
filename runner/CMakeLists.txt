@@ -6,6 +6,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/../cmake/NdsJobPools.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/NdsTomlPlusPlus.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../external/arm-recomp-core/cmake/ArmRecompCore.cmake")
 enable_testing()
+add_executable(execution_model_test tests/execution_model_test.cpp src/execution_model.cpp)
+target_include_directories(execution_model_test PRIVATE src)
+add_test(NAME execution_model_test COMMAND execution_model_test)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
@@ -34,6 +37,10 @@ option(NDS_LEAN_DIAGNOSTICS "Experiment: diagnostic sampling is explicitly armed
 option(NDS_CAPTURE_VIEW_REUSE "Experiment: reuse unchanged immutable capture texture views" OFF)
 option(NDS_GX_COMMAND_CACHE
     "Use guarded Main-RAM FIFO ingress and exact integer projection reuse" OFF)
+option(NDS_MKDS_PERFORMANCE
+    "Include selectable portable flat-AOT MKDS execution alongside faithful banks" OFF)
+set(NDS_MKDS_PERFORMANCE_BANK_DIR "" CACHE PATH
+    "Generated mkds_perf_arm9 and mkds_perf_arm9_itcm banks")
 if(NOT NDS_ACCELERATED_RENDERER MATCHES "^(COMPUTE|OPENGL)$")
     message(FATAL_ERROR "NDS_ACCELERATED_RENDERER must be COMPUTE or OPENGL")
 endif()
@@ -352,6 +359,44 @@ set_source_files_properties(${ARM9_BANK_SOURCES}
 set_source_files_properties(${ARM7_BANK_SOURCES}
     PROPERTIES COMPILE_DEFINITIONS "NDS_STATIC_CPU=1")
 
+if(NDS_MKDS_PERFORMANCE)
+    target_compile_definitions(execution_model_test PRIVATE NDS_MKDS_PERFORMANCE=1)
+    set(_perf_dispatch)
+    set(_perf_sources)
+    foreach(_bank mkds_perf_arm9 mkds_perf_arm9_itcm)
+        set(_dispatch "${NDS_MKDS_PERFORMANCE_BANK_DIR}/${_bank}_dispatch.c")
+        file(GLOB _bodies CONFIGURE_DEPENDS
+            "${NDS_MKDS_PERFORMANCE_BANK_DIR}/${_bank}_[0-9][0-9].c")
+        if(NOT EXISTS "${_dispatch}" OR NOT _bodies)
+            message(FATAL_ERROR "Missing performance bank ${_bank}; generate with --flat-execution --validate-live-bytes")
+        endif()
+        file(READ "${_dispatch}" _dispatch_text)
+        if(NOT _dispatch_text MATCHES "ndsrecomp-flat-aot-v1")
+            message(FATAL_ERROR "Performance bank ${_bank} lacks flat-AOT identity")
+        endif()
+        list(APPEND _perf_dispatch "${_dispatch}")
+        list(APPEND _perf_sources ${_bodies} "${_dispatch}")
+    endforeach()
+    add_library(nds_performance_banks STATIC ${_perf_sources})
+    target_include_directories(nds_performance_banks PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t"
+        ${NDS_ARM_RECOMP_INCLUDE_DIRS} "${NDS_MKDS_PERFORMANCE_BANK_DIR}")
+    target_compile_definitions(nds_performance_banks PRIVATE NDS_STATIC_CPU=0)
+    if(NOT MSVC)
+        target_compile_options(nds_performance_banks PRIVATE -w -O2 -g0)
+    endif()
+    ndsrecomp_limit_generated_compiles(nds_performance_banks)
+    ndsrecomp_limit_link(nds_performance_banks)
+    set(_perf_identity "")
+    foreach(_src IN LISTS _perf_sources)
+        file(SHA256 "${_src}" _sha)
+        string(APPEND _perf_identity "${_sha}")
+    endforeach()
+    string(SHA256 _perf_sha "${_perf_identity}")
+    string(SUBSTRING "${_perf_sha}" 0 16 _perf_short)
+    string(APPEND NDS_BUILD_VARIANT "-flat${_perf_short}")
+endif()
+
 # Build one registry translation unit from the configured dispatch filenames.
 # This keeps game names and the number of overlay/runtime generations out of
 # shared runner source. Every generated table is registered only after the
@@ -361,7 +406,15 @@ set(TITLE_BANK_REGISTRY
 file(WRITE "${TITLE_BANK_REGISTRY}"
     "#include \"title_banks.h\"\n"
     "#include \"state.h\"\n"
+    "#include \"execution_model.h\"\n"
     "#include <cstring>\n\n")
+foreach(src IN LISTS _perf_dispatch)
+    get_filename_component(_stem "${src}" NAME_WE)
+    string(REGEX REPLACE "_dispatch$" "" _bank "${_stem}")
+    file(APPEND "${TITLE_BANK_REGISTRY}"
+        "extern \"C\" const DispatchEntry g_dispatch_${_bank}[];\n"
+        "extern \"C\" const unsigned g_dispatch_${_bank}_len;\n")
+endforeach()
 foreach(src IN LISTS TITLE_BANK_DISPATCH)
     get_filename_component(dispatch_stem "${src}" NAME_WE)
     string(REGEX REPLACE "_dispatch$" "" bank "${dispatch_stem}")
@@ -391,6 +444,14 @@ if(TITLE_BANK_DISPATCH)
         file(APPEND "${TITLE_BANK_REGISTRY}"
             "    if (std::strcmp(rom_sha1, "
             "\"${TITLE_GROUP_${_gi}_SHA1}\") == 0) {\n")
+        if(NDS_MKDS_PERFORMANCE AND TITLE_GROUP_${_gi}_SHA1 STREQUAL "691e00d9a5dd80b04f80cc7559503e8b06848785")
+            file(APPEND "${TITLE_BANK_REGISTRY}" "        if (nds_performance_execution()) {\n")
+            foreach(_bank mkds_perf_arm9 mkds_perf_arm9_itcm)
+                file(APPEND "${TITLE_BANK_REGISTRY}"
+                    "            nds_register_dispatch(NDS_ARM9, g_dispatch_${_bank}, g_dispatch_${_bank}_len, 0xFFFF0000u);\n")
+            endforeach()
+            file(APPEND "${TITLE_BANK_REGISTRY}" "        }\n")
+        endif()
         foreach(src IN LISTS TITLE_GROUP_${_gi}_DISPATCH)
             get_filename_component(dispatch_stem "${src}" NAME_WE)
             string(REGEX REPLACE "_dispatch$" "" bank "${dispatch_stem}")
@@ -467,6 +528,8 @@ target_include_directories(nds_armv4t PUBLIC
 
 add_executable(nds_runner
     src/runtime_arm.cpp
+    src/execution_region.cpp
+    src/execution_model.cpp
     # Out-of-line runtime_tick / runtime_should_yield / runtime_unwinding for
     # live shards published before those became header inlines. Must stay a
     # separate TU: it defines NDS_RUNTIME_ABI_SHIMS to suppress the inlines.
@@ -794,6 +857,10 @@ if(NDS_ENABLE_COMPUTE_RENDERER)
     endif()
 endif()
 target_link_libraries(nds_runner PRIVATE nds_banks nds_support nds_armv4t slirp)
+if(NDS_MKDS_PERFORMANCE)
+    target_link_libraries(nds_runner PRIVATE nds_performance_banks)
+    target_compile_definitions(nds_runner PRIVATE NDS_MKDS_PERFORMANCE=1)
+endif()
 if(NDS_BOOTSTRAP_FIRMWARE)
     target_compile_definitions(nds_runner PRIVATE NDS_BOOTSTRAP_FIRMWARE=1)
 elseif(EXISTS "${GEN}/fw_arm9_calibration_save_dispatch.c")

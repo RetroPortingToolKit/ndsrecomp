@@ -19,6 +19,8 @@
 #include "scheduler.h"
 #include "savestate.h"
 #include "state.h"
+#include "execution_model.h"
+#include "execution_region.h"
 #include "io.h"
 #include "frontend.h"
 #include "gpu2d.h"
@@ -1128,7 +1130,19 @@ std::string handle(const std::string& line) {
             if (i) out += ",";
             out += std::to_string(s.interval_buckets[i]);
         }
-        return out + "]}";
+        out += "],\"histogram_bin_us\":250,\"histogram_overflow_us\":64000,\"work_samples\":" +
+            std::to_string(s.work_samples) + ",\"work_at_most_13300us\":" +
+            std::to_string(s.work_at_most_13300us);
+        for (unsigned type = 0; type < 2; ++type) {
+            out += type ? ",\"interval_histogram\":[" : ",\"work_histogram\":[";
+            const auto* bins = type ? s.interval_histogram : s.work_histogram;
+            for (unsigned i = 0; i < 257; ++i) {
+                if (i) out += ",";
+                out += std::to_string(bins[i]);
+            }
+            out += "]";
+        }
+        return out + "}";
     }
     if (cmd == "frontend_stats") {
         // Cumulative frontend counters; sample twice and diff for fps /
@@ -1500,6 +1514,13 @@ std::string handle(const std::string& line) {
     // is it costing? Asked before trusting a table, and the answer carries the
     // observer's own measured overhead.
     if (cmd == "hostprof_status") return nds_hostprof_status_json();
+    if (cmd == "execution_model") {
+        return std::string("{\"ok\":true,\"model\":\"") +
+            nds_execution_model_identity() + "\",\"native_regions\":" +
+            std::to_string(g_nds_region_entries) + ",\"reference_steps\":" +
+            std::to_string(g_nds_region_reference_steps) +
+            ",\"live_wiimmfi_verified\":false}";
+    }
     // Write the ring for a window plus the module map (base/size/path of the
     // exe and every loaded module, shard DLLs included) so the RVAs can be
     // symbolized offline. Forward slashes in the path: the request parser is a

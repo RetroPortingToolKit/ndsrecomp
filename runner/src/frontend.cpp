@@ -52,11 +52,16 @@ void record_frontend_pacing(uint64_t counter, uint64_t emu_ticks,
         std::max(g_pacing_stats.max_present_ticks, present_ticks);
     if (emu_ticks + present_ticks > frequency / 60u)
         ++g_pacing_stats.work_over_budget;
+    const uint64_t work_us = (emu_ticks + present_ticks) * 1000000u / frequency;
+    ++g_pacing_stats.work_histogram[std::min<uint64_t>(256u, work_us / 250u)];
+    ++g_pacing_stats.work_samples;
+    if (work_us <= 13300u) ++g_pacing_stats.work_at_most_13300us;
     if (g_pacing_previous_counter != 0 && counter >= g_pacing_previous_counter) {
         const uint64_t delta = counter - g_pacing_previous_counter;
         g_pacing_stats.max_interval_ticks =
             std::max(g_pacing_stats.max_interval_ticks, delta);
         const uint64_t microseconds = delta * 1000000u / frequency;
+        ++g_pacing_stats.interval_histogram[std::min<uint64_t>(256u, microseconds / 250u)];
         constexpr uint64_t bounds[] = {17000, 20000, 25000, 33334, 50000};
         unsigned bucket = 0;
         while (bucket < 5 && microseconds > bounds[bucket]) ++bucket;

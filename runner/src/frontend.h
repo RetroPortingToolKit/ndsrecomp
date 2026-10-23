@@ -432,6 +432,12 @@ struct NdsFrontendPacingStats {
     uint64_t work_over_budget;
     // <=17, <=20, <=25, <=33.334, <=50, >50 milliseconds.
     uint64_t interval_buckets[6];
+    // 250-us bins [i*250,(i+1)*250), final bin >=64ms. These use
+    // existing clocks and are only collected while the diagnostic is armed.
+    uint64_t work_histogram[257];
+    uint64_t interval_histogram[257];
+    uint64_t work_samples;
+    uint64_t work_at_most_13300us;
 };
 void nds_frontend_pacing_stats(NdsFrontendPacingStats* out, bool reset);
 

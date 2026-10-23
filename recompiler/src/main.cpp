@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "codegen_identity.h"
+#include "flat_codegen.h"
 #include "config.h"
 #include "function_finder.h"
 #include "reloc_scan.h"
@@ -69,6 +70,8 @@ struct Image {
 // ─────────────────────────────────────────────────────────────────────
 
 namespace {
+
+bool g_flat_execution = false;
 
 struct BankNames {
     std::string bank;          // stable title-visible bank identity
@@ -236,6 +239,25 @@ bool read_preceding_dispatch(const std::string& path, PrecedingDispatch& out) {
         owner.expected = &pool->second;
     }
     return true;
+}
+
+SuperblockPlan build_flat_regions(const std::vector<Function>& funcs) {
+    SuperblockPlan plan;
+    plan.leader.resize(funcs.size());
+    plan.end.resize(funcs.size());
+    for (std::size_t first=0; first<funcs.size();) {
+        std::size_t last=first+1;
+        const uint32_t page=funcs[first].addr>>10;
+        const int64_t delta=int64_t(funcs[first].source_addr?funcs[first].source_addr:funcs[first].addr)-funcs[first].addr;
+        while(last<funcs.size() && funcs[last].mode==funcs[first].mode &&
+              (funcs[last].addr>>10)==page &&
+              int64_t(funcs[last].source_addr?funcs[last].source_addr:funcs[last].addr)-funcs[last].addr==delta) ++last;
+        for(auto i=first;i<last;++i){plan.leader[i]=first;plan.end[i]=i+1;}
+        plan.end[first]=last;
+        plan.merged_edges+=last-first-1;
+        first=last;
+    }
+    return plan;
 }
 
 SuperblockPlan build_superblocks(
@@ -921,6 +943,8 @@ void write_bank_dispatch(const std::string& dir,
         names.header.c_str());
 
     std::vector<std::string> validation_symbols(funcs.size());
+    if (g_flat_execution)
+        std::fprintf(f, "/* execution profile: ndsrecomp-flat-aot-v1 */\n");
     if (validate_live_bytes) {
         struct ValidationRecord {
             std::string symbol;
@@ -1160,6 +1184,8 @@ void write_bank_body(const std::string& dir,
         "   is never consulted at runtime — an unlowered op aborts via\n"
         "   runtime_unimplemented_op (PRINCIPLES.md). */\n"
         "#include \"runtime_arm.h\"\n\n");
+    if (g_flat_execution)
+        std::fputs("#define NDS_FLAT_GENERATED_BODY 1\n#include \"execution_region.h\"\n\n",f);
     std::unordered_set<std::string> shard_bodies;
     for (std::size_t index = first; index < last; ++index) {
         if (superblocks.leader[index] != index) continue;
@@ -1212,6 +1238,11 @@ void write_bank_body(const std::string& dir,
             hle ? "NDS_HLE_BODY_STORAGE " : "",
             hle ? "NDS_HLE_BODY_NAME" :
                   (names.fn_prefix + fn.name).c_str());
+        if (g_flat_execution) {
+            std::fputs(nds_emit_flat_region(funcs,index,block_end,rom,rom_size,rom_base).c_str(),f);
+            std::fputs("}\n\n",f);
+            continue;
+        }
         if (coalesced)
             emit_resume_switch(f, funcs, index, block_end);
         for (std::size_t member = index; member < block_end; ++member) {
@@ -1266,7 +1297,11 @@ int main(int argc, char** argv) {
     // binary what its emission semantics are, with no config and no image.
     // See codegen_identity.h for the contract this string carries.
     for (int i = 1; i < argc; i++) {
+        if (std::string(argv[i]) == "--flat-execution") g_flat_execution=true;
+    }
+    for (int i = 1; i < argc; i++) {
         if (std::string(argv[i]) == "--codegen-identity") {
+            if (g_flat_execution) std::printf("ndsrecomp-flat-aot-v1-base-");
             std::printf("%s%u\n", kCodegenIdentityPrefix, kCodegenVersion);
             return 0;
         }
@@ -1283,6 +1318,7 @@ int main(int argc, char** argv) {
             preceding_dispatch_paths.push_back(next());
         else if (a == "--audit") audit = true;
         else if (a == "--validate-live-bytes") validate_live_bytes = true;
+        else if (a == "--flat-execution") g_flat_execution = true;
         else if (a == "--unsafe-live-direct-calls")
             unsafe_live_direct_calls = true;
         else if (a == "--validated-live-direct-calls")
@@ -1314,6 +1350,12 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> bin = read_file(bin_path);
     if (bin.empty()) { std::fprintf(stderr, "cannot read %s\n", bin_path.c_str()); return 1; }
     if (!verify_identity(cfg, bin.data(), bin.size())) return 1;
+    if (g_flat_execution && (!validate_live_bytes || audit || dispatch_only ||
+        coalesce_fallthroughs || prune_preceding_owned || !hle_manifest_path.empty())) {
+        std::fprintf(stderr,"--flat-execution requires validated full emission and no other grouping/HLE manifest pass\n");
+        return 2;
+    }
+    if (g_flat_execution) inline_leaf_max_insns=0;
     print_config_summary(cfg);
     if (coalesce_fallthroughs &&
         (!validate_live_bytes || !hle_manifest_path.empty())) {
@@ -1602,7 +1644,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        const SuperblockPlan superblocks = build_superblocks(
+        const SuperblockPlan superblocks = g_flat_execution ? build_flat_regions(funcs) : build_superblocks(
             funcs, preceding.keys, coalesce_fallthroughs);
         if (coalesce_fallthroughs)
             std::printf("[emit] coalesced %zu fallthrough edges; "

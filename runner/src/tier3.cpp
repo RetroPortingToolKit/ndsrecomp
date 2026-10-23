@@ -231,7 +231,7 @@ void sync_out(const CPUState& c) {
 
 }  // namespace
 
-void tier3_run(uint32_t /*entry*/) {
+static void tier3_run_impl(uint32_t /*entry*/, bool single_step) {
     const uint32_t cpu_index = g_nds_active == NDS_ARM7 ? 1u : 0u;
     // TIER-3 INTERPRETER, carved exclusively out of NDS_EMU_EXEC_*. Before
     // this the interpreter had instruction and entry COUNTS but no host-time
@@ -395,7 +395,7 @@ void tier3_run(uint32_t /*entry*/) {
             }
             pending_entry = false;
         }
-        if (covered) {
+        if (covered && !single_step) {
             nds_preserve_unwind_state();
             break;
         }
@@ -623,6 +623,7 @@ void tier3_run(uint32_t /*entry*/) {
         // next iterations can skip it entirely. Only from the polled path:
         // if poll_after was false we did not scan, so we have established
         // nothing and must not republish.
+        if (single_step) break;
         if (poll_after) runtime_publish_fast_limit();
         if (++guard > 50'000'000) {
             sync_out(ic);
@@ -635,6 +636,9 @@ void tier3_run(uint32_t /*entry*/) {
         trace_push(ic, 3, ic.R[15], 0, ic.R[15], 0);
     sync_out(ic);
 }
+
+void tier3_run(uint32_t pc) { tier3_run_impl(pc, false); }
+void tier3_step_one(uint32_t pc) { tier3_run_impl(pc, true); }
 
 uint32_t tier3_debug_trace_copy(Tier3TraceEvent* out, uint32_t max_entries) {
     if (!out || max_entries == 0) return 0;

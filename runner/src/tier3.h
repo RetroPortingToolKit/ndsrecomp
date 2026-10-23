@@ -34,6 +34,9 @@ struct Tier3TraceEvent {
 // entry, a SWI/IRQ vector takes over, or the slice cap is reached. State is
 // synced g_cpu→interp on entry and interp→g_cpu on exit.
 void tier3_run(uint32_t pc);
+// Reference floor for one instruction at an already covered RAM PC. Unlike a
+// normal stretch, the initial native-bank takeover is intentionally bypassed.
+void tier3_step_one(uint32_t pc);
 
 uint32_t tier3_debug_trace_copy(Tier3TraceEvent* out, uint32_t max_entries);
 

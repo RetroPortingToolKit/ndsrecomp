@@ -42,6 +42,7 @@ add_test(NAME hle_manifest_test COMMAND hle_manifest_test)
 # The recompiler driver: config + function finder + audit/emit.
 add_executable(nds_recompile
     src/main.cpp
+    src/flat_codegen.cpp
     finder/config.cpp
     finder/function_finder.cpp
     finder/reloc_scan.cpp
@@ -84,6 +85,17 @@ add_test(NAME codegen_golden
 # two projects configure separately.
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+    add_test(NAME flat_execution_semantics
+      COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/tests/test_flat_execution.py"
+        --recompiler $<TARGET_FILE:nds_recompile>
+        --compiler "${CMAKE_CXX_COMPILER}"
+        --core-library $<TARGET_FILE:nds_armv4t>
+        --runtime-include "${CMAKE_CURRENT_LIST_DIR}/armv4t"
+        --core-include "${CMAKE_CURRENT_LIST_DIR}/../external/arm-recomp-core/common"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/flat-execution-work")
+  endif()
   add_test(
       NAME live_shard_identity_test
       COMMAND "${Python3_EXECUTABLE}"
