@@ -2,6 +2,7 @@
 #include "ComputeHost.h"
 
 #include <cstdio>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 
@@ -27,6 +28,21 @@ bool g_owns_video = false;
 bool g_owns_window = false;
 bool g_active = false;
 bool g_visible = false;
+bool g_async_errors = false;
+std::atomic<bool> g_async_error{false};
+
+void APIENTRY on_gl_debug(GLenum, GLenum type, GLuint, GLenum, GLsizei,
+                           const GLchar*, const void*) {
+    // The driver may call from another thread. No allocation, I/O, locks or
+    // GL/window APIs are permitted here; the frontend observes the latch.
+    if (type == GL_DEBUG_TYPE_ERROR)
+        g_async_error.store(true, std::memory_order_release);
+}
+
+bool async_error_requested() {
+    const char* value = std::getenv("NDS_COMPUTE_ASYNC_ERRORS");
+    return value && std::strcmp(value, "1") == 0;
+}
 GLuint g_present_program = 0;
 GLuint g_present_vao = 0;
 GLuint g_fallback_texture[2] = {};
@@ -262,6 +278,8 @@ void release_host_objects()
     g_owns_window = false;
     g_active = false;
     g_visible = false;
+    g_async_errors = false;
+    g_async_error.store(false, std::memory_order_relaxed);
 }
 }
 
@@ -294,6 +312,9 @@ bool nds_compute_host_start(SDL_Window* presentation_window)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
                         SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, presentation_window ? 1 : 0);
+    const bool want_async = async_error_requested();
+    if (want_async)
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
     g_window = presentation_window;
     g_visible = presentation_window != nullptr;
     if (!g_window) {
@@ -309,6 +330,11 @@ bool nds_compute_host_start(SDL_Window* presentation_window)
         }
     }
     g_context = SDL_GL_CreateContext(g_window);
+    if (!g_context && want_async) {
+        // Unsupported debug contexts retain the ordinary checked renderer.
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+        g_context = SDL_GL_CreateContext(g_window);
+    }
     SDL_GL_ResetAttributes();
     if (!g_context || !sdl_make_current(g_window, g_context)) {
         std::fprintf(stderr, "[gpu3d] compute GL 4.3 context failed: %s\n",
@@ -339,6 +365,40 @@ bool nds_compute_host_start(SDL_Window* presentation_window)
         return fail_or_fallback("direct presenter initialization");
     }
     if (g_visible) SDL_GL_SetSwapInterval(0);
+    if (want_async) {
+        GLint flags = 0;
+        glGetIntegerv(GL_CONTEXT_FLAGS, &flags);
+        // KHR_debug permits non-debug contexts to omit ALL messages. A
+        // callback pointer alone is therefore insufficient qualification.
+        if ((flags & GL_CONTEXT_FLAG_DEBUG_BIT) && glDebugMessageCallback &&
+            glDebugMessageControl) {
+            glDebugMessageCallback(on_gl_debug, nullptr);
+            glEnable(GL_DEBUG_OUTPUT);
+            glDisable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+            glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE,
+                                  0, nullptr, GL_FALSE);
+            glDebugMessageControl(GL_DONT_CARE, GL_DEBUG_TYPE_ERROR,
+                                  GL_DONT_CARE, 0, nullptr, GL_TRUE);
+            if (glGetError() == GL_NO_ERROR) g_async_errors = true;
+        }
+        std::fprintf(stderr, "[gpu3d] async GL errors: %s\n",
+            g_async_errors ? "active (verified debug context)" : "unavailable; polling fallback");
+        const char* selftest = std::getenv("NDS_COMPUTE_ASYNC_ERROR_SELFTEST");
+        if (selftest && std::strcmp(selftest, "1") == 0) {
+            if (!g_async_errors) return fail_or_fallback("async error selftest unsupported");
+            g_async_error.store(false, std::memory_order_relaxed);
+            glEnable(0xFFFFFFFFu); // Intentional GL_INVALID_ENUM; changes no state.
+            glFinish(); // Selftest only, outside timed gameplay.
+            for (unsigned i = 0; i < 100 && !g_async_error.load(std::memory_order_acquire); ++i)
+                SDL_Delay(1);
+            const bool delivered = g_async_error.load(std::memory_order_acquire);
+            const bool expected = glGetError() == GL_INVALID_ENUM;
+            if (!delivered || !expected)
+                return fail_or_fallback("async error selftest failed");
+            g_async_error.store(false, std::memory_order_release);
+            std::fprintf(stderr, "[gpu3d] async GL error selftest: passed\n");
+        }
+    }
     g_active = true;
     std::fprintf(stderr, "[gpu3d] renderer: %s\n",
                  nds_gpu3d_compiled_accelerated_backend());
@@ -411,6 +471,7 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
 {
     if (!g_active || !g_visible || !g_present_program || !ticks)
         return false;
+    if (g_async_errors && g_async_error.load(std::memory_order_acquire)) return false;
     const auto diagnostic_begin = ticks->diagnostic ? SDL_GetPerformanceCounter() : 0;
     if (!sdl_make_current(g_window, g_context)) return false;
     const int width = direct_frame ? direct_frame->width : fallback_width;
@@ -550,7 +611,7 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
         const char* value = std::getenv("NDS_COMPUTE_CHECK_BEFORE_SWAP");
         return value && std::strcmp(value, "1") == 0;
     }();
-    if (check_before_swap) {
+    if (check_before_swap && !g_async_errors) {
         const auto error_start = ticks->diagnostic ? SDL_GetPerformanceCounter() : 0;
         const bool ok = glGetError() == GL_NO_ERROR;
         if (ticks->diagnostic) ticks->error = SDL_GetPerformanceCounter() - error_start;
@@ -565,6 +626,7 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
 #endif
     ticks->swap += SDL_GetPerformanceCounter() - start;
     if (!swapped) return false;
+    if (g_async_errors) return !g_async_error.load(std::memory_order_acquire);
     if (check_before_swap) return true;
     const auto diagnostic_error = ticks->diagnostic ? SDL_GetPerformanceCounter() : 0;
     const bool ok = glGetError() == GL_NO_ERROR;
