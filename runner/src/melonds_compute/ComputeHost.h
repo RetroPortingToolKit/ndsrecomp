@@ -11,6 +11,9 @@ struct NdsComputePresentTicks {
     unsigned long long upload = 0;
     unsigned long long draw = 0;
     unsigned long long swap = 0;
+    bool diagnostic = false;
+    unsigned long long setup = 0;
+    unsigned long long error = 0;
 };
 
 bool nds_compute_host_start(SDL_Window* presentation_window = nullptr);

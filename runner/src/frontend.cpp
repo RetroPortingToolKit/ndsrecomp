@@ -202,6 +202,8 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame) {
 #endif
 #include "recomp_runtime_ui.h"
 
+#include "frontend_latency.h"
+
 namespace {
 
 #if defined(NDS_HAVE_SDL3)
@@ -740,11 +742,14 @@ struct NdsAudioDevice {
 void SDLCALL audio_stream_underrun_callback(void* userdata,
                                             SDL_AudioStream* /*stream*/,
                                             int additional_amount,
-                                            int /*total_amount*/) {
+                                            int total_amount) {
     if (additional_amount <= 0) return;
     auto* queue = static_cast<AudioQueue*>(userdata);
     if (queue && queue->started.load(std::memory_order_relaxed))
+    {
         queue->underruns.fetch_add(1, std::memory_order_relaxed);
+        nds_frontend_latency::shortage(additional_amount, total_amount);
+    }
 }
 #else
 using NdsAudioDevice = SDL_AudioDeviceID;
@@ -773,8 +778,11 @@ void SDLCALL audio_callback(void* userdata, Uint8* stream, int len) {
                     (take - first) * kAudioFrameBytes);
     queue->read = (queue->read + take) % kAudioCapacityFrames;
     queue->count -= take;
-    if (take < requested && queue->started.load(std::memory_order_relaxed))
+    if (take < requested && queue->started.load(std::memory_order_relaxed)) {
         queue->underruns.fetch_add(1, std::memory_order_relaxed);
+        nds_frontend_latency::shortage(
+            static_cast<int>((requested - take) * kAudioFrameBytes), len);
+    }
 }
 #endif
 
@@ -1903,6 +1911,7 @@ struct PresentationTicks {
     uint64_t upload = 0;
     uint64_t draw = 0;
     uint64_t swap = 0;
+    uint64_t pool_wait = 0, gl_setup = 0, gl_error = 0, overlay = 0;
     bool ok = true;
 };
 
@@ -1958,8 +1967,12 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
     if (presentation.gl_top) {
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
         NdsGpu2dDirectFrame direct_frame{};
+        const bool latency = nds_frontend_latency::enabled.load(std::memory_order_relaxed);
+        const auto pool_begin = latency ? SDL_GetPerformanceCounter() : 0;
         const bool direct = nds_gpu2d_direct_frame(&direct_frame);
+        if (latency) ticks.pool_wait = SDL_GetPerformanceCounter() - pool_begin;
         NdsComputePresentTicks gl_ticks{};
+        gl_ticks.diagnostic = latency;
         if (!nds_compute_host_present_top(
                 top_pixels, static_cast<uint16_t>(top_width),
                 direct ? &direct_frame : nullptr, &gl_ticks)) {
@@ -1970,8 +1983,12 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
         ticks.upload += gl_ticks.upload;
         ticks.draw += gl_ticks.draw;
         ticks.swap += gl_ticks.swap;
+        ticks.gl_setup = gl_ticks.setup;
+        ticks.gl_error = gl_ticks.error;
+        const auto overlay_begin = latency ? SDL_GetPerformanceCounter() : 0;
         bottom_pixels = runtime_menu_overlay(
             runtime_ui, bottom_pixels, bottom_width, kScreenHeight);
+        if (latency) ticks.overlay = SDL_GetPerformanceCounter() - overlay_begin;
         uint64_t start = SDL_GetPerformanceCounter();
         SDL_UpdateTexture(presentation.textures[1], nullptr, bottom_pixels,
                           bottom_width * sizeof(uint32_t));
@@ -2247,6 +2264,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         }
     }
 
+    const bool latency_trace = nds_frontend_latency::begin();
     AudioQueue audio_queue{};
     SDL_AudioSpec want{};
     // The mixer runs once per 1024 DS system cycles. Request its integer host
@@ -2840,6 +2858,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     uint64_t savestate_notice_until = 0;
 
     while (running) {
+        const uint64_t latency_loop = latency_trace ? SDL_GetPerformanceCounter() : 0;
+        const uint64_t latency_cycles_loop = latency_trace ? nds_frontend_latency::cycles() : 0;
+        const uint32_t latency_queue_begin = latency_trace ? audio_queue_count(audio, audio_queue) : 0;
+        const uint64_t latency_adaptive_before = phase_adaptive_ticks;
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
         if (!nds_compute_host_make_current()) {
             std::fprintf(stderr, "[gpu3d] lost compute GL context: %s\n",
@@ -3786,6 +3808,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         publish_input_debug();
 
         const uint64_t phase0 = SDL_GetPerformanceCounter();
+        const uint64_t latency_cycles_emu = latency_trace ? nds_frontend_latency::cycles() : 0;
         const uint64_t now = scheduler_system_timestamp();
         const uint64_t next_frame =
             (now / kSystemCyclesPerFrame + 1u) * kSystemCyclesPerFrame;
@@ -3839,6 +3862,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         }
 
         const uint64_t phase1 = SDL_GetPerformanceCounter();
+        const uint64_t latency_cycles_present = latency_trace ? nds_frontend_latency::cycles() : 0;
         const uint32_t* const native_top = nds_gpu2d_framebuffer(0);
         const uint32_t* top_pixels = native_top;
         const uint32_t* bottom_pixels = nds_gpu2d_framebuffer(1);
@@ -3936,6 +3960,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
             audio_min_queue = std::min(audio_min_queue, queued);
         }
         const uint64_t phase2 = SDL_GetPerformanceCounter();
+        const uint64_t latency_cycles_drain = latency_trace ? nds_frontend_latency::cycles() : 0;
         // Glide: after the prebuffered start, the pacing allowance decays a
         // fixed step per frame from the prebuffer level down to the steady
         // 63 ms target, shedding the extra startup latency over a couple of
@@ -3946,6 +3971,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         else
             audio_pace_floor = kAudioQueueFrames;
         uint32_t queued = audio_queue_count(audio, audio_queue);
+        const uint32_t latency_queue_before_drain = queued;
         if (turbo_active) {
             discard_spu_output();
         } else {
@@ -4059,6 +4085,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         g_live_stats.perf_governor_transitions =
             nds_perf_governor_history_total();
         const uint64_t counter = SDL_GetPerformanceCounter();
+        if (latency_trace)
+            nds_frontend_latency::frame({shown_frames, latency_loop, phase0,
+                phase0 + frame_emu_ticks, phase1, phase2,
+                phase2 + frame_drain_ticks, counter, latency_cycles_loop,
+                latency_cycles_emu, latency_cycles_present, latency_cycles_drain,
+                nds_frontend_latency::cycles(), latency_queue_begin,
+                latency_queue_before_drain, queued, current_underruns,
+                phase_adaptive_ticks - latency_adaptive_before,
+                presentation_ticks.upload, presentation_ticks.draw,
+                presentation_ticks.swap, frame_compute_map_ns,
+                audio_started ? 1u : 0u, presentation_ticks.pool_wait,
+                presentation_ticks.gl_setup, presentation_ticks.gl_error,
+                presentation_ticks.overlay});
         record_frontend_pacing(counter, frame_emu_ticks, phase2 - phase1,
                                frequency);
         if (!savestate_notice.empty() && counter >= savestate_notice_until)
@@ -4134,6 +4173,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     // report failure on every clean run.
     const bool audio_opened = static_cast<bool>(audio);
     close_audio(audio);
+    nds_frontend_latency::finish();
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
     nds_gpu2d_set_direct_present(false);
     nds_compute_host_stop();

@@ -411,6 +411,7 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
 {
     if (!g_active || !g_visible || !g_present_program || !ticks)
         return false;
+    const auto diagnostic_begin = ticks->diagnostic ? SDL_GetPerformanceCounter() : 0;
     if (!sdl_make_current(g_window, g_context)) return false;
     const int width = direct_frame ? direct_frame->width : fallback_width;
     if (width <= 0 || width > 448) return false;
@@ -443,6 +444,7 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
         hd.width == width && hd.top_pixels && hd.below_pixels;
 
     unsigned long long start = SDL_GetPerformanceCounter();
+    if (ticks->diagnostic) ticks->setup = start - diagnostic_begin;
     if (hd_active) {
         glActiveTexture(GL_TEXTURE4);
         glBindTexture(GL_TEXTURE_2D, g_hd_top_texture[buffer]);
@@ -541,7 +543,11 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
     start = SDL_GetPerformanceCounter();
     SDL_GL_SwapWindow(g_window);
     ticks->swap += SDL_GetPerformanceCounter() - start;
-    return glGetError() == GL_NO_ERROR;
+    const auto diagnostic_error = ticks->diagnostic ? SDL_GetPerformanceCounter() : 0;
+    const bool ok = glGetError() == GL_NO_ERROR;
+    if (ticks->diagnostic)
+        ticks->error = SDL_GetPerformanceCounter() - diagnostic_error;
+    return ok;
 }
 
 void nds_compute_host_stop()
