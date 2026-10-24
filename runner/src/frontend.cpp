@@ -715,6 +715,8 @@ constexpr uint32_t kAudioFrameBytes = 2u * sizeof(int16_t);
 constexpr uint32_t kAudioCapacityFrames = 65536;
 
 struct AudioQueue {
+    // Host output only. Consumption, guest mixing and pacing remain active.
+    bool output_muted = false;
 #if !defined(NDS_HAVE_SDL3)
     std::array<int16_t, kAudioCapacityFrames * 2> samples{};
     uint32_t read = 0;
@@ -778,6 +780,8 @@ void SDLCALL audio_callback(void* userdata, Uint8* stream, int len) {
                     (take - first) * kAudioFrameBytes);
     queue->read = (queue->read + take) % kAudioCapacityFrames;
     queue->count -= take;
+    if (queue->output_muted)
+        std::memset(stream, 0, static_cast<size_t>(len));
     if (take < requested && queue->started.load(std::memory_order_relaxed)) {
         queue->underruns.fetch_add(1, std::memory_order_relaxed);
         nds_frontend_latency::shortage(
@@ -1110,6 +1114,13 @@ NdsAudioDevice open_audio_device(AudioQueue& queue,
     NdsAudioDevice device{};
     device.stream = SDL_OpenAudioDeviceStream(
         SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &want, nullptr, nullptr);
+    if (device.stream && queue.output_muted &&
+        !SDL_SetAudioStreamGain(device.stream, 0.0f)) {
+        // An unattended real-device test must never fall back to audible
+        // output if the requested per-stream mute cannot be applied.
+        std::fprintf(stderr, "[sdl] cannot mute audio output: %s\n", SDL_GetError());
+        close_audio(device);
+    }
     if (device.stream &&
         !SDL_SetAudioStreamGetCallback(
             device.stream, audio_stream_underrun_callback, &queue)) {
@@ -2266,6 +2277,8 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
 
     const bool latency_trace = nds_frontend_latency::begin();
     AudioQueue audio_queue{};
+    if (const char* mute = std::getenv("NDS_FRONTEND_AUDIO_MUTE"))
+        audio_queue.output_muted = std::strcmp(mute, "1") == 0;
     SDL_AudioSpec want{};
     // The mixer runs once per 1024 DS system cycles. Request its integer host
     // rate directly; the sub-sample remainder is absorbed by the bounded queue
@@ -2281,6 +2294,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     NdsAudioDevice audio = open_audio_device(audio_queue, want);
     if (!audio)
         std::fprintf(stderr, "[sdl] audio unavailable: %s\n", SDL_GetError());
+    else
+        std::fprintf(stderr, "[sdl] audio driver: %s, output muted: %s\n",
+            SDL_GetCurrentAudioDriver(), audio_queue.output_muted ? "yes" : "no");
 
     std::fprintf(stderr,
         "[sdl] controls: gamepad=Player 1 | bottom mouse=touch | "
