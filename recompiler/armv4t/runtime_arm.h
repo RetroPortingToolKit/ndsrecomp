@@ -243,7 +243,6 @@ extern NdsBusFastWin g_busf_wram_lo[2];  // 0x03000000..0x037FFFFF, per CPU
 extern NdsBusFastWin g_busf_wram_hi[2];  // 0x03800000..0x03FFFFFF, per CPU
 extern NdsBusFastWin g_busf_itcm;        // ARM9 ITCM (guarded by the limit)
 extern NdsBusFastWin g_busf_dtcm;        // ARM9 DTCM (non-mirrored window)
-extern uint64_t g_busf_mapping_generation; // refresh/restore invalidates native read mappings
 extern uint32_t g_busf_itcm_limit;       // virtual span; 0 = disabled
 extern uint32_t g_busf_dtcm_base;
 extern uint32_t g_busf_dtcm_limit;       // min(virtual size, 16 KiB); 0 = off

@@ -4,6 +4,17 @@ Software is copyrighted even when its source is publicly visible. This file
 records the origin and licensing posture of code and tooling in this repository;
 it is not a legal guarantee of non-infringement.
 
+## Optional Dynarmic execution
+
+The Windows x64 MKDS Performance backend optionally links Dynarmic, pinned to
+`a41c380246d3d9f9874f0f792d234dc0cc17c180`, with the repository's
+`runner/cmake/dynarmic-readonly-pages.patch`. Dynarmic is copyright merryhime
+and contributors under its ISC license; its bundled dependencies retain their
+own notices. The matching release source archive includes the pinned SDK and
+patch, and the binary package includes the SDK/dependency license notices.
+Faithful and portable builds do not require the SDK. This does not enable the
+MKDS-specific execution implementation for other titles.
+
 ## Project-owned code
 
 Except for the items described below, the tracked implementation and

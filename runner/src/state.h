@@ -9,6 +9,10 @@
 
 #include "runtime_arm.h"
 
+// Runner-private native read mappings must refresh on backing replacement,
+// remap or restore. Generated banks do not use this implementation detail.
+extern "C" uint64_t g_busf_mapping_generation;
+
 // Which core is currently executing (NdsCpu / g_nds_active — declared in
 // runtime_arm.h, the ABI boundary generated banks also see, so there is
 // one definition shared by C++ runtime code and C generated code). The
