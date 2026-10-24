@@ -2290,6 +2290,26 @@ int main(int argc, char** argv) {
     };
     boot();
 
+    if (!interactive) {
+        // The SDL frontend normally selects the raster width. Serve/headless
+        // runs need the same selection before creating their hidden context;
+        // otherwise --widescreen-width silently leaves them at native width.
+        uint16_t output_width = 256;
+        for (unsigned screen = 0; screen < 2; ++screen) {
+            const unsigned bit = 1u << screen;
+            if (frontend_options.adaptive_screens &
+                frontend_options.adaptive_supported & bit) {
+                output_width = std::max(
+                    output_width, frontend_options.adaptive_max_width[screen]);
+            }
+        }
+        if (!nds_gpu3d_set_output_width(output_width)) {
+            std::fprintf(stderr, "headless adaptive 3D width %u is unavailable\n",
+                         static_cast<unsigned>(output_width));
+            return 1;
+        }
+    }
+
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
     // Interactive mode creates the hidden context only after its visible SDL
     // allocations succeed. Headless/serve modes own it here so forced
