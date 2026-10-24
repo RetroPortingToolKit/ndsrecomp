@@ -3,6 +3,7 @@
 #if !defined(NDS_ARM9_DYNARMIC)
 bool nds_arm9_native_run() { return false; }
 void nds_arm9_native_note_write() {}
+void nds_arm9_native_flush_writes() {}
 void nds_arm9_native_clear() {}
 void nds_arm9_native_census(bool, bool) {}
 std::string nds_arm9_native_json() { return "{\"available\":false}"; }
@@ -14,6 +15,7 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #include "thumb_decode.h"
 #include "hle_mkds.h"
 #include "arm9_native_ir.h"
+#include "arm9_native_watch.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/frontend/A32/a32_ir_emitter.h"
 #include "dynarmic/frontend/A32/a32_types.h"
@@ -38,20 +40,28 @@ namespace {
 // through the existing bus, then leave JIT execution at the instruction boundary.
 constexpr uint64_t cycles_per_instruction=2;
 bool diagnostic() {static const bool on=std::getenv("NDS_ARM9_NATIVE_DIAGNOSTIC")!=nullptr;return on;}
-struct Watch { const uint32_t* generation;uint32_t value; };
+bool batched_writes() {
+    static const bool enabled=[] {const char* value=std::getenv("NDS_ARM9_BATCH_WRITES");return value&&std::strcmp(value,"1")==0;}();
+    return enabled;
+}
 bool census_enabled=false;
 class Native final : public Dynarmic::A32::UserCallbacks {
 public:
     std::unique_ptr<Dynarmic::A32::Jit> jit;
     std::array<uint32_t,16>* registers=nullptr;
     std::array<uint32_t,64>* extensions=nullptr;
-    std::vector<Watch> watches;
-    std::unordered_map<const uint32_t*,size_t> watched;
+    NdsArm9GenerationWatch watches;
     std::unordered_map<uint64_t,uint64_t> floor_census;
     uint64_t checks_by_cpu[2]={};
-    uint64_t remaining=0,entries=0,instructions=0,floors=0,devices=0,invalidations=0,unknown_write_checks=0;
+    uint64_t remaining=0,entries=0,instructions=0,floors=0,devices=0,invalidations=0;
+    uint64_t write_notifications=0,deferred_notifications=0,write_batches=0;
     uint32_t pending_pc=0;
-    bool pending=false,known_write=false;
+    bool pending=false,known_write=false,running=false,device_halted=false;
+    struct Running {
+        Native& owner;
+        explicit Running(Native& owner):owner(owner) {owner.running=true;owner.device_halted=false;}
+        ~Running() {owner.running=false;}
+    };
     Cp15State mapping{};
     Native() {
         Dynarmic::A32::UserConfig conf;
@@ -64,7 +74,7 @@ public:
         registers=&jit->Regs();extensions=&jit->ExtRegs();mapping=g_cp15;
     }
     void clear() {
-        jit->ClearCache();watches.clear();watched.clear();++invalidations;
+        jit->ClearCache();watches.clear();++invalidations;
     }
     void publish() {
         std::copy(registers->begin(),registers->end(),g_cpu.R);g_cpu.cpsr=jit->Cpsr();
@@ -77,7 +87,7 @@ public:
            !bus_range_has_write_provenance(addr,4))return std::nullopt;
         if(watch) {
             const uint32_t* generation=win->gen+(off>>12);
-            if(watched.emplace(generation,watches.size()).second)watches.push_back({generation,*generation});
+            watches.add(generation);
         }
         uint32_t value;std::memcpy(&value,win->data+off,4);return value;
     }
@@ -139,7 +149,7 @@ public:
     void device() {
         g_cpu.R[15]=(*registers)[15];
         g_cpu.cpsr=(g_cpu.cpsr&~0xffu)|(jit->Cpsr()&0xffu);
-        ++devices;jit->HaltExecution();
+        ++devices;jit->HaltExecution();device_halted=true;
     }
     uint8_t MemoryRead8(uint32_t a) override {if(!ram(a,1))device();return bus_read_u8(a);}
     uint16_t MemoryRead16(uint32_t a) override {if(!ram(a&~1u,2))device();return bus_read_u16(a&~1u);}
@@ -170,7 +180,7 @@ public:
         else if(width==2)bus_write_u16(a,uint16_t(value));
         else bus_write_u8(a,uint8_t(value));
         known_write=false;
-        if(generation&&watched.find(generation)!=watched.end())clear();
+        if(generation&&watches.contains(generation))clear();
     }
     void MemoryWrite8(uint32_t a,uint8_t v) override {write(a,v,1);}
     void MemoryWrite16(uint32_t a,uint16_t v) override {write(a,v,2);}
@@ -188,14 +198,22 @@ public:
         g_runtime_cycles+=n*cycles_per_instruction;
     }
     uint64_t GetTicksRemaining() override {return remaining;}
+    void validate_writes() {
+        const uint64_t before=watches.checks;
+        const bool changed=watches.changed();
+        checks_by_cpu[g_nds_active==NDS_ARM7?1:0]+=watches.checks-before;
+        if(changed)clear();
+    }
+    void flush_writes() {
+        if(watches.take_pending()) {++write_batches;validate_writes();}
+    }
     void unknown_write() {
         if(known_write)return;
-        const uint64_t before=unknown_write_checks;
-        for(const auto& watch:watches) {
-            ++unknown_write_checks;
-            if(*watch.generation!=watch.value){checks_by_cpu[g_nds_active==NDS_ARM7?1:0]+=unknown_write_checks-before;clear();return;}
+        ++write_notifications;
+        if(batched_writes()&&nds_arm9_can_defer_generation_check(running,device_halted)) {
+            ++deferred_notifications;watches.defer();return;
         }
-        checks_by_cpu[g_nds_active==NDS_ARM7?1:0]+=unknown_write_checks-before;
+        validate_writes();
     }
 };
 std::unique_ptr<Native> native;
@@ -227,6 +245,7 @@ bool nds_arm9_native_run() {
        n.mapping.dtcm_base!=g_cp15.dtcm_base||n.mapping.dtcm_size!=g_cp15.dtcm_size) {
         n.clear();n.mapping=g_cp15;
     }
+    n.flush_writes(); // No cached native instruction executes before validation.
     runtime_call_stack_restore(nullptr,0);
     std::copy(std::begin(g_cpu.R),std::end(g_cpu.R),n.registers->begin());n.jit->SetCpsr(g_cpu.cpsr);
     n.jit->ClearHalt(Dynarmic::HaltReason::UserDefined1|Dynarmic::HaltReason::MemoryAbort);
@@ -234,7 +253,8 @@ bool nds_arm9_native_run() {
     n.pending=false;++n.entries;
     if(diagnostic()&&n.entries<=32)std::fprintf(stderr,"[arm9-native] enter %llu pc=%08x cycles=%llu limit=%llu budget=%llu\n",
         static_cast<unsigned long long>(n.entries),g_cpu.R[15],g_runtime_cycles,g_nds_fast_limit,static_cast<unsigned long long>(n.remaining));
-    n.jit->Run();n.publish();
+    {Native::Running running(n);n.jit->Run();}
+    n.publish();n.flush_writes();
     if(diagnostic()&&n.entries<=32)std::fprintf(stderr,"[arm9-native] leave pc=%08x cycles=%llu pending=%u floorpc=%08x\n",
         g_cpu.R[15],g_runtime_cycles,unsigned(n.pending),n.pending_pc);
     if(n.pending&&!runtime_should_yield()) {
@@ -246,6 +266,7 @@ bool nds_arm9_native_run() {
     return true;
 }
 void nds_arm9_native_note_write() {if(native)native->unknown_write();}
+void nds_arm9_native_flush_writes() {if(native)native->flush_writes();}
 void nds_arm9_native_clear() {if(native)native->clear();}
 void nds_arm9_native_census(bool enabled,bool reset) {
     census_enabled=enabled;
@@ -255,13 +276,18 @@ std::string nds_arm9_native_json() {
     std::string out="{\"available\":"+std::string(supported_host()?"true":"false")+
         ",\"diagnostic\":"+std::string(diagnostic()?"true":"false")+
         ",\"census_enabled\":"+std::string(census_enabled?"true":"false")+
+        ",\"batched_writes\":"+std::string(batched_writes()?"true":"false")+
         ",\"cycles_per_instruction\":"+std::to_string(cycles_per_instruction);
     if(native)out+=",\"entries\":"+std::to_string(native->entries)+
         ",\"instructions\":"+std::to_string(native->instructions)+
         ",\"reference_stops\":"+std::to_string(native->floors)+
         ",\"device_handoffs\":"+std::to_string(native->devices)+
         ",\"invalidations\":"+std::to_string(native->invalidations)+
-        ",\"unknown_write_checks\":"+std::to_string(native->unknown_write_checks)+
+        ",\"unknown_write_checks\":"+std::to_string(native->watches.checks)+
+        ",\"watched_pages\":"+std::to_string(native->watches.size())+
+        ",\"write_notifications\":"+std::to_string(native->write_notifications)+
+        ",\"deferred_notifications\":"+std::to_string(native->deferred_notifications)+
+        ",\"write_batches\":"+std::to_string(native->write_batches)+
         ",\"write_checks_arm9\":"+std::to_string(native->checks_by_cpu[0])+
         ",\"write_checks_arm7\":"+std::to_string(native->checks_by_cpu[1]);
     out+=",\"reference_census\":[";

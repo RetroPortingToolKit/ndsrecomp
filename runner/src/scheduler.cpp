@@ -185,6 +185,9 @@ void run_slice(int cpu, uint32_t quantum) {
         g_runtime_cycles = g_slot[cpu].cycles;
         const uint64_t cap = g_slot[cpu].cycles + quantum;
         nds_dma_run(cpu, cap);   // timed inside (io.cpp), like every device
+#if defined(NDS_ARM9_DYNARMIC)
+        if(cpu==1)nds_arm9_native_flush_writes();
+#endif
         g_slot[cpu].cycles = g_runtime_cycles;
         return;
     }
@@ -284,6 +287,12 @@ void run_slice(int cpu, uint32_t quantum) {
     }
     g_slot[cpu].cycles = g_runtime_cycles;
     g_slot[cpu].deferred_cycles = runtime_deferred_cycles();
+#if defined(NDS_ARM9_DYNARMIC)
+    // ARM7 cannot execute ARM9 native code during its slice. Coalesce its
+    // writes, then validate before handing execution back to ARM9. The native
+    // entry also validates writes from device work between CPU slices.
+    if(cpu==1)nds_arm9_native_flush_writes();
+#endif
 }
 
 }  // namespace

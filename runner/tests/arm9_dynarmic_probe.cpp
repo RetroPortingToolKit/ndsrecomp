@@ -16,6 +16,7 @@
 #include "dynarmic/frontend/A32/a32_ir_emitter.h"
 #include "dynarmic/ir/terminal.h"
 #include "../src/arm9_native_ir.h"
+#include "../src/arm9_native_watch.h"
 
 namespace {
 constexpr uint32_t code_pc=0x100;
@@ -44,10 +45,17 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     bool complete_io=false;
     bool bounded_memory=false;
     bool isa_guard=false;
+    bool watch_code=false,code_alias=false,watch_io_dma=false,watch_immediate=false;
+    std::array<uint32_t,16> generations{};
+    NdsArm9GenerationWatch watches;
     uint32_t device_value=0;
     unsigned device_reads=0,device_writes=0;
     unsigned device_read8=0,device_read16=0;
-    std::optional<uint32_t> MemoryReadCode(uint32_t a) override {return ram.read32(a);}
+    std::optional<uint32_t> MemoryReadCode(uint32_t a) override {
+        if(code_alias&&a>=0x2000&&a<0x3000)a-=0x2000;
+        if(watch_code)watches.add(&generations[a>>12]);
+        return ram.read32(a);
+    }
     bool PreCodeReadHook(bool thumb,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {
         if(forced_floor==pc){ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;}
         if(isa_guard&&thumb&&!nds_arm9_thumb_native_encoding(ram.read16(pc),ram.read16(pc+2),true)) {
@@ -97,8 +105,22 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     void MemoryWrite8(uint32_t a,uint8_t v) override {if(permitted(a,1,true))ram.write8(a,v);}
     void MemoryWrite16(uint32_t a,uint16_t v) override {if(permitted(a,2,true))ram.write16(a&~1u,v);}
     void MemoryWrite32(uint32_t a,uint32_t v) override {
-        if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"write callback PC survives optimization");++device_writes;device_value=v;jit->HaltExecution();return;}
-        if(permitted(a,4,true))ram.write32(a&~3u,v);
+        if(complete_io&&a>=0x04000000u){
+            require(jit->Regs()[15]==code_pc,"write callback PC survives optimization");
+            ++device_writes;device_value=v;jit->HaltExecution();
+            if(watch_io_dma) {
+                require(nds_arm9_can_defer_generation_check(true,true),"device halt permits coalescing");
+                ram.write32(code_pc+4,0xe3a00007u);++generations[(code_pc+4)>>12];watches.defer();
+            }
+            return;
+        }
+        if(permitted(a,4,true)) {
+            ram.write32(a&~3u,v);
+            if(watch_code&&watch_immediate) {
+                ++generations[a>>12];
+                if(watches.changed()){jit->ClearCache();watches.clear();}
+            }
+        }
     }
     void MemoryWrite64(uint32_t a,uint64_t v) override {MemoryWrite32(a,uint32_t(v));MemoryWrite32(a+4,uint32_t(v>>32));}
     void InterpreterFallback(uint32_t pc,size_t n) override {
@@ -302,5 +324,59 @@ int main() {
     const auto old_floors=env.floors;set_state(jit,suffix);env.remaining=10;jit.Run();
     require(env.floors==old_floors+1&&env.floor_pc==code_pc&&equal(suffix,jit),"standalone Thumb suffix stops before newer decoding");
     std::puts("ARMV5_THUMB_RESUME passed: paired calls accepted, standalone suffix returns to faithful step");
+    // Exercise the production physical-generation set with real cached code,
+    // including cross-CPU writes, aliases, and nested device/DMA modifications.
+    env.isa_guard=false;env.bounded_memory=false;env.complete_io=false;
+    env.watch_code=true;env.generations.fill(1);env.watches.clear();jit.ClearCache();
+    env.ram.write32(code_pc,0xe3a00001u);env.ram.write32(code_pc+4,0xeafffffeu);
+    armv4t::CPUState watched{};watched.R[15]=code_pc;watched.cpsr.mode=0x1f;
+    set_state(jit,watched);env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==1&&env.watches.size()==1,"cached initial code watched physically");
+    const auto checks_before=env.watches.checks;
+    env.ram.write32(code_pc,0xe3a00002u);
+    for(unsigned n=0;n<8;++n){++env.generations[0];env.watches.defer();}
+    require(env.watches.checks==checks_before,"ARM7 writes do not repeatedly scan");
+    require(env.watches.take_pending()&&env.watches.changed(),"batch detects code modification before execution");
+    require(env.watches.checks==checks_before+1,"eight writes validated in one physical-page comparison");
+    jit.ClearCache();env.watches.clear();
+    set_state(jit,watched);env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==2,"modified ARM7 code replaces cached instruction");
+    ++env.generations[3];env.watches.defer();
+    require(env.watches.take_pending()&&!env.watches.changed(),"unwatched data write preserves code cache");
+    require(!env.watches.take_pending(),"repeated flush without writes is empty");
+    env.code_alias=true;watched.R[15]=0x2000+code_pc;
+    set_state(jit,watched);env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==2&&env.watches.size()==1,"execution alias shares physical watch");
+    env.ram.write32(code_pc,0xe3a00003u);++env.generations[0];env.watches.defer();
+    require(env.watches.take_pending()&&env.watches.changed(),"physical write invalidates alias code");
+    jit.ClearCache();env.watches.clear();
+    set_state(jit,watched);env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==3,"alias executes changed bytes");
+    env.watches.defer();env.watches.clear();
+    require(!env.watches.take_pending()&&env.watches.size()==0,"restore/reset discards deferred products");
+    env.code_alias=false;jit.ClearCache();
+    env.ram.write32(code_pc,0xe5812000u);env.ram.write32(code_pc+4,0xe3a00001u);
+    env.ram.write32(code_pc+8,0xeafffffeu);
+    watched={};watched.R[15]=code_pc+4;watched.cpsr.mode=0x1f;
+    set_state(jit,watched);env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==1,"DMA fixture has stale target cached");
+    watched.R[15]=code_pc;watched.R[1]=0x04000000;watched.R[2]=37;
+    env.complete_io=true;env.watch_io_dma=true;env.bounded_memory=true;
+    set_state(jit,watched);env.remaining=100;jit.Run();
+    require(jit.Regs()[15]==code_pc+4&&jit.Regs()[0]==0,"device halt prevents executing modified cached target");
+    require(env.watches.take_pending()&&env.watches.changed(),"nested DMA code write validated after completed handoff");
+    jit.ClearCache();env.watches.clear();env.complete_io=false;env.watch_io_dma=false;
+    jit.ClearHalt();env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==7,"resume observes DMA-modified instruction");
+    env.ram.write32(code_pc+4,0xe3a00001u);jit.ClearCache();env.watches.clear();
+    watched.R[15]=code_pc+4;set_state(jit,watched);env.remaining=16;jit.Run();
+    watched.R[15]=code_pc;watched.R[1]=code_pc+4;watched.R[2]=0xe3a00009u;
+    env.watch_immediate=true;set_state(jit,watched);env.remaining=100;jit.Run();
+    require(jit.Regs()[15]==code_pc+4,"self-modifying native store exits at completed instruction");
+    jit.ClearHalt();env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==9,"self-modified code executes after immediate invalidation");
+    require(!nds_arm9_can_defer_generation_check(true,false)&&
+        nds_arm9_can_defer_generation_check(false,false),"unhalted native execution retains immediate validation");
+    std::puts("GENERATION_BATCH passed: coalesced ARM7 stores, aliases, data-only writes, restore reset, nested DMA and immediate native self modification");
     std::puts("PRIVILEGED_STOP passed; no MKDS timing or performance claim from this probe");
 }
