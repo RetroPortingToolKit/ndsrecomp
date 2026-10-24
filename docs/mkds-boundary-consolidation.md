@@ -1,8 +1,34 @@
-# Experimental MKDS boundary consolidation
+# MKDS boundary consolidation
 
 Five process-fixed switches, all default OFF, apply only to the optional native
 MKDS Performance implementation. Faithful and non-native builds retain their
-portable paths. None has a measured speed claim or integration approval yet.
+portable paths. Direct reads were retained after focused comparisons; the
+other four probes remain OFF. Generation validation batching and GPU window
+composition were also retained. The owner authorized integration and fresh
+MKDS/MPH packages after the investigation on 2026-10-24.
+
+The final Normal-priority i5-4670 / GTX 760 qualification completed the
+eight-kart 150cc Waluigi Pinball race, both screens presented (top 448,
+compute 1x): 10,216 presentations in 170.771 seconds, 59.823 FPS, 12.052 ms
+mean active work and 27.69% mean headroom. Racing-window WASAPI shortage
+requests were zero with real-device output muted; background work averaged
+1.64 cores. Current-build interactive save/load passed. Active-work p95 was
+14.25-14.50 ms and p99 15.50-15.75 ms; the mean target is met, not a claim
+that every frame takes at most 13.3 ms. Live Wiimmfi remains unverified.
+
+Earlier scheduled agents inherited Below Normal priority (Task Scheduler's
+default 7). A dedicated probe confirmed that inheritance. Harnesses now set
+task priority 4 and explicitly create Normal-priority children, recording
+actual priority, affinity and boost policy. Historical matched work comparisons
+used the same priority on both sides, but their absolute under-load latency
+must remain labeled Below Normal. Do not attribute all differences between
+those captures and the final qualification to priority alone.
+
+Frontend investigation observed long driver/window-system waits. Moving GL
+error queries, asynchronous debug-context callbacks and the SDL software
+bottom presenter did not establish a reliable delivery improvement. Those
+GL probes were removed; the qualified original error checks/order remain.
+Bounded default-OFF tracing and real-device mute diagnostics remain available.
 
 | Switch | Implemented candidate | Boundary retained |
 |---|---|---|
@@ -50,4 +76,5 @@ generation validation batching OFF and GPU window experiment OFF. Use the same
 binary and race segment, recorded contention and no timing sampler. Reject
 concrete correctness failures before timing. Combine only retained candidates.
 Current-build save/load and native saves remain required; old snapshot
-compatibility is intentionally unsupported. Owner approval precedes integration.
+compatibility is intentionally unsupported. Native saves remain a separate
+persistent-data contract. Live Wiimmfi testing was waived by the owner.
