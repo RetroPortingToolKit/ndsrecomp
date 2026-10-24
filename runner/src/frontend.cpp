@@ -4097,7 +4097,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 presentation_ticks.swap, frame_compute_map_ns,
                 audio_started ? 1u : 0u, presentation_ticks.pool_wait,
                 presentation_ticks.gl_setup, presentation_ticks.gl_error,
-                presentation_ticks.overlay});
+                presentation_ticks.overlay, adaptive_start - phase1});
         record_frontend_pacing(counter, frame_emu_ticks, phase2 - phase1,
                                frequency);
         if (!savestate_notice.empty() && counter >= savestate_notice_until)

@@ -540,9 +540,32 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
     glDrawArrays(GL_TRIANGLES, 0, 3);
     ticks->draw += SDL_GetPerformanceCounter() - start;
 
+    // SwapWindow is a window-system operation. On some drivers a GL error
+    // query immediately afterwards joins that asynchronous presentation work.
+    // This probe still checks every frame's GL commands, before presenting,
+    // and separately checks SDL3's own swap result. The original ordering is
+    // retained as the default until a matched target-host comparison qualifies
+    // the optional ordering. Both SDL2 and SDL3 remain supported.
+    static const bool check_before_swap = [] {
+        const char* value = std::getenv("NDS_COMPUTE_CHECK_BEFORE_SWAP");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    if (check_before_swap) {
+        const auto error_start = ticks->diagnostic ? SDL_GetPerformanceCounter() : 0;
+        const bool ok = glGetError() == GL_NO_ERROR;
+        if (ticks->diagnostic) ticks->error = SDL_GetPerformanceCounter() - error_start;
+        if (!ok) return false;
+    }
     start = SDL_GetPerformanceCounter();
+#if defined(NDS_HAVE_SDL3)
+    const bool swapped = SDL_GL_SwapWindow(g_window);
+#else
     SDL_GL_SwapWindow(g_window);
+    const bool swapped = true;
+#endif
     ticks->swap += SDL_GetPerformanceCounter() - start;
+    if (!swapped) return false;
+    if (check_before_swap) return true;
     const auto diagnostic_error = ticks->diagnostic ? SDL_GetPerformanceCounter() : 0;
     const bool ok = glGetError() == GL_NO_ERROR;
     if (ticks->diagnostic)
