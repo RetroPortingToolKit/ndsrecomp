@@ -16,6 +16,9 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #include "hle_mkds.h"
 #include "arm9_native_ir.h"
 #include "arm9_native_watch.h"
+#include "arm9_native_options.h"
+#include "io.h"
+#include "scheduler.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/frontend/A32/a32_ir_emitter.h"
 #include "dynarmic/frontend/A32/a32_types.h"
@@ -63,6 +66,38 @@ public:
         ~Running() {owner.running=false;}
     };
     Cp15State mapping{};
+    uint64_t code_mapping_generation=~uint64_t(0);
+    using ReadPages=std::array<uint8_t*,Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
+    std::unique_ptr<ReadPages> read_pages;
+    uint64_t read_mapping_generation=~uint64_t(0),read_sites=0,read_callbacks=0;
+    uint64_t data_coalesced=0,gx_coalesced=0,slow_reads=0,slow_writes=0;
+    uint64_t arithmetic_cap_splits=0;
+    void refresh_reads() {
+        if(!read_pages||read_mapping_generation==g_busf_mapping_generation)return;
+        read_pages->fill(nullptr);
+        const auto add=[&](uint64_t first,uint64_t limit) {
+            for(uint64_t a=first&~uint64_t(4095);a<limit&&a<0x100000000ull;a+=4096) {
+                uint32_t lo=0,hi=0;
+                const auto* w=nds_busf_classify(uint32_t(a),&lo);
+                const auto* end=nds_busf_classify(uint32_t(a+4095),&hi);
+                if(w&&w==end&&w->data&&hi==lo+4095&&uint64_t(hi)<=w->mask)
+                    (*read_pages)[a>>12]=w->data+lo;
+            }
+        };
+        add(0x02000000u,0x04000000u);
+        add(0,g_busf_itcm_limit);add(g_busf_dtcm_base,uint64_t(g_busf_dtcm_base)+g_busf_dtcm_limit);
+        read_mapping_generation=g_busf_mapping_generation;
+    }
+    bool direct_read_instruction(uint64_t descriptor) {
+        const Dynarmic::A32::LocationDescriptor location{Dynarmic::IR::LocationDescriptor{descriptor}};
+        const auto i=decode(location.TFlag(),location.PC());
+        // The existing halfword lowering intentionally uses a wide callback.
+        // Keep it there, including odd signed-byte device semantics. Unaligned
+        // word/block reads also fall back, via the SDK's alignment guard.
+        const bool ordinary=i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM;
+        if(ordinary)++read_sites;
+        return ordinary;
+    }
     Native() {
         Dynarmic::A32::UserConfig conf;
         conf.callbacks=this;conf.arch_version=Dynarmic::A32::ArchVersion::v5TE;
@@ -70,6 +105,12 @@ public:
         // Normal bus callbacks use address/value arguments, current PC and
         // control state. General registers/flags are canonical at Run return.
         conf.optimizations=Dynarmic::all_safe_optimizations;
+        if(nds_native_options().reads) {
+            read_pages=std::make_unique<ReadPages>();read_pages->fill(nullptr);
+            conf.page_table=read_pages.get();conf.page_table_read_only=true;
+            conf.page_table_read_filter=[this](uint64_t location){return direct_read_instruction(location);};
+            conf.detect_misaligned_access_via_page_table=16|32|64;
+        }
         jit=std::make_unique<Dynarmic::A32::Jit>(conf);
         registers=&jit->Regs();extensions=&jit->ExtRegs();mapping=g_cp15;
     }
@@ -116,7 +157,8 @@ public:
     bool PreCodeReadHook(bool thumb,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {
         const uint32_t start=Dynarmic::A32::LocationDescriptor{ir.block.Location()}.PC();
         const unsigned width=thumb?2:4;
-        if(pc!=start&&(pc-start>=16*width||memory(decode(thumb,pc-width)))) {
+        if(pc!=start&&(pc-start>=nds_native_block_limit(nds_native_options().blocks)*width||memory(decode(thumb,pc-width)))) {
+            if(pc-start>=nds_native_block_limit(nds_native_options().blocks)*width)++arithmetic_cap_splits;
             const auto previous=decode(thumb,pc-width);
             nds_arm9_finish_memory(ir,previous.op==armv4t::IrOp::LDM?NdsArm9ReadKind::BlockWord:NdsArm9ReadKind::Word);
             ir.BranchWritePC(ir.Imm32(pc));
@@ -146,22 +188,31 @@ public:
         uint32_t off=0;const auto* w=nds_busf_classify(addr,&off);
         return w&&w->data&&uint64_t(off)+width<=uint64_t(w->mask)+1;
     }
-    void device() {
+    void context() {
         g_cpu.R[15]=(*registers)[15];
         g_cpu.cpsr=(g_cpu.cpsr&~0xffu)|(jit->Cpsr()&0xffu);
-        ++devices;jit->HaltExecution();device_halted=true;
     }
-    uint8_t MemoryRead8(uint32_t a) override {if(!ram(a,1))device();return bus_read_u8(a);}
-    uint16_t MemoryRead16(uint32_t a) override {if(!ram(a&~1u,2))device();return bus_read_u16(a&~1u);}
+    void device() {
+        context();++devices;jit->HaltExecution();device_halted=true;
+    }
+    void read_boundary(uint32_t a,unsigned width) {
+        if(ram(a,width))return;
+        ++slow_reads;
+        if(nds_native_options().data&&nds_native_plain_video(a,width)) {context();++data_coalesced;}
+        else device();
+    }
+    uint8_t MemoryRead8(uint32_t a) override {++read_callbacks;read_boundary(a,1);return bus_read_u8(a);}
+    uint16_t MemoryRead16(uint32_t a) override {++read_callbacks;read_boundary(a&~1u,2);return bus_read_u16(a&~1u);}
     uint32_t MemoryRead32(uint32_t a) override {
+        ++read_callbacks;
         const auto kind=NdsArm9ReadKind((*extensions)[0]);
         if(kind==NdsArm9ReadKind::HalfUnsigned||kind==NdsArm9ReadKind::HalfSigned) {
             const bool sign=kind==NdsArm9ReadKind::HalfSigned;
             const bool byte=sign&&(a&1u);
-            if(!ram(byte?a:(a&~1u),byte?1:2))device();
+            read_boundary(byte?a:(a&~1u),byte?1:2);
             return nds_arm9_read_halfword(a,sign,[](uint32_t x){return bus_read_u8(x);},[](uint32_t x){return bus_read_u16(x);});
         }
-        if(!ram(a&~3u,4))device();
+        read_boundary(a&~3u,4);
         if(kind==NdsArm9ReadKind::BlockWord)return bus_read_u32(a&~3u);
         return std::rotr(bus_read_u32(a&~3u),int((a&3)*8));
     }
@@ -171,8 +222,12 @@ public:
         uint32_t off=0;const auto* w=nds_busf_classify(a,&off);
         const uint32_t* generation=w&&w->data&&w->gen? w->gen+(off>>12):nullptr;
         const bool ordinary_ram=ram(a,width);
-        if(!ordinary_ram)device();
-        else {g_cpu.R[15]=(*registers)[15];g_cpu.R[14]=(*registers)[14];}
+        const bool batch_gx=!ordinary_ram&&nds_native_options().gx&&nds_native_gx_command(a,width);
+        const bool batch_data=!ordinary_ram&&nds_native_options().data&&nds_native_plain_video(a,width);
+        if(!ordinary_ram) {
+            ++slow_writes;
+            if(batch_gx||batch_data)context();else device();
+        } else {g_cpu.R[15]=(*registers)[15];g_cpu.R[14]=(*registers)[14];}
         // Only this inline RAM store is covered by the exact generation test
         // below. I/O may invoke another bus master, whose writes must stay visible.
         known_write=ordinary_ram;
@@ -180,6 +235,15 @@ public:
         else if(width==2)bus_write_u16(a,uint16_t(value));
         else bus_write_u8(a,uint8_t(value));
         known_write=false;
+        if(batch_data)++data_coalesced;
+        if(batch_gx) {
+            // The modeled FIFO IS the ordered queue. Submit each command once
+            // at the current guest timestamp, retaining decoding/status/IRQ/DMA.
+            // Avoid an additional host queue and synchronize on actual effects.
+            ++gx_coalesced;
+            if(nds_gxfifo_stalled()||nds_dma_cpu_stalled(0)||nds_cpu_halted(0)||
+               g_nds_irq_pending_cache[0]||nds_event_break_hit()||nds_slice_over())device();
+        }
         if(generation&&watches.contains(generation))clear();
     }
     void MemoryWrite8(uint32_t a,uint8_t v) override {write(a,v,1);}
@@ -241,10 +305,14 @@ bool nds_arm9_native_run() {
     if(g_nds_fast_limit<=g_runtime_cycles)return false;
     if(!native)native=std::make_unique<Native>();
     auto& n=*native;
+    if(n.code_mapping_generation!=g_busf_mapping_generation) {
+        n.clear();n.code_mapping_generation=g_busf_mapping_generation;
+    }
     if(n.mapping.control!=g_cp15.control||n.mapping.itcm_size!=g_cp15.itcm_size||
        n.mapping.dtcm_base!=g_cp15.dtcm_base||n.mapping.dtcm_size!=g_cp15.dtcm_size) {
         n.clear();n.mapping=g_cp15;
     }
+    n.refresh_reads();
     n.flush_writes(); // No cached native instruction executes before validation.
     runtime_call_stack_restore(nullptr,0);
     std::copy(std::begin(g_cpu.R),std::end(g_cpu.R),n.registers->begin());n.jit->SetCpsr(g_cpu.cpsr);
@@ -273,12 +341,27 @@ void nds_arm9_native_census(bool enabled,bool reset) {
     if(reset&&native)native->floor_census.clear();
 }
 std::string nds_arm9_native_json() {
+    uint64_t windows=0,fences=0;scheduler_performance_window_counts(&windows,&fences);
     std::string out="{\"available\":"+std::string(supported_host()?"true":"false")+
         ",\"diagnostic\":"+std::string(diagnostic()?"true":"false")+
         ",\"census_enabled\":"+std::string(census_enabled?"true":"false")+
         ",\"batched_writes\":"+std::string(batched_writes()?"true":"false")+
+        ",\"direct_reads\":"+(nds_native_options().reads?"true":"false")+
+        ",\"long_blocks\":"+(nds_native_options().blocks?"true":"false")+
+        ",\"data_handoffs\":"+(nds_native_options().data?"true":"false")+
+        ",\"gx_batch\":"+(nds_native_options().gx?"true":"false")+
+        ",\"event_windows\":"+(nds_native_options().events?"true":"false")+
+        ",\"event_window_rounds\":"+std::to_string(windows)+
+        ",\"event_window_fences\":"+std::to_string(fences)+
         ",\"cycles_per_instruction\":"+std::to_string(cycles_per_instruction);
     if(native)out+=",\"entries\":"+std::to_string(native->entries)+
+        ",\"read_callbacks\":"+std::to_string(native->read_callbacks)+
+        ",\"arithmetic_cap_splits\":"+std::to_string(native->arithmetic_cap_splits)+
+        ",\"direct_read_sites\":"+std::to_string(native->read_sites)+
+        ",\"data_coalesced\":"+std::to_string(native->data_coalesced)+
+        ",\"gx_coalesced\":"+std::to_string(native->gx_coalesced)+
+        ",\"slow_reads\":"+std::to_string(native->slow_reads)+
+        ",\"slow_writes\":"+std::to_string(native->slow_writes)+
         ",\"instructions\":"+std::to_string(native->instructions)+
         ",\"reference_stops\":"+std::to_string(native->floors)+
         ",\"device_handoffs\":"+std::to_string(native->devices)+

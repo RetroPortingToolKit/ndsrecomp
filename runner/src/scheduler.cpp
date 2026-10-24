@@ -1,6 +1,8 @@
 // scheduler.cpp — see scheduler.h.
 
 #include "scheduler.h"
+#include "execution_model.h"
+#include "arm9_native_options.h"
 
 #include <algorithm>
 #include <chrono>
@@ -79,6 +81,8 @@ void profile_add(uint64_t& dst, ProfileClock::time_point start) {
 // g_slot[0].cycles is the ARM9 timestamp (ARM9 cycles); g_slot[1].cycles the ARM7.
 uint64_t           g_sys_timestamp = 0;
 constexpr int      kArm9ClockShift = 1;    // ARM9 runs at 2x the system clock
+bool performance_window_active=false;
+uint64_t performance_windows=0,performance_fences=0;
 constexpr uint64_t kIterCap        = 64;   // system cycles per outer iteration
 // Power-on periodic scheduler events in SYSTEM cycles. NextTarget scans RTC,
 // SPU and LCD even before their IRQs are enabled. They phase the 64-cycle CPU
@@ -386,7 +390,15 @@ void scheduler_run_round() {
                                     : ProfileClock::time_point{};
     auto phase_start = round_start;
 
-    uint64_t planned = g_sys_timestamp + kIterCap;
+    const uint64_t quantum=nds_native_event_quantum(
+        nds_performance_execution()&&nds_native_options().events&&g_slot[0].started&&g_slot[1].started,
+        nds_cpu_halted(1),nds_halt_wake_pending(1),
+        nds_dma_cpu_stalled(0)||nds_dma_cpu_stalled(1),nds_gxfifo_stalled());
+    performance_window_active=quantum>kIterCap;
+    if(performance_window_active)++performance_windows;
+    struct WindowEnd {~WindowEnd(){performance_window_active=false;}} window_end;
+    uint64_t planned = g_sys_timestamp + quantum;
+    if(performance_window_active)planned=std::min(planned,nds_next_timer_overflow_time());
     // Five deadline computations, one of them a 64-bit divide pair with a
     // fixup loop, every round. Cheap per call and expensive per second: the
     // exact kind of cost that only a partition makes visible.
@@ -552,6 +564,16 @@ void scheduler_run_round() {
     g_sys_timestamp = rendezvous;
     live_overlay_poll();
     // run_due_system_events(rendezvous);  // Commit B+
+}
+
+void scheduler_performance_io_fence() {
+    if(performance_window_active&&g_nds_active==NDS_ARM9) {
+        ++performance_fences;
+        nds_reschedule_slice((g_runtime_cycles+1u)>>1u);
+    }
+}
+void scheduler_performance_window_counts(uint64_t* windows,uint64_t* fences) {
+    *windows=performance_windows;*fences=performance_fences;
 }
 
 void scheduler_terminal_halt_all(const char* reason) {

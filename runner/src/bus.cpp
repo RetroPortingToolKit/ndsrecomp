@@ -513,6 +513,7 @@ NdsBusFastWin g_busf_wram_lo[2] = {};
 NdsBusFastWin g_busf_wram_hi[2] = {};
 NdsBusFastWin g_busf_itcm = {};
 NdsBusFastWin g_busf_dtcm = {};
+uint64_t g_busf_mapping_generation = 0;
 uint32_t g_busf_itcm_limit = 0;
 uint32_t g_busf_dtcm_base = 0;
 uint32_t g_busf_dtcm_limit = 0;
@@ -529,6 +530,7 @@ uint32_t g_memt_dtcm_size = 0;    // dtcm_enable ? dtcm_size : 0
 }
 
 void bus_fast_refresh() {
+    ++g_busf_mapping_generation;
     g_memt_itcm_limit = g_cp15.itcm_enable ? g_cp15.itcm_size : 0u;
     g_memt_dtcm_base = g_cp15.dtcm_base;
     g_memt_dtcm_size = g_cp15.dtcm_enable ? g_cp15.dtcm_size : 0u;

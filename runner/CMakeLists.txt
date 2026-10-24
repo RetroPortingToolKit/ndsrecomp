@@ -48,6 +48,10 @@ if(NDS_ARM9_DYNARMIC_ROOT)
         if(NOT NDS_MKDS_PERFORMANCE)
             message(FATAL_ERROR "ARM9 native prototype requires the MKDS performance model")
         endif()
+        file(READ "${NDS_ARM9_DYNARMIC_ROOT}/src/dynarmic/interface/A32/config.h" _nds_dynarmic_config)
+        if(NOT _nds_dynarmic_config MATCHES "NDS_READONLY_PAGE_TABLE_V1")
+            message(FATAL_ERROR "Pinned Dynarmic needs runner/cmake/dynarmic-readonly-pages.patch; see docs/mkds-boundary-consolidation.md")
+        endif()
         set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
         set(DYNARMIC_FRONTENDS A32 CACHE STRING "" FORCE)
         set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
@@ -378,6 +382,11 @@ set_source_files_properties(${ARM7_BANK_SOURCES}
 
 if(NDS_MKDS_PERFORMANCE)
     target_compile_definitions(execution_model_test PRIVATE NDS_MKDS_PERFORMANCE=1)
+endif()
+# The native adapter falls back to the faithful runtime, and never registers
+# the rejected flat banks. Keep flat banks available for portable builds while
+# avoiding a large unused native-build dependency.
+if(NDS_MKDS_PERFORMANCE AND NOT NDS_ARM9_DYNARMIC_ENABLED)
     set(_perf_dispatch)
     set(_perf_sources)
     foreach(_bank mkds_perf_arm9 mkds_perf_arm9_itcm)
@@ -416,6 +425,9 @@ endif()
 
 if(NDS_ARM9_DYNARMIC_ENABLED)
     string(APPEND NDS_BUILD_VARIANT "-arm9-native-v2-timing2-dynarmica41c380")
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-readonly-pages.patch" _nds_read_patch_sha)
+    string(SUBSTRING "${_nds_read_patch_sha}" 0 12 _nds_read_patch_short)
+    string(APPEND NDS_BUILD_VARIANT "-pages${_nds_read_patch_short}")
 endif()
 
 # Build one registry translation unit from the configured dispatch filenames.
@@ -880,7 +892,9 @@ if(NDS_ENABLE_COMPUTE_RENDERER)
 endif()
 target_link_libraries(nds_runner PRIVATE nds_banks nds_support nds_armv4t slirp)
 if(NDS_MKDS_PERFORMANCE)
-    target_link_libraries(nds_runner PRIVATE nds_performance_banks)
+    if(TARGET nds_performance_banks)
+        target_link_libraries(nds_runner PRIVATE nds_performance_banks)
+    endif()
     target_compile_definitions(nds_runner PRIVATE NDS_MKDS_PERFORMANCE=1)
 endif()
 if(NDS_ARM9_DYNARMIC_ENABLED)

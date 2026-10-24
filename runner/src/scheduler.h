@@ -97,3 +97,7 @@ const char* scheduler_cpu_halt_reason(int cpu);
 bool scheduler_savestate_quiescent();
 bool scheduler_savestate_begin();
 void scheduler_savestate_end();
+
+// Experimental peer-asleep event windows, fenced by every MMIO access.
+void scheduler_performance_io_fence();
+void scheduler_performance_window_counts(uint64_t* windows,uint64_t* fences);

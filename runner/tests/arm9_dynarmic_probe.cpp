@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <memory>
 #include <vector>
 #include "arm_decode.h"
 #include "thumb_decode.h"
@@ -17,6 +18,7 @@
 #include "dynarmic/ir/terminal.h"
 #include "../src/arm9_native_ir.h"
 #include "../src/arm9_native_watch.h"
+#include "../src/arm9_native_options.h"
 
 namespace {
 constexpr uint32_t code_pc=0x100;
@@ -44,6 +46,8 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     uint64_t rejected_reads=0,rejected_writes=0;
     bool complete_io=false;
     bool bounded_memory=false;
+    bool longer_blocks=false;
+    unsigned ram_reads=0,ram_writes=0;
     bool isa_guard=false;
     bool watch_code=false,code_alias=false,watch_io_dma=false,watch_immediate=false;
     std::array<uint32_t,16> generations{};
@@ -66,7 +70,7 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
         if(bounded_memory&&pc!=start) {
             const auto width=thumb?2u:4u;
             const auto prev=thumb?armv4t::ThumbDecoder::decode(ram.read16(pc-width),pc-width):armv4t::ArmDecoder::decode(ram.read32(pc-width),pc-width);
-            end=pc-start>=16*width||(prev.op>=armv4t::IrOp::LDR&&prev.op<=armv4t::IrOp::STM);
+            end=pc-start>=nds_native_block_limit(longer_blocks)*width||(prev.op>=armv4t::IrOp::LDR&&prev.op<=armv4t::IrOp::STM);
         }
         if(end) {
             // The controlled fixture's first instruction accesses memory.
@@ -86,14 +90,17 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
         return false;
     }
     uint8_t MemoryRead8(uint32_t a) override {
+        ++ram_reads;
         if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"byte callback PC");++device_reads;++device_read8;jit->HaltExecution();return uint8_t(device_value>>((a&1u)*8));}
         return permitted(a,1,false)?ram.read8(a):0;
     }
     uint16_t MemoryRead16(uint32_t a) override {
+        ++ram_reads;
         if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"half callback PC");++device_reads;++device_read16;jit->HaltExecution();return uint16_t(device_value);}
         return permitted(a,2,false)?ram.read16(a&~1u):0;
     }
     uint32_t MemoryRead32(uint32_t a) override {
+        ++ram_reads;
         const auto kind=NdsArm9ReadKind(jit->ExtRegs()[0]);
         if(kind==NdsArm9ReadKind::HalfUnsigned||kind==NdsArm9ReadKind::HalfSigned)
             return nds_arm9_read_halfword(a,kind==NdsArm9ReadKind::HalfSigned,
@@ -105,6 +112,7 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     void MemoryWrite8(uint32_t a,uint8_t v) override {if(permitted(a,1,true))ram.write8(a,v);}
     void MemoryWrite16(uint32_t a,uint16_t v) override {if(permitted(a,2,true))ram.write16(a&~1u,v);}
     void MemoryWrite32(uint32_t a,uint32_t v) override {
+        ++ram_writes;
         if(complete_io&&a>=0x04000000u){
             require(jit->Regs()[15]==code_pc,"write callback PC survives optimization");
             ++device_writes;device_value=v;jit->HaltExecution();
@@ -378,5 +386,64 @@ int main() {
     require(!nds_arm9_can_defer_generation_check(true,false)&&
         nds_arm9_can_defer_generation_check(false,false),"unhalted native execution retains immediate validation");
     std::puts("GENERATION_BATCH passed: coalesced ARM7 stores, aliases, data-only writes, restore reset, nested DMA and immediate native self modification");
-    std::puts("PRIVILEGED_STOP passed; no MKDS timing or performance claim from this probe");
+    // Read-only page-table lowering exercises the actual patched x64 emitter,
+    // not a mock memory wrapper. Stores and special ARM9 reads retain callbacks.
+    {
+        Environment direct;direct.bounded_memory=true;
+        using Pages=std::array<uint8_t*,Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
+        auto pages=std::make_unique<Pages>();pages->fill(nullptr);
+        (*pages)[4]=direct.ram.data.data()+0x4000;
+        (*pages)[2]=direct.ram.data.data()+0x4000; // physical alias
+        Dynarmic::A32::UserConfig config;
+        config.callbacks=&direct;config.arch_version=Dynarmic::A32::ArchVersion::v5TE;
+        config.page_table=pages.get();config.page_table_read_only=true;
+        config.detect_misaligned_access_via_page_table=16|32|64;
+        config.page_table_read_filter=[&](uint64_t d) {
+            const Dynarmic::A32::LocationDescriptor loc{Dynarmic::IR::LocationDescriptor{d}};
+            const auto i=armv4t::ArmDecoder::decode(direct.ram.read32(loc.PC()),loc.PC());
+            return i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM;
+        };
+        Dynarmic::A32::Jit fast(config);direct.jit=&fast;
+        direct.ram.write32(0x4000,0x89abcdefu);direct.ram.write32(code_pc+4,0xeafffffeu);
+        const auto run=[&](uint32_t instruction,uint32_t address) {
+            direct.ram.write32(code_pc,instruction);fast.ClearCache();
+            armv4t::CPUState state{};state.R[15]=code_pc;state.R[1]=address;
+            state.R[2]=0x11223344;state.cpsr.mode=0x1f;
+            set_state(fast,state);direct.remaining=1;direct.ram_reads=direct.ram_writes=0;fast.Run();
+        };
+        run(0xe5912000u,0x4000);require(fast.Regs()[2]==0x89abcdefu&&!direct.ram_reads,"aligned RAM read avoids callback");
+        run(0xe5912000u,0x4001);require(fast.Regs()[2]==0xef89abcdu&&direct.ram_reads==1,"unaligned word rotates through callback");
+        run(0xe5912000u,0x2000);require(fast.Regs()[2]==0x89abcdefu&&!direct.ram_reads,"physical read alias");
+        std::array<uint8_t,4096> replacement{};uint32_t replaced=0x76543210;
+        std::memcpy(replacement.data(),&replaced,4);(*pages)[4]=replacement.data();
+        fast.Regs()[15]=code_pc;direct.remaining=1;fast.ClearHalt();fast.Run();
+        // The alias used page 2 above; move back to page 4 without retranslating.
+        fast.Regs()[1]=0x4000;fast.Regs()[15]=code_pc;direct.remaining=1;fast.ClearHalt();fast.Run();
+        require(fast.Regs()[2]==replaced,"remapped read page replaces backing without stale pointer");
+        (*pages)[4]=direct.ram.data.data()+0x4000;
+        run(0xe5812000u,0x4000);require(direct.ram_writes==1&&direct.ram.read32(0x4000)==0x11223344,"read-only table never bypasses write callback");
+        direct.ram.write32(0x4000,0x89abcdefu);
+        run(0xe1d120b0u,0x4001);require(fast.Regs()[2]==0xef0000cdu&&direct.ram_reads,"odd unsigned halfword stays on special callback");
+        run(0xe1d120f0u,0x4001);require(fast.Regs()[2]==0xffffffcdu&&direct.ram_reads,"odd signed halfword keeps byte semantics");
+        (*pages)[4]=nullptr;
+        run(0xe5912000u,0x4000);require(fast.Regs()[2]==0x89abcdefu&&direct.ram_reads==1,"unmapped table entry falls back");
+        direct.longer_blocks=true;
+        for(unsigned n=0;n<64;++n)direct.ram.write32(0x800+n*4,0xe2800001u);
+        direct.ram.write32(0x900,0xeafffffeu);fast.ClearCache();
+        armv4t::CPUState arithmetic{};arithmetic.R[15]=0x800;arithmetic.cpsr.mode=0x1f;
+        set_state(fast,arithmetic);direct.remaining=64;fast.Run();
+        require(fast.Regs()[0]==64&&fast.Regs()[15]==0x900,"64-instruction arithmetic block commits real work and stops at budget");
+        std::puts("CONSOLIDATION_DIRECT_READS passed: actual emitter, aliases, mapping replacement, write fallback, ARM9 alignment and halfwords");
+    }
+    require(nds_native_plain_video(0x05000000u,4)&&nds_native_plain_video(0x07fffffcu,4)&&
+        !nds_native_plain_video(0x04000240u,1)&&!nds_native_plain_video(0x08000000u,1),"data coalescing excludes mapping/status/MMIO and slot devices");
+    require(nds_native_gx_command(0x04000400u,4)&&nds_native_gx_command(0x040005c8u,4)&&
+        !nds_native_gx_command(0x04000600u,4)&&!nds_native_gx_command(0x04000400u,2),"GX batching excludes readbacks/control and partial writes");
+    require(nds_native_event_quantum(true,true,false,false,false)==256&&
+        nds_native_event_quantum(true,false,false,false,false)==64&&
+        nds_native_event_quantum(true,true,true,false,false)==64&&
+        nds_native_event_quantum(true,true,false,true,false)==64&&
+        nds_native_event_quantum(true,true,false,false,true)==64&&
+        nds_native_event_quantum(false,true,false,false,false)==64,"event windows require sleeping peer without wake, DMA or geometry stall");
+    std::puts("PRIVILEGED_STOP and CONSOLIDATION_FENCES passed; no MKDS timing or performance claim from this probe");
 }

@@ -3241,6 +3241,7 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
 }
 
 uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+    scheduler_performance_io_fence();
     const int cpu = active();
     const uint32_t m = mask_for(width);
     if (card_register_address(addr) && !card_owned_by(cpu)) return 0;
@@ -3398,6 +3399,7 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
 }
 
 void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {
+    scheduler_performance_io_fence();
     const int cpu = active();
     if (card_register_address(addr) && !card_owned_by(cpu)) return;
     if (cpu == 0 && gpu2d_reg_addr(addr)) {

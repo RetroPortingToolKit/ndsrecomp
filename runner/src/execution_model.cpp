@@ -1,4 +1,5 @@
 #include "execution_model.h"
+#include "arm9_native_options.h"
 
 namespace {
 NdsExecutionModel selected = NdsExecutionModel::Faithful;
@@ -32,7 +33,13 @@ bool nds_performance_execution() {
 }
 const char* nds_execution_model_identity() {
 #if defined(NDS_ARM9_DYNARMIC)
-    return nds_performance_execution() ? "performance-arm9-native-v2-timing2" : "faithful-v1";
+    if(!nds_performance_execution())return "faithful-v1";
+    static const std::string identity=std::string("performance-arm9-native-v2-timing2")+
+        (nds_native_options().blocks?"-block64":"")+
+        (nds_native_options().data?"-data-window":"")+
+        (nds_native_options().gx?"-gx-window":"")+
+        (nds_native_options().events?"-event256":"");
+    return identity.c_str();
 #else
     return nds_performance_execution() ? "performance-flat-aot-v3-timing-v3" : "faithful-v1";
 #endif

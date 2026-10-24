@@ -1,0 +1,72 @@
+diff --git a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+index 272b896..75ce187 100644
+--- a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
++++ b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+@@ -57,7 +57,9 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
+     const bool ordered = IsOrdered(args[2].GetImmediateAccType());
+     const auto fastmem_marker = ShouldFastmem(ctx, inst);
+ 
+-    if (!conf.page_table && !fastmem_marker) {
++    const bool use_page_table = conf.page_table &&
++        (!conf.page_table_read_filter || conf.page_table_read_filter(inst->GetArg(0).GetU64()));
++    if (!use_page_table && !fastmem_marker) {
+         // Neither fastmem nor page table: Use callbacks
+         if constexpr (bitsize == 128) {
+             ctx.reg_alloc.HostCall(nullptr, {}, args[1]);
+@@ -144,7 +146,7 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
+     const bool ordered = IsOrdered(args[3].GetImmediateAccType());
+     const auto fastmem_marker = ShouldFastmem(ctx, inst);
+ 
+-    if (!conf.page_table && !fastmem_marker) {
++    if ((!conf.page_table || conf.page_table_read_only) && !fastmem_marker) {
+         // Neither fastmem nor page table: Use callbacks
+         if constexpr (bitsize == 128) {
+             ctx.reg_alloc.Use(args[1], ABI_PARAM2);
+diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
+index 360df06..2779c2a 100644
+--- a/src/dynarmic/interface/A32/config.h
++++ b/src/dynarmic/interface/A32/config.h
+@@ -8,6 +8,7 @@
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
++#include <functional>
+ #include <memory>
+ #include <optional>
+ 
+@@ -163,6 +164,11 @@ struct UserConfig {
+     ///       So there might be wrongly faulted pages which maps to nullptr.
+     ///       This can be avoided by carefully allocating the memory region.
+     bool absolute_offset_page_table = false;
++    // NDS_READONLY_PAGE_TABLE_V1: x64 read-only page-table qualification.
++    // Filter runs at translation time, with the memory operation's location.
++    bool page_table_read_only = false;
++    std::function<bool(std::uint64_t)> page_table_read_filter;
++
+     /// Masks out the first N bits in host pointers from the page table.
+     /// The intention behind this is to allow users of Dynarmic to pack attributes in the
+     /// same integer and update the pointer attribute pair atomically.
+diff --git a/src/dynarmic/interface/A64/config.h b/src/dynarmic/interface/A64/config.h
+index c8ed623..5d27660 100644
+--- a/src/dynarmic/interface/A64/config.h
++++ b/src/dynarmic/interface/A64/config.h
+@@ -8,6 +8,7 @@
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
++#include <functional>
+ #include <memory>
+ #include <optional>
+ 
+@@ -226,6 +227,11 @@ struct UserConfig {
+     ///       So there might be wrongly faulted pages which maps to nullptr.
+     ///       This can be avoided by carefully allocating the memory region.
+     bool absolute_offset_page_table = false;
++    // NDS_READONLY_PAGE_TABLE_V1: x64 read-only page-table qualification.
++    // Filter runs at translation time, with the memory operation's location.
++    bool page_table_read_only = false;
++    std::function<bool(std::uint64_t)> page_table_read_filter;
++
+     /// Determines if we should detect memory accesses via page_table that straddle are
+     /// misaligned. Accesses that straddle page boundaries will fallback to the relevant
+     /// memory callback.
