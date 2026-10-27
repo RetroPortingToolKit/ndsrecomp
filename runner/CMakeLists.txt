@@ -9,6 +9,11 @@ enable_testing()
 add_executable(execution_model_test tests/execution_model_test.cpp src/execution_model.cpp)
 target_include_directories(execution_model_test PRIVATE src)
 add_test(NAME execution_model_test COMMAND execution_model_test)
+add_executable(execution_model_native_test tests/execution_model_test.cpp src/execution_model.cpp)
+target_include_directories(execution_model_native_test PRIVATE src)
+target_compile_definitions(execution_model_native_test PRIVATE
+    NDS_ARM9_DYNARMIC=1 NDS_ARM7_NATIVE=1 NDS_MKDS_PERFORMANCE=1 NDS_MPH_PERFORMANCE=1)
+add_test(NAME execution_model_native_test COMMAND execution_model_native_test)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)

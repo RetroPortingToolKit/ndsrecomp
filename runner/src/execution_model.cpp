@@ -1,5 +1,8 @@
 #include "execution_model.h"
 #include "arm9_native_options.h"
+#if defined(NDS_ARM9_DYNARMIC)
+#include "arm9_native.h"
+#endif
 
 namespace {
 NdsExecutionModel selected = NdsExecutionModel::Faithful;
@@ -22,6 +25,12 @@ bool nds_execution_model_select(const std::string& name, const std::string& sha1
     supported |= sha1 == "90164d1ac127ee5f9815ea4ae7de798c7b5fc629";
 #endif
     if (supported) {
+#if defined(NDS_ARM9_DYNARMIC)
+        if (!nds_arm9_native_supported()) {
+            error = "native performance execution is unavailable on this CPU; use faithful execution";
+            return false;
+        }
+#endif
         selected = NdsExecutionModel::Performance;
         return true;
     }

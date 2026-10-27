@@ -2,6 +2,7 @@
 
 #if !defined(NDS_ARM9_DYNARMIC)
 bool nds_arm9_native_run() { return false; }
+bool nds_arm9_native_supported() { return false; }
 void nds_arm9_native_note_write() {}
 void nds_arm9_native_flush_writes() {}
 void nds_arm9_native_clear() {}
@@ -345,6 +346,7 @@ bool supported_host() {
 }
 }
 
+bool nds_arm9_native_supported() { return supported_host(); }
 bool nds_arm9_native_run() {
 #if !defined(NDS_ARM7_NATIVE)
     if(g_nds_active!=NDS_ARM9)return false;

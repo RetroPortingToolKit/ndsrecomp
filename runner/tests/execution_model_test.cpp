@@ -2,6 +2,10 @@
 #include <cstdio>
 #include <cstdlib>
 static void require(bool value) { if (!value) std::abort(); }
+#if defined(NDS_ARM9_DYNARMIC)
+static bool host_available = true;
+bool nds_arm9_native_supported() { return host_available; }
+#endif
 int main() {
     std::string error;
     require(!nds_performance_execution());
@@ -30,5 +34,12 @@ int main() {
 #else
     require(!mph && !nds_performance_execution());
 #endif
-    std::puts("execution model availability, ROM gate and state identity passed");
+#if defined(NDS_ARM9_DYNARMIC)
+    require(nds_execution_model_select("faithful", "unknown", error));
+    host_available = false;
+    require(!nds_execution_model_select("performance", "691e00d9a5dd80b04f80cc7559503e8b06848785", error));
+    require(!nds_performance_execution() && error.find("CPU") != std::string::npos);
+    require(nds_execution_model_select("faithful", "unknown", error));
+#endif
+    std::puts("execution model availability, ROM/CPU gates and state identity passed");
 }
