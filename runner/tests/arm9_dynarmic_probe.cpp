@@ -21,6 +21,11 @@
 #include "../src/arm9_native_options.h"
 
 namespace {
+#if defined(NDS_ARM7_NATIVE)
+constexpr auto architecture=Dynarmic::A32::ArchVersion::v4T;
+#else
+constexpr auto architecture=Dynarmic::A32::ArchVersion::v5TE;
+#endif
 constexpr uint32_t code_pc=0x100;
 void require(bool ok,const char* what) { if(!ok){std::fprintf(stderr,"FAIL: %s\n",what);std::exit(1);} }
 struct Ram final : armv4t::Bus {
@@ -153,7 +158,7 @@ bool equal(const armv4t::CPUState& expected,const Dynarmic::A32::Jit& jit) {
 int main() {
     Environment env;
     Dynarmic::A32::UserConfig conf;
-    conf.callbacks=&env;conf.arch_version=Dynarmic::A32::ArchVersion::v5TE;
+    conf.callbacks=&env;conf.arch_version=architecture;
     conf.code_cache_size=16*1024*1024;conf.check_halt_on_memory_access=true;
     conf.optimizations=Dynarmic::all_safe_optimizations;
     Dynarmic::A32::Jit jit(conf);env.jit=&jit;
@@ -173,6 +178,9 @@ int main() {
     uint64_t cases=0;
     const uint32_t edges[]={0,1,0xffffffffu,0x80000000u,0x7fffffffu,0xfffffffeu,31,32};
     for(uint32_t word:arm)for(unsigned sample=0;sample<24;++sample) {
+#if defined(NDS_ARM7_NATIVE)
+        if(word==0xe16f2f13u||word==0xe1022053u||word==0xe1222053u||word==0xe1422053u||word==0xe1622053u)continue;
+#endif
         armv4t::CPUState original{};
         for(auto& r:original.R)r=random();
         original.R[1]=0x4000+(sample%8)*4;original.R[3]=0x600+(sample&1);
@@ -395,7 +403,7 @@ int main() {
         (*pages)[4]=direct.ram.data.data()+0x4000;
         (*pages)[2]=direct.ram.data.data()+0x4000; // physical alias
         Dynarmic::A32::UserConfig config;
-        config.callbacks=&direct;config.arch_version=Dynarmic::A32::ArchVersion::v5TE;
+        config.callbacks=&direct;config.arch_version=architecture;
         config.page_table=pages.get();config.page_table_read_only=true;
         config.detect_misaligned_access_via_page_table=16|32|64;
         config.page_table_read_filter=[&](uint64_t d) {

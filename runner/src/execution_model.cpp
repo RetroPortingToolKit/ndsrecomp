@@ -36,6 +36,9 @@ const char* nds_execution_model_identity() {
 #if defined(NDS_ARM9_DYNARMIC)
     if(!nds_performance_execution())return "faithful-v1";
     static const std::string identity=std::string("performance-arm9-native-v2-timing2")+
+#if defined(NDS_ARM7_NATIVE)
+        "-arm7-v1-timing2"+
+#endif
         (nds_native_options().blocks?"-block64":"")+
         (nds_native_options().data?"-data-window":"")+
         (nds_native_options().gx?"-gx-window":"")+

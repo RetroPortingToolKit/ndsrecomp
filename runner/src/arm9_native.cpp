@@ -50,6 +50,7 @@ bool batched_writes() {
 bool census_enabled=false;
 class Native final : public Dynarmic::A32::UserCallbacks {
 public:
+    const NdsCpu cpu;
     std::unique_ptr<Dynarmic::A32::Jit> jit;
     std::array<uint32_t,16>* registers=nullptr;
     std::array<uint32_t,64>* extensions=nullptr;
@@ -85,7 +86,9 @@ public:
             }
         };
         add(0x02000000u,0x04000000u);
-        add(0,g_busf_itcm_limit);add(g_busf_dtcm_base,uint64_t(g_busf_dtcm_base)+g_busf_dtcm_limit);
+        if(cpu==NDS_ARM9) {
+            add(0,g_busf_itcm_limit);add(g_busf_dtcm_base,uint64_t(g_busf_dtcm_base)+g_busf_dtcm_limit);
+        }
         read_mapping_generation=g_busf_mapping_generation;
     }
     bool direct_read_instruction(uint64_t descriptor) {
@@ -98,9 +101,9 @@ public:
         if(ordinary)++read_sites;
         return ordinary;
     }
-    Native() {
+    explicit Native(NdsCpu cpu):cpu(cpu) {
         Dynarmic::A32::UserConfig conf;
-        conf.callbacks=this;conf.arch_version=Dynarmic::A32::ArchVersion::v5TE;
+        conf.callbacks=this;conf.arch_version=cpu==NDS_ARM9?Dynarmic::A32::ArchVersion::v5TE:Dynarmic::A32::ArchVersion::v4T;
         conf.code_cache_size=32*1024*1024;
         // Normal bus callbacks use address/value arguments, current PC and
         // control state. General registers/flags are canonical at Run return.
@@ -144,6 +147,9 @@ public:
     }
     bool floor(const armv4t::Instr& i) {
         using Op=armv4t::IrOp;
+        // ARM7's destroyed Thumb MUL carry is modeled by the faithful step.
+        // Keep ARMv5-only operations there too, including undefined encodings.
+        if(cpu==NDS_ARM7&&(i.op==Op::MUL||i.op==Op::CLZ||i.op==Op::BLX_reg||i.op==Op::BLX_imm))return true;
         // Exception returns/banked accesses remain in the faithful runtime.
         if(i.op==Op::MRS||i.op==Op::MSR||i.op==Op::MCR||i.op==Op::MRC||i.op==Op::CDP||
            i.op==Op::SWI||i.op==Op::SWP||i.op==Op::SWPB||
@@ -179,7 +185,7 @@ public:
             }
         }
         if(bytes&&!thumb&&(*bytes&0x0c000000u)==0x0c000000u)native_encoding=false;
-        if(!native_encoding||floor(decode(thumb,pc))||nds_native_service_entry(NDS_ARM9,pc,thumb)) {
+        if(!native_encoding||floor(decode(thumb,pc))||nds_native_service_entry(cpu,pc,thumb)) {
             ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;
         }
         return true;
@@ -258,7 +264,7 @@ public:
     void CallSVC(uint32_t) override {pending=true;pending_pc=jit->Regs()[15];jit->HaltExecution();}
     void ExceptionRaised(uint32_t pc,Dynarmic::A32::Exception) override {pending=true;pending_pc=pc;jit->HaltExecution();}
     void AddTicks(uint64_t n) override {
-        remaining=n<remaining?remaining-n:0;instructions+=n;g_insn_count[NDS_ARM9]+=n;
+        remaining=n<remaining?remaining-n:0;instructions+=n;g_insn_count[cpu]+=n;
         g_runtime_cycles+=n*cycles_per_instruction;
     }
     uint64_t GetTicksRemaining() override {return remaining;}
@@ -280,7 +286,7 @@ public:
         validate_writes();
     }
 };
-std::unique_ptr<Native> native;
+std::unique_ptr<Native> natives[2];
 bool supported_host() {
     static const bool supported=[] {
 #if defined(_MSC_VER)
@@ -294,7 +300,10 @@ bool supported_host() {
 }
 
 bool nds_arm9_native_run() {
-    if(g_nds_active!=NDS_ARM9||!nds_performance_execution()||g_insn_hook_armed||
+#if !defined(NDS_ARM7_NATIVE)
+    if(g_nds_active!=NDS_ARM9)return false;
+#endif
+    if(!nds_performance_execution()||g_insn_hook_armed||
        g_runtime_deep_trace||(g_cpu.cpsr&0x200u)||runtime_deferred_cycles()!=0||!supported_host())return false;
     uint32_t off=0;const auto* w=nds_busf_classify(g_cpu.R[15],&off);
     if(!w||!w->data||!bus_range_has_write_provenance(g_cpu.R[15],4))return false;
@@ -303,7 +312,8 @@ bool nds_arm9_native_run() {
     if(runtime_unwinding()||runtime_should_yield())return true;
     if(g_cpu.R[15]!=before_poll)return true;
     if(g_nds_fast_limit<=g_runtime_cycles)return false;
-    if(!native)native=std::make_unique<Native>();
+    auto& native=natives[g_nds_active];
+    if(!native)native=std::make_unique<Native>(g_nds_active);
     auto& n=*native;
     if(n.code_mapping_generation!=g_busf_mapping_generation) {
         n.clear();n.code_mapping_generation=g_busf_mapping_generation;
@@ -328,21 +338,25 @@ bool nds_arm9_native_run() {
     if(n.pending&&!runtime_should_yield()) {
         g_cpu.R[15]=n.pending_pc;
         const bool thumb=(g_cpu.cpsr&CPSR_T_BIT)!=0;
-        if(nds_native_service_entry(NDS_ARM9,n.pending_pc,thumb))
+        if(nds_native_service_entry(g_nds_active,n.pending_pc,thumb))
             runtime_dispatch(n.pending_pc | unsigned(thumb));
         else tier3_step_one(n.pending_pc);
     }
     runtime_tick(0);
     return true;
 }
-void nds_arm9_native_note_write() {if(native)native->unknown_write();}
-void nds_arm9_native_flush_writes() {if(native)native->flush_writes();}
-void nds_arm9_native_clear() {if(native)native->clear();}
+// A write by either CPU or DMA is visible to BOTH caches. Only the emitting
+// adapter's exact inline store suppresses its notification; its physical watch
+// is checked immediately after that store. The other adapter is inactive.
+void nds_arm9_native_note_write() {for(auto& n:natives)if(n)n->unknown_write();}
+void nds_arm9_native_flush_writes() {for(auto& n:natives)if(n)n->flush_writes();}
+void nds_arm9_native_clear() {for(auto& n:natives)if(n)n->clear();}
 void nds_arm9_native_census(bool enabled,bool reset) {
     census_enabled=enabled;
-    if(reset&&native)native->floor_census.clear();
+    if(reset)for(auto& n:natives)if(n)n->floor_census.clear();
 }
 std::string nds_arm9_native_json() {
+    const auto& native=natives[NDS_ARM9];
     uint64_t windows=0,fences=0;scheduler_performance_window_counts(&windows,&fences);
     std::string out="{\"available\":"+std::string(supported_host()?"true":"false")+
         ",\"diagnostic\":"+std::string(diagnostic()?"true":"false")+
@@ -388,6 +402,20 @@ std::string nds_arm9_native_json() {
             ",\"word\":"+std::to_string(word)+",\"op\":"+std::to_string(unsigned(instruction.op))+"}";
     }
     out+="]";
+    const auto& arm7=natives[NDS_ARM7];
+    out+=",\"arm7\":{\"available\":";
+#if defined(NDS_ARM7_NATIVE)
+    out+=supported_host()?"true":"false";
+#else
+    out+="false";
+#endif
+    if(arm7)out+=",\"entries\":"+std::to_string(arm7->entries)+
+        ",\"instructions\":"+std::to_string(arm7->instructions)+
+        ",\"reference_stops\":"+std::to_string(arm7->floors)+
+        ",\"device_handoffs\":"+std::to_string(arm7->devices)+
+        ",\"watched_pages\":"+std::to_string(arm7->watches.size())+
+        ",\"unknown_write_checks\":"+std::to_string(arm7->watches.checks);
+    out+="}";
     return out+"}";
 }
 #endif
