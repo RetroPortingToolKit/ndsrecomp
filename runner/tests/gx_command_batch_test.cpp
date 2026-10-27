@@ -59,7 +59,43 @@ void replay(GPU3D& gpu, uint32_t value, const Word& decoded) {
 void write(std::vector<uint8_t>& data, uint32_t index, uint32_t value) {
     for (unsigned i = 0; i < 4; ++i) data[index * 4 + i] = static_cast<uint8_t>(value >> (8 * i));
 }
+void adaptive_box_tests() {
+    auto nds = std::make_unique<NDS>();
+    auto& gpu = nds->GPU.GPU3D;
+    const auto box = [&](u32 width, s16 x, s16 y, s16 z,
+                         bool guest_wide = false, u32 viewport_width = 256) {
+        gpu.Reset(); gpu.SetEnabled(true, true); gpu.SetRenderWidth(width);
+        gpu.SetGuestWideProjection(guest_wide);
+        gpu.Viewport[0] = 0; gpu.Viewport[4] = viewport_width;
+        const auto pack = [](s16 lo, s16 hi) {
+            return u32(u16(lo)) | (u32(u16(hi)) << 16);
+        };
+        // Actual BOX_TEST FIFO execution with identity matrices (w = 1).
+        const u32 words[] = {0x70, pack(x, y), pack(z, 0x100), pack(0x100, 0x100)};
+        for (u32 word : words) gpu.WriteToGXFIFO(word);
+        nds->ARM9Timestamp += 2000; gpu.Run();
+        require(!gpu.NumTestCommands && gpu.CmdPIPE.IsEmpty() && gpu.CmdFIFO.IsEmpty(),
+                "BOX_TEST fixture did not execute");
+        require(gpu.ProjMatrix[0] == 0x1000 && gpu.ProjMatrix[5] == 0x1000 &&
+                gpu.ProjMatrix[10] == 0x1000 && gpu.ProjMatrix[15] == 0x1000,
+                "adaptive BOX_TEST changed guest projection");
+        return (gpu.Read32(0x04000600) & 2) != 0;
+    };
+    require(box(256, 0, 0, 0), "native visible box rejected");
+    require(!box(256, 0x1400, 0, 0), "native right margin box accepted");
+    require(!box(256, -0x1500, 0, 0), "native left margin box accepted");
+    require(box(448, 0x1400, 0, 0), "adaptive right margin box rejected");
+    require(box(448, -0x1500, 0, 0), "adaptive left margin box rejected");
+    require(box(320, 0x1200, 0, 0), "resized adaptive box rejected");
+    require(!box(448, 0x1D00, 0, 0), "outside adaptive band box accepted");
+    require(!box(448, 0, 0x1400, 0), "vertical clipping was widened");
+    require(!box(448, 0, 0, 0x1400), "far clipping was widened");
+    require(!box(448, 0, 0, -0x1500), "near clipping was widened");
+    require(!box(448, 0x1400, 0, 0, true), "guest-wide projection widened twice");
+    require(!box(448, 0x1400, 0, 0, false, 128), "subviewport box was widened");
+}
 void tests() {
+    adaptive_box_tests();
     auto first = std::make_unique<NDS>(); auto second = std::make_unique<NDS>();
     auto& a = first->GPU.GPU3D; auto& b = second->GPU.GPU3D;
     a.Reset(); b.Reset(); a.SetEnabled(true, true); b.SetEnabled(true, true);

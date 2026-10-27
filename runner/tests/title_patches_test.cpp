@@ -104,7 +104,9 @@ bool test_mkds_object_clipping() {
     };
     put(0x0207722Cu, 0xFA0175FBu);
     put(0x020D5094u, planes);
-    put(0x0217AC74u, camera);
+    // The render camera can differ from the player camera (intro/replay).
+    put(0x0217AC74u, 0x02310000u);
+    put(0x0217AA4Cu, camera);
     put(camera + 0x6Cu, 0x1555);
     put(camera + 0x70u, 1024);
     put(camera + 0x80u, -795);
@@ -160,6 +162,13 @@ bool test_mkds_object_clipping() {
     if (std::memcmp(wide.data(), g_main_ram.data(), wide.size()) ||
         !nds_title_patches_debug_state().mkds_object_wide_active ||
         nds_title_patches_debug_state().mkds_object_wide_applied != 0u) return false;
+    // The current output width, rather than the maximum, determines culling.
+    put(planes, 2896); put(planes + 8u, 2896);
+    put(planes + 12u, -2896); put(planes + 20u, 2896);
+    g_render_width = 320;
+    nds_title_patches_projection_begin();
+    if (get(planes) < 2557 || get(planes) > 2561 ||
+        get(planes + 8u) < 3196 || get(planes + 8u) > 3200) return false;
     put(0x0207722Cu, 0);
     nds_title_patches_projection_begin();
     if (nds_title_patches_debug_state().mkds_object_wide_active) return false;

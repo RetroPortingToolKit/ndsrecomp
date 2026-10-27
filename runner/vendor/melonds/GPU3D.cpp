@@ -1681,6 +1681,14 @@ void GPU3D::BoxTest(const u32* params) noexcept
         cube[i].Position[1] = ((s64)x*ClipMatrix[1] + (s64)y*ClipMatrix[5] + (s64)z*ClipMatrix[9] + (s64)0x1000*ClipMatrix[13]) >> 12;
         cube[i].Position[2] = ((s64)x*ClipMatrix[2] + (s64)y*ClipMatrix[6] + (s64)z*ClipMatrix[10] + (s64)0x1000*ClipMatrix[14]) >> 12;
         cube[i].Position[3] = ((s64)x*ClipMatrix[3] + (s64)y*ClipMatrix[7] + (s64)z*ClipMatrix[11] + (s64)0x1000*ClipMatrix[15]) >> 12;
+        // Visibility must use the same clip volume as SubmitVertex. Otherwise
+        // the guest skips whole models (including MKDS karts and items) in
+        // the extra horizontal band before their vertices reach rendering.
+        // Keep native/subviewport and guest-widened projections unchanged.
+        if (!GuestWideProjection &&
+            RenderWidth > 256 && Viewport[0] == 0 && Viewport[4] == 256)
+            cube[i].Position[0] = static_cast<s32>(
+                (static_cast<s64>(cube[i].Position[0]) * 256) / RenderWidth);
     }
 
     // front face (-Z)

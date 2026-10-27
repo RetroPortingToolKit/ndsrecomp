@@ -260,20 +260,22 @@ void patch_sm64ds_clipper() {
 
 void patch_mkds_object_clipper() {
     g_mkds_object_wide_active = false;
-    if (!g_mkds_adaptive ||
-        nds_gpu3d_output_width() != g_mkds_adaptive_width)
+    const uint16_t width = nds_gpu3d_output_width();
+    if (!g_mkds_adaptive || width <= 256u || width > g_mkds_adaptive_width)
         return;
 
     // AMCE0 cam_updateFrustum builds object planes at 020D4A20, then
     // selects GX projection mode at 02077238. mobj's 020D4F94 subsequently
     // rotates these planes into world space. The camera/projection itself
     // stays native: the renderer already widens it, so changing it here
-    // would widen the view twice. Guard both code and the active camera.
+    // would widen the view twice. race_getCamera (02061808) reads 0217AA4C:
+    // use that active render camera, not the player camera at 0217AC74, which
+    // differs during intro/replay/AI camera rendering. Guard code and camera.
     uint32_t call = 0, transform = 0, camera = 0;
     if (!read_main_ram_word(0x0207722Cu, &call) || call != 0xFA0175FBu ||
         !read_main_ram_word(0x020D5094u, &transform) ||
         transform != 0x0217B550u ||
-        !read_main_ram_word(0x0217AC74u, &camera) ||
+        !read_main_ram_word(0x0217AA4Cu, &camera) ||
         camera < kMainRamBase || camera > 0x023FFD90u || (camera & 3u))
         return;
     int32_t aspect = 0, near = 0, left = 0, right = 0;
@@ -286,7 +288,7 @@ void patch_mkds_object_clipper() {
 
     const double extent = std::abs(static_cast<double>(left));
     const double native_length = std::hypot(static_cast<double>(near), extent);
-    const double wide_extent = extent * g_mkds_adaptive_width / 256.0;
+    const double wide_extent = extent * width / 256.0;
     const double wide_length = std::hypot(static_cast<double>(near), wide_extent);
     const int32_t native_x = static_cast<int32_t>(std::lround(near * kFix12One / native_length));
     const int32_t native_z = static_cast<int32_t>(std::lround(extent * kFix12One / native_length));
