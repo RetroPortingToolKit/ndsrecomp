@@ -51,6 +51,16 @@ void reset_call(uint32_t lr = 0x020F0000u) {
 
 void smoke() {
     require(mph_hle::initialize("90164d1ac127ee5f9815ea4ae7de798c7b5fc629"), "supported ROM rejected");
+    for (uint32_t pc : {0x02080BD8u, 0x02080DE0u, 0x0207FD38u,
+                        0x0204E7E0u, 0x01FF8C2Cu, 0x0207FDECu}) {
+        require(mph_hle::is_entry(NDS_ARM9, pc, false), "native service barrier missing");
+        require(!mph_hle::is_entry(NDS_ARM7, pc, false) &&
+                !mph_hle::is_entry(NDS_ARM9, pc, true) &&
+                !mph_hle::is_entry(NDS_ARM9, pc + 4, false), "native barrier scope");
+    }
+    mph_hle::initialize("unknown");
+    require(!mph_hle::is_entry(NDS_ARM9, 0x02080BD8u, false), "unrelated ROM barrier");
+    mph_hle::initialize("90164d1ac127ee5f9815ea4ae7de798c7b5fc629");
     Memory mem;
     memory = &mem;
     reset_call();

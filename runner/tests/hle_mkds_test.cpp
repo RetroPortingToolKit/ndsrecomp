@@ -146,6 +146,12 @@ void runtime_dispatch_with_exchange(uint32_t) { ++exchanges; }
 int main(int argc, char** argv) {
     try {
         require(mkds_hle::initialize("691e00d9a5dd80b04f80cc7559503e8b06848785"), "MKDS rejected");
+        for (uint32_t pc : {0x02147FD8u, 0x021483A0u, 0x02147288u, 0x0214733Cu}) {
+            require(mkds_hle::is_entry(NDS_ARM9, pc, false), "native service barrier missing");
+            require(!mkds_hle::is_entry(NDS_ARM7, pc, false) &&
+                    !mkds_hle::is_entry(NDS_ARM9, pc, true) &&
+                    !mkds_hle::is_entry(NDS_ARM9, pc + 4, false), "native service barrier scope");
+        }
         require(mkds_hle::statistics().group_mask == 1, "only vector HLE is integrated");
         math_contracts();
         matrix_contract();

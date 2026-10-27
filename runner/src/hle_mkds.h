@@ -15,6 +15,7 @@ struct Statistics {
     uint64_t matrix_concat = 0;
 };
 bool initialize(const char* rom_sha1);
+bool is_entry(NdsCpu cpu, uint32_t pc, bool thumb);
 Statistics statistics();
 // Cold lookup only. Supplies a full-operation proof, including literals,
 // even when the generated entry owns only a short prefix or a loop block.

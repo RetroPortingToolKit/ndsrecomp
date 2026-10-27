@@ -21,5 +21,14 @@ int main() {
     require(!supported && !nds_performance_execution() && !error.empty());
     require(faithful == nds_execution_model_identity());
 #endif
+    require(nds_execution_model_select("faithful", "unknown", error));
+    const bool mph = nds_execution_model_select("performance",
+        "90164d1ac127ee5f9815ea4ae7de798c7b5fc629", error);
+#if defined(NDS_MPH_PERFORMANCE)
+    require(mph && nds_performance_execution());
+    require(faithful != nds_execution_model_identity());
+#else
+    require(!mph && !nds_performance_execution());
+#endif
     std::puts("execution model availability, ROM gate and state identity passed");
 }

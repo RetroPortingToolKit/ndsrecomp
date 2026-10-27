@@ -39,14 +39,16 @@ option(NDS_GX_COMMAND_CACHE
     "Use guarded Main-RAM FIFO ingress and exact integer projection reuse" OFF)
 option(NDS_MKDS_PERFORMANCE
     "Include selectable portable flat-AOT MKDS execution alongside faithful banks" OFF)
+option(NDS_MPH_PERFORMANCE
+    "Include experimental native ARM9 MPH execution alongside faithful banks" OFF)
 set(NDS_MKDS_PERFORMANCE_BANK_DIR "" CACHE PATH
     "Generated mkds_perf_arm9 and mkds_perf_arm9_itcm banks")
 set(NDS_ARM9_DYNARMIC_ROOT "" CACHE PATH "Optional pinned Dynarmic source for experimental ARM9 native execution")
 set(NDS_ARM9_DYNARMIC_ENABLED OFF)
 if(NDS_ARM9_DYNARMIC_ROOT)
     if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
-        if(NOT NDS_MKDS_PERFORMANCE)
-            message(FATAL_ERROR "ARM9 native prototype requires the MKDS performance model")
+        if(NOT NDS_MKDS_PERFORMANCE AND NOT NDS_MPH_PERFORMANCE)
+            message(FATAL_ERROR "ARM9 native execution requires a supported title performance model")
         endif()
         file(READ "${NDS_ARM9_DYNARMIC_ROOT}/src/dynarmic/interface/A32/config.h" _nds_dynarmic_config)
         if(NOT _nds_dynarmic_config MATCHES "NDS_READONLY_PAGE_TABLE_V1")
@@ -383,6 +385,9 @@ set_source_files_properties(${ARM7_BANK_SOURCES}
 if(NDS_MKDS_PERFORMANCE)
     target_compile_definitions(execution_model_test PRIVATE NDS_MKDS_PERFORMANCE=1)
 endif()
+if(NDS_MPH_PERFORMANCE AND NDS_ARM9_DYNARMIC_ENABLED)
+    target_compile_definitions(execution_model_test PRIVATE NDS_MPH_PERFORMANCE=1)
+endif()
 # The native adapter falls back to the faithful runtime, and never registers
 # the rejected flat banks. Keep flat banks available for portable builds while
 # avoiding a large unused native-build dependency.
@@ -425,6 +430,9 @@ endif()
 
 if(NDS_ARM9_DYNARMIC_ENABLED)
     string(APPEND NDS_BUILD_VARIANT "-arm9-native-v2-timing2-dynarmica41c380")
+    if(NDS_MPH_PERFORMANCE)
+        string(APPEND NDS_BUILD_VARIANT "-mph-native-services-v1")
+    endif()
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-readonly-pages.patch" _nds_read_patch_sha)
     string(SUBSTRING "${_nds_read_patch_sha}" 0 12 _nds_read_patch_short)
     string(APPEND NDS_BUILD_VARIANT "-pages${_nds_read_patch_short}")
@@ -642,7 +650,7 @@ message(STATUS "MPH math implementation: ${NDS_MPH_MATH_IMPLEMENTATION}")
 if(NDS_MPH_SUBMIT_IMPLEMENTATION STREQUAL "HLE")
     target_sources(nds_runner PRIVATE src/hle_mph_submit.cpp)
     # Do not invalidate/recompile ROM-derived banks for a runner-only service.
-    set_property(SOURCE src/main.cpp src/runtime_arm.cpp src/debug_server.cpp src/io.cpp src/gpu3d.cpp
+    set_property(SOURCE src/main.cpp src/runtime_arm.cpp src/arm9_native.cpp src/debug_server.cpp src/io.cpp src/gpu3d.cpp
         APPEND PROPERTY COMPILE_DEFINITIONS
         "$<$<STREQUAL:$<TARGET_PROPERTY:NAME>,nds_runner>:NDS_MPH_SUBMIT_HLE=1>")
 endif()
@@ -898,8 +906,8 @@ if(NDS_MKDS_PERFORMANCE)
     target_compile_definitions(nds_runner PRIVATE NDS_MKDS_PERFORMANCE=1)
 endif()
 if(NDS_ARM9_DYNARMIC_ENABLED)
-    if(NOT NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
-        message(FATAL_ERROR "ARM9 native prototype currently requires retained MKDS HLE kernels")
+    if(NDS_MPH_PERFORMANCE)
+        target_compile_definitions(nds_runner PRIVATE NDS_MPH_PERFORMANCE=1)
     endif()
     target_compile_definitions(nds_runner PRIVATE NDS_ARM9_DYNARMIC=1)
     target_include_directories(nds_runner PRIVATE ${Boost_INCLUDE_DIR} ${Boost_INCLUDE_DIRS})
@@ -1216,6 +1224,7 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_compile_definitions(video_savestate_test PRIVATE
       NDS_BUILD_VIDEO_SAVESTATE_TEST=1)
   add_test(NAME video_savestate_test COMMAND video_savestate_test)
+  set_tests_properties(video_savestate_test PROPERTIES TIMEOUT 20)
 
   # AUXSPI backup-chip protocol: pins the write-enable latch's lifetime across
   # chip-select transfers, which is what silently dropped every cartridge save.

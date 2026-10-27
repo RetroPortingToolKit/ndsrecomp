@@ -14,6 +14,7 @@ struct Statistics {
     uint64_t setup_calls, submit_calls, chunks, bytes, waits, completions, dma_batches;
 };
 bool initialize(const char* rom_sha1);
+bool is_entry(NdsCpu cpu, uint32_t pc, bool thumb);
 Statistics statistics();
 Replacement resolve(NdsCpu cpu, uint32_t pc, bool thumb);
 void setup();

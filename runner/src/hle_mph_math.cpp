@@ -44,6 +44,13 @@ bool initialize(const char* rom_sha1) {
 
 Statistics statistics() { return counters; }
 
+bool is_entry(NdsCpu cpu, uint32_t pc, bool thumb) {
+    if (!supported_rom || cpu != NDS_ARM9 || thumb) return false;
+    for (const auto& binding : bindings) if (binding.pc == pc) return true;
+    for (const auto& validation : matrix_validations) if (validation.addr == pc) return true;
+    return false;
+}
+
 MatrixReplacement resolve_matrix(NdsCpu cpu, uint32_t pc, bool thumb) {
     if (!supported_rom || cpu != NDS_ARM9 || thumb) return {};
     for (auto& validation : matrix_validations) {

@@ -33,6 +33,12 @@ bool initialize(const char* rom_sha1) {
 }
 Statistics statistics() { return counts; }
 
+bool is_entry(NdsCpu cpu, uint32_t pc, bool thumb) {
+    if (!counts.rom_supported || cpu != NDS_ARM9 || thumb) return false;
+    for (const auto& binding : bindings) if (binding.function && binding.entry == pc) return true;
+    return false;
+}
+
 Replacement resolve(NdsCpu cpu, uint32_t pc, bool thumb) {
     if (!counts.rom_supported || cpu != NDS_ARM9 || thumb) return {};
     for (auto& b : bindings) {

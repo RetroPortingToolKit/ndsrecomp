@@ -14,18 +14,19 @@ bool nds_execution_model_select(const std::string& name, const std::string& sha1
         error = "--execution-model must be faithful or performance";
         return false;
     }
+    bool supported = false;
 #if defined(NDS_MKDS_PERFORMANCE)
-    if (sha1 != "691e00d9a5dd80b04f80cc7559503e8b06848785") {
-        error = "performance execution requires the supported MKDS AMCE revision 0 image";
-        return false;
-    }
-    selected = NdsExecutionModel::Performance;
-    return true;
-#else
-    (void)sha1;
-    error = "this build does not contain the optional MKDS performance banks";
-    return false;
+    supported |= sha1 == "691e00d9a5dd80b04f80cc7559503e8b06848785";
 #endif
+#if defined(NDS_MPH_PERFORMANCE)
+    supported |= sha1 == "90164d1ac127ee5f9815ea4ae7de798c7b5fc629";
+#endif
+    if (supported) {
+        selected = NdsExecutionModel::Performance;
+        return true;
+    }
+    error = "performance execution is unavailable for this build/image";
+    return false;
 }
 NdsExecutionModel nds_execution_model() { return selected; }
 bool nds_performance_execution() {

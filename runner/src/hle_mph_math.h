@@ -19,6 +19,9 @@ Statistics statistics();
 // Called once at startup, before dispatch caches are populated. This scopes
 // the compiled implementation to its supported ROM; it is not a mode setter.
 bool initialize(const char* rom_sha1);
+// A translation barrier only. Execution still uses the dispatcher's complete
+// live-code proof, dependency guards and active-write protection.
+bool is_entry(NdsCpu cpu, uint32_t pc, bool thumb);
 
 // Only called on a cold, already content-validated native lookup. The caller
 // retains its existing validation/page-generation guards around the result.

@@ -12,7 +12,7 @@
 #include "arm9_native.h"
 #endif
 #include "guest_job_profile.h"
-#if defined(NDS_MKDS_PERFORMANCE)
+#if defined(NDS_MKDS_PERFORMANCE) || defined(NDS_MPH_PERFORMANCE)
 #include "execution_model.h"
 #endif
 #if defined(NDS_MPH_MATH_HLE)
@@ -1766,7 +1766,7 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
         if (entering_static) {
             guard_scope.invoke();
             if (!tail.state.pending) {
-#if defined(NDS_MKDS_PERFORMANCE)
+#if defined(NDS_MKDS_PERFORMANCE) || defined(NDS_MPH_PERFORMANCE)
                 // Flat regions carry returns in guest LR/stack, not the old
                 // host call stack. A reference/HLE callee can complete while
                 // an older native caller is still on that host stack. Unwind

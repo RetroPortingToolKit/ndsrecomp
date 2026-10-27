@@ -1350,10 +1350,15 @@ void render_engine_line(LineJob& job, int engine, LineScratch& sc) {
                 dst[x] = to_rgb32(bright(comp6[x]));
         } else if (mode == 2u) {
             const uint32_t bank=(u.dispcnt>>18)&3u;
-            const uint32_t base=0x06800000u+(bank<<17)+(y*256u)*2u;
+            // Guest writes/remaps fence this bank, and submit_line drains older
+            // captures before publishing a line that reads their destination.
+            // A worker must not call nds_video_read: its guest capture fence
+            // would wait for this very job. Read the stable physical view once.
+            const uint8_t* source=nds_vram_lcdc_mapped(bank)
+                ? nds_vram_bank_data(bank)+(y*256u)*2u : nullptr;
             for(int x=0;x<256;++x){
-                const uint16_t c=static_cast<uint16_t>(
-                    nds_video_read(9,base+x*2u,2));
+                const uint16_t c=source
+                    ? uint16_t(source[x*2u]) | (uint16_t(source[x*2u+1u])<<8) : 0;
                 dst[x]=to_rgb32(bright(rgb6(c)));
             }
         } else {

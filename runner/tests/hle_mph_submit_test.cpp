@@ -61,6 +61,13 @@ void finish(unsigned channel, bool snapshot_resume) {
 }
 void tests() {
     mph_submit::initialize("90164d1ac127ee5f9815ea4ae7de798c7b5fc629");
+    for (uint32_t pc : {0x01FF9420u, 0x01FF9470u, 0x01FF94ACu,
+                        0x01FF94CCu, 0x01FF94F8u}) {
+        require(mph_submit::is_entry(NDS_ARM9, pc, false), "submission barrier missing");
+        require(!mph_submit::is_entry(NDS_ARM7, pc, false) &&
+                !mph_submit::is_entry(NDS_ARM9, pc, true) &&
+                !mph_submit::is_entry(NDS_ARM9, pc + 4, false), "submission barrier scope");
+    }
     for (uint32_t bytes : {0u, 4u, 468u, 472u, 476u, 944u, 2048u, 60416u, 60892u, 121308u}) {
         for (unsigned channel = 0; channel < 4; ++channel) {
             reset(channel, bytes);

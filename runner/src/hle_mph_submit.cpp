@@ -67,10 +67,14 @@ bool initialize(const char* rom_sha1) {
 }
 Statistics statistics() { return counts; }
 
+bool is_entry(NdsCpu cpu, uint32_t pc, bool thumb) {
+    return counts.rom_supported && cpu == NDS_ARM9 && !thumb &&
+        (pc == start || pc == entry || pc == wait_before ||
+         pc == next_chunk || pc == wait_after);
+}
+
 Replacement resolve(NdsCpu cpu, uint32_t pc, bool thumb) {
-    if (!counts.rom_supported || cpu != NDS_ARM9 || thumb) return {};
-    if (pc != start && pc != entry && pc != wait_before &&
-        pc != next_chunk && pc != wait_after) return {};
+    if (!is_entry(cpu, pc, thumb)) return {};
     std::array<uint8_t, length> live{};
     if (!bus_range_has_write_provenance(start, length) ||
         !bus_debug_copy(0, start, live.data(), length) ||

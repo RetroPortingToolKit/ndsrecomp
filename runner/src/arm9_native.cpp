@@ -13,7 +13,7 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #include "execution_model.h"
 #include "arm_decode.h"
 #include "thumb_decode.h"
-#include "hle_mkds.h"
+#include "native_service_entries.h"
 #include "arm9_native_ir.h"
 #include "arm9_native_watch.h"
 #include "arm9_native_options.h"
@@ -179,7 +179,7 @@ public:
             }
         }
         if(bytes&&!thumb&&(*bytes&0x0c000000u)==0x0c000000u)native_encoding=false;
-        if(!native_encoding||floor(decode(thumb,pc))||(!thumb&&mkds_hle::resolve(NDS_ARM9,pc,false).function)) {
+        if(!native_encoding||floor(decode(thumb,pc))||nds_native_service_entry(NDS_ARM9,pc,thumb)) {
             ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;
         }
         return true;
@@ -327,8 +327,10 @@ bool nds_arm9_native_run() {
         g_cpu.R[15],g_runtime_cycles,unsigned(n.pending),n.pending_pc);
     if(n.pending&&!runtime_should_yield()) {
         g_cpu.R[15]=n.pending_pc;
-        const auto hle=mkds_hle::resolve(NDS_ARM9,n.pending_pc,(g_cpu.cpsr&CPSR_T_BIT)!=0);
-        if(hle.function)hle.function();else tier3_step_one(n.pending_pc);
+        const bool thumb=(g_cpu.cpsr&CPSR_T_BIT)!=0;
+        if(nds_native_service_entry(NDS_ARM9,n.pending_pc,thumb))
+            runtime_dispatch(n.pending_pc | unsigned(thumb));
+        else tier3_step_one(n.pending_pc);
     }
     runtime_tick(0);
     return true;

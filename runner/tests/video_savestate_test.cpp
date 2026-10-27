@@ -334,8 +334,34 @@ bool gpu3d_rendered_projection_flag_follows_submitted_geometry() {
 
 }  // namespace
 
+// A mode-2 scanline may capture into a different LCDC bank. Its worker must
+// never enter the guest read fence, which would wait for its own completion.
+static bool threaded_lcdc_capture() {
+    nds_gpu2d_reset();
+    nds_vram_reset();
+    nds_vram_map(0, 0x80u);
+    nds_vram_map(1, 0x80u);
+    nds_video_write(9, 0x06820000u, 0x001Fu, 2);
+    nds_gpu2d_write(0x04000000u, 0x00060000u, 4); // display bank B
+    nds_gpu2d_write(0x04000064u, 0x80000000u, 4); // capture into bank A
+    nds_gpu2d_set_threaded(true, 2);
+    nds_gpu2d_render_scanline(0);
+    nds_gpu2d_finish_frame();
+    const auto* a = nds_gpu2d_framebuffer(0);
+    const auto* b = nds_gpu2d_framebuffer(1);
+    const bool ok = expect((a[0] & 0x00FFFFFFu) == 0x00FB0000u ||
+                           (b[0] & 0x00FFFFFFu) == 0x00FB0000u,
+                           "threaded LCDC display reads bank B without a recursive fence") &&
+        expect(nds_gpu2d_jobs_outstanding.load() == 0 &&
+               nds_gpu2d_staged_captures.load() == 0,
+               "LCDC display and capture complete together");
+    nds_gpu2d_set_threaded(false, 1);
+    return ok;
+}
+
 int main() {
-    bool ok = vram_and_midframe_capture_roundtrip();
+    bool ok = threaded_lcdc_capture();
+    ok &= vram_and_midframe_capture_roundtrip();
     ok &= gpu3d_device_roundtrip();
     ok &= gpu3d_multiple_polygons_roundtrip();
     ok &= gpu3d_rendered_projection_flag_follows_submitted_geometry();
