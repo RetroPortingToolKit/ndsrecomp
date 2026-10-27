@@ -15,7 +15,7 @@ from engine `88ca461`. MPH reference source is `3f5e195`; MKDS reference is
 | Larger geometry/model services | Submission batches, decoded-command reuse, native affine kernels and projection reuse already exist. The earlier MKDS SBC-loop profile mostly charged its handlers; replacing the loop alone has little useful ceiling. Reassess residual work after CPU changes. |
 | Graphics duplication | Native GL and immutable capture reuse already ship for MPH; MKDS's window-aware compositor already exists. Do not count them again as new work. Preserve authoritative guest capture. |
 | ARM7 sound/IPC HLE | A complete sound/WFC service contract is needed. Reviewed touch-only/unknown-command-echo donors do not implement it. Not justified by an entry count or a screenshot. |
-| Native ARM7 execution | Experimental explicit build option `NDS_ARM7_NATIVE`. Reuse the pinned translator with ARMv4T architecture, a separate per-CPU cache, shared physical invalidation, modeled bus/device operations and portable exception/privileged steps. Timing profile is explicitly identified as two ARM7 cycles per instruction. Focused ISA checks and fresh MKDS Pinball race construction pass; built-game performance pending. This preserves the service implementations rather than replacing ARM7 firmware with guessed replies. |
+| Native ARM7 execution | Experimental explicit build option `NDS_ARM7_NATIVE`. Reuse the pinned translator with ARMv4T architecture, a separate per-CPU cache, shared physical invalidation, modeled bus/device operations and portable exception/privileged steps. Timing profile is explicitly identified as two ARM7 cycles per instruction. MKDS matched Pinball sample: 13.6% lower process CPU and 13.7% greater uncapped throughput. Focused ISA/memory/invalidation checks, fresh race construction, basic visual and same-build restore of both CPU register files pass. Owner play feedback pending. Not yet qualified for MPH. |
 | Bigger generated regions / deadline caches / speculative graphics handoffs | Prior neutral or losing experiments remain rejected; no unchanged reruns. |
 
 ## Correctness repair discovered during reuse
@@ -68,6 +68,16 @@ package is qualified per game. Neutral/inconclusive results are acceptable;
 reproducible regressions require repair or per-title exclusion. Identical
 baseline/candidate failures are shared defects, not optimization disqualifiers.
 No final campaign figures or blog publication are claimed.
+
+The MKDS pair uses Compute, adaptive top448/bottom256, scale1, native AI on
+eight karts at150cc in Waluigi Pinball, retained VECTOR HLE, direct reads and
+batched write validation in both executables. Native ARM9 alone takes7.61974s
+wall /9.4375s CPU; adding ARM7 takes6.70291s /8.15625s CPU over600 VBlanks.
+Both have120 untimed warm-up frames, ordinary race-frame and position progress,
+HLE activity and restored current-build state. Other processes consume0.546 and
+0.274 cores respectively; this is one bounded sample, not an all-courses or
+every-frame guarantee. Existing full-race evidence is reused, not rerun. No
+campaign, multiplayer or live Wiimmfi qualification is added by this result.
 
 Private task data, frozen executables and cleanup inventory are under
 `G:/Temp/Codex/ndsrecomp/native-services-20261026` on each host. Nothing is

@@ -38,7 +38,8 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #endif
 
 namespace {
-// Explicit simulated-timing profile: two ARM9 cycles per translated instruction.
+// Explicit simulated-timing profiles: two cycles of the executing CPU per
+// translated instruction. ARM7 has its own identified optional profile.
 // Guest time remains independent of host elapsed time. Device accesses complete
 // through the existing bus, then leave JIT execution at the instruction boundary.
 constexpr uint64_t cycles_per_instruction=2;
