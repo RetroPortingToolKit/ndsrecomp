@@ -201,9 +201,10 @@ vec4 composeAt(vec2 sampleUV, ivec2 dst)
                 off = sx >= int(outputWidth) * s;
             }
         }
-        Layer top = unpackLayer(texelFetch(texHdTop, dst, 0).xy);
+        uvec2 topTexel = texelFetch(texHdTop, dst, 0).xy;
+        Layer top = unpackLayer(topTexel);
         Layer below = unpackLayer(texelFetch(texHdBelow, dst, 0).xy);
-        if (!off) {
+        if (!off && (topTexel.y & 64u) == 0u) {
             vec4 hi = texelFetch(tex3dHi, ivec2(sx, dstHi.y), 0);
             uint a3 = uint(round(hi.a * 31.0));
             if (a3 != 0u) {

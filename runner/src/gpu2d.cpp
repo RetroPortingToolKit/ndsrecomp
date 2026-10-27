@@ -154,9 +154,9 @@ std::vector<uint32_t> g_hd_top_pixels;
 std::vector<uint32_t> g_hd_below_pixels;
 NdsGpu2dHdFrame g_hd_frame{};
 
-uint32_t hd_meta(const Pixel& p, bool effects_enabled) {
+uint32_t hd_meta(const Pixel& p, uint8_t window_mask) {
     return static_cast<uint32_t>(p.target & 0x3Fu) |
-           (effects_enabled ? 0x80u : 0u) |
+           nds_gpu2d_hd_window_metadata(window_mask) |
            (static_cast<uint32_t>(p.alpha) << 8) |
            (static_cast<uint32_t>(p.priority) << 16) |
            (static_cast<uint32_t>(p.order) << 24);
@@ -2743,11 +2743,10 @@ void composite_adaptive_line(const AdaptiveCtx& c, int y,
         if (emit_hd) {
             const size_t o = (static_cast<size_t>(y) * output_width + x)
                              * 2u;
-            const bool effects_enabled = (window_mask & 0x20u) != 0u;
             g_hd_top_pixels[o] = top.color;
-            g_hd_top_pixels[o + 1] = hd_meta(top, effects_enabled);
+            g_hd_top_pixels[o + 1] = hd_meta(top, window_mask);
             g_hd_below_pixels[o] = below.color;
-            g_hd_below_pixels[o + 1] = hd_meta(below, effects_enabled);
+            g_hd_below_pixels[o + 1] = hd_meta(below, window_mask);
         }
         const uint32_t c3 = composited_3d[x];
         const uint8_t a3 =
@@ -2945,7 +2944,7 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
     // the flag the engine-A call just set, silently disabling HD entirely.
     if (engine == 0) g_hd_frame_valid = false;
     const int output_width = nds_gpu3d_output_width();
-    if (output_width <= 256) {
+    if (output_width < 256 || (output_width == 256 && !g_hd_emit_enabled)) {
         if (width) *width = 256;
         return native;
     }
@@ -3000,12 +2999,9 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
     // through the native edge-column mapping, the OBJ window from its own
     // wide-rasterized coverage). Titles such as Mario Kart DS race with
     // Win0/Win1/OBJ-window enabled on every frame, and treating that as
-    // unsupported pillarboxes them. What windows DO gate is the HD surface
-    // emission below: the accelerated presenter reinserts the 3D layer itself
-    // and cannot honour a mask that removes BG0, so it stands down for those
-    // scenes and the CPU composite is presented instead.
-    const bool windows_support_hd =
-        nds_gpu2d_windows_support_hd(window_state);
+    // unsupported pillarboxes them. The HD metadata carries BG0 visibility
+    // per pixel as well
+    // as effects permission, so those masks can be preserved on the GPU.
     NdsGpu2dAdaptiveFallback reject = NDS_GPU2D_ADAPTIVE_WIDE;
     if (!palette || !oam || !vram)
         reject = NDS_GPU2D_ADAPTIVE_RENDERER_VIEW;
@@ -3050,8 +3046,7 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
     // surfaces would be applied to the wrong window. The direct path rejects
     // that case as SCREEN_ROUTE for the same reason.
     const bool emit_hd =
-        g_hd_emit_enabled && !g_adaptive_skybox_fill && screen == 0 &&
-        windows_support_hd;
+        g_hd_emit_enabled && !g_adaptive_skybox_fill && screen == 0;
     if (emit_hd) {
         const size_t needed =
             static_cast<size_t>(output_width) * 192u * 2u;
@@ -3096,7 +3091,9 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
         g_hd_frame_valid = true;
         ++g_hd_frames;
     }
-    return adaptive.data();
+    // At native aspect this pass only prepares the HD layer descriptors.
+    // Preserve the actual scanline-rendered native image for any fallback.
+    return output_width == 256 ? native : adaptive.data();
 }
 
 void nds_gpu2d_invalidate_hd_frame() {

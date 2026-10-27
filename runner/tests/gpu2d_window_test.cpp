@@ -147,8 +147,7 @@ bool test_window_empty_and_scanner_eligibility() {
     raw_rect(win, 1, 10, 30, 7, 7);
     auto state = make_state(0xE000u, win);
     if (!require(nds_gpu2d_window_mask(state, 7, 10, false) == 0x2F) ||
-        !require(nds_gpu2d_window_mask(state, 10, 7, false) == 0x2F) ||
-        !require(nds_gpu2d_windows_support_hd(state)))
+        !require(nds_gpu2d_window_mask(state, 10, 7, false) == 0x2F))
         return false;
 
     // Metroid Prime Hunters scanner: WININ=0x3F3F, WINOUT=0x332F.
@@ -158,15 +157,14 @@ bool test_window_empty_and_scanner_eligibility() {
     win[11] = 0x33;
     state = make_state(0xE000u, win);
     if (!require(nds_gpu2d_window_mask(state, 0, 0, false) == 0x2F) ||
-        !require(nds_gpu2d_window_mask(state, 0, 0, true) == 0x33) ||
-        !require(nds_gpu2d_windows_support_hd(state)))
+        !require(nds_gpu2d_window_mask(state, 0, 0, true) == 0x33))
         return false;
     win[11] = 0x32;  // BG0 disabled in potentially reachable OBJ window.
-    if (!require(!nds_gpu2d_windows_support_hd(state))) return false;
+    if (!require(nds_gpu2d_hd_window_metadata(win[11]) == 0xC0u)) return false;
     win[11] = 0x13;  // Effects disabled but BG0 remains visible.
-    if (!require(nds_gpu2d_windows_support_hd(state))) return false;
+    if (!require(nds_gpu2d_hd_window_metadata(win[11]) == 0u)) return false;
     win[11] = 0x17;  // MPH tutorial/transmission OBJ window mask.
-    return require(nds_gpu2d_windows_support_hd(state));
+    return require(nds_gpu2d_hd_window_metadata(win[11]) == 0u);
 }
 
 bool test_direct_scene_rejects_windows() {
@@ -514,11 +512,11 @@ struct AdaptiveRun {
     uint64_t helper_lines = 0;
 };
 
-void run_adaptive_frame(AdaptiveRun& out) {
+void run_adaptive_frame(AdaptiveRun& out, uint16_t output_width = 448) {
     nds_gpu2d_reset();
     nds_gpu2d_profile_reset();
     g_lcdc_mapped = false;
-    g_3d_output_width = 448;
+    g_3d_output_width = output_width;
     g_3d_render_xpos = 0;
     g_3d_render_polygon_count = 4096;
     g_palette.fill(0);
@@ -629,7 +627,7 @@ bool test_adaptive_low_polygon_perspective_stays_wide() {
 // (DISPCNT 0x0001F108, WININ 0x3F3F, WINOUT 0x322F): the OBJ window is the
 // item-box hole whose mask drops BG0/3D. Such a scene must still be
 // composited at the adaptive width -- with the OBJ window honoured per pixel
-// -- and only the HD surface emission may stand down for it.
+// -- including the per-pixel BG0 mask on its HD surfaces.
 bool test_adaptive_windowed_scene_composites_wide() {
     static std::array<uint8_t, 0x4000> obj_vram{};
     obj_vram.fill(0);
@@ -695,15 +693,30 @@ bool test_adaptive_windowed_scene_composites_wide() {
         const size_t i = static_cast<size_t>(y) * 448u + extra + 40;
         if (!require(mkds.surface[i] == plain.surface[i])) return false;
     }
-    // HD stands down for the BG0-less OBJ-window mask, but not for one that
-    // keeps BG0 (0x33), and the CPU composite is wide in both cases.
-    if (!require(plain.hd_valid) || !require(!mkds.hd_valid)) return false;
+    // HD retains the BG0-less mask rather than downgrading the whole scene.
+    if (!require(plain.hd_valid) || !require(mkds.hd_valid)) return false;
+    const size_t inside = (32u * 448u + extra + 16u) * 2u + 1u;
+    const size_t outside = (32u * 448u + extra + 40u) * 2u + 1u;
+    if (!require((mkds.hd_top[inside] & 64u) != 0u) ||
+        !require((mkds.hd_top[outside] & 64u) == 0u)) return false;
     AdaptiveRun hd_ok{};
     NdsGpu2dProfile hd_prof{};
     windowed(0x33u, hd_ok, hd_prof);
     return require(hd_ok.width == 448) && require(hd_ok.hd_valid) &&
            require(hd_prof.adaptive_fallback_frames[NDS_GPU2D_ADAPTIVE_WIDE] ==
                    1u);
+}
+
+bool test_native_aspect_hd_keeps_native_fallback() {
+    AdaptiveRun native{};
+    run_adaptive_frame(native, 256);
+    if (!require(native.width == 256u) || !require(native.hd_valid)) return false;
+    const uint32_t* fb = nds_gpu2d_framebuffer(0);
+    if (!require(std::equal(native.surface.begin(), native.surface.end(), fb))) return false;
+    // With HD disabled, the ordinary native-aspect call remains a no-op.
+    uint16_t width = 0;
+    return require(nds_gpu2d_adaptive_framebuffer(0, &width) == fb) &&
+           require(width == 256u);
 }
 
 bool test_adaptive_helpers_match_serial() {
@@ -862,6 +875,7 @@ int main() {
     if (!test_adaptive_windowed_scene_composites_wide()) return 14;
     if (!test_capture_uses_reference()) return 15;
     if (!test_direct_window_scanline_latch()) return 16;
+    if (!test_native_aspect_hd_keeps_native_fallback()) return 17;
     return 0;
 }
 #endif

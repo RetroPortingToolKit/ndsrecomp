@@ -3891,7 +3891,12 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         // Direct-present frames skip the adaptive compositor, so the HD
         // surfaces must be invalidated here rather than inside it.
         nds_gpu2d_invalidate_hd_frame();
-        if ((options.adaptive_screens & NDS_ADAPTIVE_TOP) &&
+        // HD needs the 2D layer descriptors even at native aspect. Without
+        // this, MPH renders an HD raster but presents its native composite.
+        const bool native_hd = presentation.gl_top &&
+            nds_gpu3d_internal_scale() > 1u &&
+            nds_gpu3d_output_width() == 256u;
+        if (((options.adaptive_screens & NDS_ADAPTIVE_TOP) || native_hd) &&
             !nds_gpu2d_direct_present_frame_active())
             top_pixels =
                 nds_gpu2d_adaptive_framebuffer(0, &top_width);

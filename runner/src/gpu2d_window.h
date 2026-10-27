@@ -90,34 +90,9 @@ constexpr uint8_t nds_gpu2d_adaptive_window_x(int x, int extra, int hud_x) {
     return static_cast<uint8_t>(native < 0 ? 0 : native > 255 ? 255 : native);
 }
 
-constexpr bool nds_gpu2d_window_mask_supports_hd(uint8_t mask) {
-    // The HD descriptor removes BG0/3D and the shader reinserts it. It can
-    // represent a region only when BG0 remains enabled there. The per-pixel
-    // effects enable bit is carried in the descriptor metadata.
-    return (mask & 0x01u) != 0u;
-}
-
-constexpr bool nds_gpu2d_window_rect_reachable(uint8_t left, uint8_t right,
-                                                uint8_t top, uint8_t bottom) {
-    return left != right && top != bottom;
-}
-
-constexpr bool nds_gpu2d_windows_support_hd(const NdsGpu2dWindowState& state) {
-    if (!(state.dispcnt & NDS_GPU2D_DISPCNT_WINDOW_ENABLE_MASK)) return true;
-    const uint8_t* const win = state.win;
-    // Outside always has at least one reachable pixel: DS rectangular windows
-    // cannot cover the entire 256x192 display.
-    if (!nds_gpu2d_window_mask_supports_hd(win[10])) return false;
-    if ((state.dispcnt & 0x2000u) &&
-        nds_gpu2d_window_rect_reachable(win[1], win[0], win[5], win[4]) &&
-        !nds_gpu2d_window_mask_supports_hd(win[8]))
-        return false;
-    if ((state.dispcnt & 0x4000u) &&
-        nds_gpu2d_window_rect_reachable(win[3], win[2], win[7], win[6]) &&
-        !nds_gpu2d_window_mask_supports_hd(win[9]))
-        return false;
-    // OBJ-window coverage is data-dependent. Treat its enabled region as
-    // reachable so no unobserved sprite/OAM update can invalidate HD output.
-    return !(state.dispcnt & 0x8000u) ||
-           nds_gpu2d_window_mask_supports_hd(win[11]);
+constexpr uint32_t nds_gpu2d_hd_window_metadata(uint8_t mask) {
+    // Bit 6 is free between the BLDCNT target and effects-enable bit. The
+    // presenter must not reinsert 3D in pixels where a DS window hides BG0.
+    return ((mask & 0x01u) ? 0u : 0x40u) |
+           ((mask & 0x20u) ? 0x80u : 0u);
 }

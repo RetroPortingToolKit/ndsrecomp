@@ -140,6 +140,24 @@ void test_ssaa() {
     std::fill(objects.begin(),objects.end(),0u);
     glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,192,GL_RGBA_INTEGER,GL_UNSIGNED_BYTE,objects.data());
     glUniform1ui(10,1);ensure(draw(0)==draw(8),"native source must remain unchanged");
+    // Exercise the actual HD-layer path too: a window can hide BG0/3D
+    // without downgrading the complete frame to native resolution.
+    std::vector<uint32_t> layers(192*4);
+    for(int y=0;y<192;++y){layers[y*4]=0x003F00u;layers[y*4+1]=32u|128u|(4u<<16)|(5u<<24);}
+    GLuint hdInputs[]={texture(4,GL_RGBA32UI,GL_UNSIGNED_INT,1,layers.data()),
+        texture(5,GL_RGBA32UI,GL_UNSIGNED_INT,1,layers.data())};
+    glUniform1ui(10,4);glUniform1ui(11,1);glUniform1ui(12,1);
+    const uint32_t resolved=draw(8);
+    ensure((resolved&255u)>=127u&&((resolved>>16)&255u)>=127u&&((resolved>>8)&255u)==0u,
+        "HD layers must resolve actual high-resolution subpixels");
+    for(int y=0;y<192;++y)layers[y*4+1]|=64u;
+    glActiveTexture(GL_TEXTURE4);glBindTexture(GL_TEXTURE_2D,hdInputs[0]);
+    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,192,GL_RGBA_INTEGER,GL_UNSIGNED_INT,layers.data());
+    ensure((draw(8)&0xFFFFFFu)==0x00FF00u,"HD window must hide 3D at every subpixel");
+    for(int y=0;y<192;++y)layers[y*4+1]=16u|128u; // opaque foreground HUD
+    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,192,GL_RGBA_INTEGER,GL_UNSIGNED_INT,layers.data());
+    ensure((draw(8)&0xFFFFFFu)==0x00FF00u,"HD SSAA must preserve foreground HUD");
+    glDeleteTextures(2,hdInputs);
     glDeleteVertexArrays(1,&vao);glDeleteFramebuffers(1,&fbo);glDeleteTextures(1,&output);
     glDeleteTextures(3,inputs);glDeleteTextures(1,&hires);glDeleteProgram(program);
     glDeleteShader(vertex);glDeleteShader(fragment);

@@ -25,4 +25,11 @@ choices, persistence, bounds and providing an HD source when enabling AA.
 Built-game screenshots must use `presented_framebuffer` and HD-consumption
 counters; the native framebuffer alone cannot demonstrate higher resolution.
 
+The initial quality preview exposed two existing presentation gaps: window
+masks that hide BG0 disabled HD for the entire adaptive frame, and native
+aspect skipped HD layer preparation. HD metadata now carries per-pixel BG0
+visibility, and native aspect also prepares the layer stack while retaining
+the original native framebuffer for fallback. Both fixes preserve DS window
+masking and keep guest-visible captures on their original surfaces.
+
 Tracking: `beads-yjp.101`, with prior internal-resolution work `beads-yjp.21`.
