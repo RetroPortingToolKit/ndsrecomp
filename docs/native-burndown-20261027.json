@@ -1,7 +1,6 @@
 {
   "owner_issue": "beads-yjp.100",
   "campaign": "beads-2wy8.1",
-  "evidence_root": "G:\\Temp\\Codex\\ndsrecomp\\native-services-20261026\\followup",
   "items": [
     {
       "id": "N01",
@@ -116,18 +115,27 @@
     {
       "id": "N11",
       "title": "Final combined candidate owner handoff",
-      "status": "building_final_bundle",
-      "evidence": [],
-      "decision": null
+      "status": "owner_accepted",
+      "evidence": [
+        "final-identity.json",
+        "nas-final-results/result.json",
+        "final-samples.csv",
+        "final-owner-preservation.json",
+        "owner-final-mph/observations.json",
+        "owner-final-mkds/observations.json"
+      ],
+      "decision": "Final selected source e39fa48, pinned title66af5f0/38f0c63, focused ISA/CPU availability gates pass, portable adapter compiles without SDK, fresh own-build boot/basicvisual/restore pass. Final600VB matched NAS pair MPH+11.41percent throughput/-3.55percentCPU versus first accepted native9, observed +28.93MiB private memory with extra ARM7; MKDS+4.56percent throughput/-0.89percentCPU versus first accepted native9+7, conservatively neutral/inconclusive given small variable prior effects. Both final owner windows normal/audio real, private saves verified, MPH prepared Gorea paused via actual Start input. Owner says both look good; final optimization package accepted. Separate MKDS adaptive shell/kart culling request tracked in beads-q4q.14."
     },
     {
       "id": "N12",
       "title": "Owner-approved merge and pinned releases",
-      "status": "pending",
+      "status": "in_progress",
       "evidence": [],
-      "decision": null
+      "decision": "Owner good received; integrate accepted optimizations and additional MKDS adaptive-culling correctness fix, then cut verified pinned builds."
     }
   ],
+  "initial_budget": "one diagnostic per game plus one600-frame MPH ARM7 matchedpair; subsequent pairs only for viable affected packages",
+  "approval": "Owner final verdict received: both look good. Existing handoff acceptance is complete. Separate MKDS adaptive culling fix requested.",
   "selected_packages": {
     "mph": [
       "native-arm9-v2-timing2",
@@ -140,6 +148,5 @@
       "native-arm7-v1-timing2",
       "precise-code-writes-v2"
     ]
-  },
-  "budget": "one diagnostic per game plus one600-frame MPH ARM7 matchedpair; subsequent pairs only for viable affected packages"
+  }
 }

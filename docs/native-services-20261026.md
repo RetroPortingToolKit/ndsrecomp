@@ -122,8 +122,8 @@ its exact builds; it does not approve unreviewed follow-up changes.
 | N08 | RAM and device handoffs | Native reads already cover ordinary aligned RAM. Quantify callbacks and remaining host transitions; preserve odd/unaligned reads, exact I/O width and single completion. | Evaluated: v1 loses MPH; v2 neutral MPH/slower MKDS. Helper not retained. |
 | N09 | Graphics/capture/presentation | Reuse existing NativeGL, capture views and window composition. Attribute remaining readback, software capture and synchronization cost before changing architecture. | Evaluated/deferred: existing native render/capture paths retained; no new qualified replacement. |
 | N10 | Scheduling and CPU publication | Identify repeated context/deadline/IRQ work on the new paths. Prior deadline cache and larger-window probes are already negative evidence; no unchanged reruns. | Evaluated: reuse prior negative deadline evidence; reduce exits via N02/N04/N08. |
-| N11 | Final selected bundle and owner handoff | Record package per title, focused checks, bounded matched performance, exact source/binary/settings, native-save protection and normal-window/audio owner builds. | Building selected combined candidates; final owner verdict pending. |
-| N12 | Owner-approved merge and pinned releases | After owner says the final N11 builds are good: refresh/freeze remote heads, merge accepted branches to main, rebuild/package titles pinned to merged engine, deliver one verified current archive per title. | Waiting for final owner verdict |
+| N11 | Final selected bundle and owner handoff | Record package per title, focused checks, bounded matched performance, exact source/binary/settings, native-save protection and normal-window/audio owner builds. | Qualified and accepted: owner says both look good. MKDS adaptive culling is a separate requested follow-up. |
+| N12 | Owner-approved merge and pinned releases | After owner says the final N11 builds are good: refresh/freeze remote heads, merge accepted branches to main, rebuild/package titles pinned to merged engine, deliver one verified current archive per title. | Owner-approved; pinned release preparation in progress with additional MKDS visibility fix. |
 
 An evaluation ends with a retained positive/neutral implementation, a measured
 rejection, or a documented lack of useful cost/usable contract with supporting
@@ -142,8 +142,9 @@ Current detailed dispositions, contract gaps and private evidence paths are in
 `native-burndown-20261027.json` and central `beads-yjp.100`. Small mixed results
 remain neutral/inconclusive. A deferred row means the stated candidate was
 evaluated without establishing a useful complete replacement; it is not a
-claim that no future optimization exists. Final combined owner acceptance,
-merging and pinned releases remain pending.
+claim that no future optimization exists. The owner accepted both final
+optimization candidates. Merging and pinned releases are in preparation, with
+the additional MKDS adaptive-visibility correction tracked as beads-q4q.14.
 
 The final selected Windows package adds native ARM7 and the qualified pure
 status/cache instructions to MPH. MKDS retains native ARM7 with the control
@@ -151,5 +152,10 @@ option explicitly off because of repeatable CPU cost. Both select revised
 physical code-write notifications, measured as neutral/inconclusive. The SDK
 Send32 and DIV-result prototypes supplied no retained gain and were removed
 from production source after preserving their source, tests and raw evidence.
-A final matched pair per title will qualify the selected combination before
-the owner handoff; it is not another route/platform or gameplay matrix.
+The exact selected combination passed the final matched NAS pair per title:
+MPH +11.41% uncapped throughput and -3.55% CPU versus the first accepted
+native-ARM9 candidate, with about 28.93 MiB more private memory; MKDS +4.56%
+throughput and -0.89% CPU versus its accepted ARM9+ARM7 candidate, conservatively
+neutral/inconclusive given the prior variation. Raw samples and identities are
+retained in the linked campaign evidence. These measurements precede the
+separate adaptive-visibility fix and are not attributed to that correction.
