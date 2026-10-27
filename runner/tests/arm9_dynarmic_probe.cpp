@@ -19,6 +19,9 @@
 #include "../src/arm9_native_ir.h"
 #include "../src/arm9_native_watch.h"
 #include "../src/arm9_native_options.h"
+#if defined(NDS_NATIVE_CONTROL)
+#include "../src/native_control.h"
+#endif
 
 namespace {
 #if defined(NDS_ARM7_NATIVE)
@@ -159,6 +162,9 @@ int main() {
     Environment env;
     Dynarmic::A32::UserConfig conf;
     conf.callbacks=&env;conf.arch_version=architecture;
+#if defined(NDS_NATIVE_CONTROL)
+    if(architecture==Dynarmic::A32::ArchVersion::v5TE)conf.coprocessors[15]=std::make_shared<NdsNativeCacheMaintenance>();
+#endif
     conf.code_cache_size=16*1024*1024;conf.check_halt_on_memory_access=true;
     conf.optimizations=Dynarmic::all_safe_optimizations;
     Dynarmic::A32::Jit jit(conf);env.jit=&jit;
@@ -176,6 +182,17 @@ int main() {
                        0xe5812000u,0xe5d12000u,0xe5c12000u,0xe1d120b0u,
                        0xe1c120b0u,0xe8a1000cu,0xe8b1000cu,0xe12fff13u})arm.push_back(word);
     uint64_t cases=0;
+#if defined(NDS_NATIVE_CONTROL)
+    arm.push_back(0xe10f2000u); // MRS CPSR: pure read, including live flags
+    arm.push_back(0xe128f003u); // MSR CPSR_f: no bank, mode or IRQ changes
+    if(architecture==Dynarmic::A32::ArchVersion::v5TE) {
+        for(uint32_t word:{0xee07cf9au,0xee070f3eu,0xee070f36u,0xee072f5au,0x1e07cf9au}) {
+            require(nds_native_stateless_cache_encoding(word),"supported stateless cache encoding");arm.push_back(word);
+        }
+    }
+    for(uint32_t word:{0xee070f90u,0xee070f58u,0xee010f10u,0xee090f10u,0xee170f90u,0xfe07cf9au})
+        require(!nds_native_stateless_cache_encoding(word),"WFI, mapping, reads and ARMv5 coproc2 remain fenced");
+#endif
     const uint32_t edges[]={0,1,0xffffffffu,0x80000000u,0x7fffffffu,0xfffffffeu,31,32};
     for(uint32_t word:arm)for(unsigned sample=0;sample<24;++sample) {
 #if defined(NDS_ARM7_NATIVE)
@@ -394,6 +411,47 @@ int main() {
     require(!nds_arm9_can_defer_generation_check(true,false)&&
         nds_arm9_can_defer_generation_check(false,false),"unhalted native execution retains immediate validation");
     std::puts("GENERATION_BATCH passed: coalesced ARM7 stores, aliases, data-only writes, restore reset, nested DMA and immediate native self modification");
+    {
+        struct Cache {
+            NdsArm9GenerationWatch watches;
+            uint64_t precise_notifications=0,precise_code_hits=0,clears=0;
+            void clear() {++clears;watches.clear();}
+        } a,b;
+        std::array<Cache*,2> caches={&a,&b};
+        uint32_t physical_code=1,physical_data=1;
+        a.watches.add(&physical_code);b.watches.add(&physical_code);
+        const uint32_t* current=nullptr;
+        require(!nds_arm9_notify_precise_write(current,caches),"addressless writes retain ordinary validation");
+        {
+            NdsArm9PreciseStore data(current,&physical_data);
+            ++physical_data;
+            require(nds_arm9_notify_precise_write(current,caches),"precise data store handled");
+            require(!a.clears&&!b.clears&&a.watches.size()==1&&b.watches.size()==1,"unrelated data leaves both code caches intact");
+            {
+                NdsArm9PreciseStore device(current,nullptr);
+                require(!nds_arm9_notify_precise_write(current,caches),"nested I/O/DMA keeps addressless notification");
+            }
+            require(current==&physical_data,"nested device scope restores exact RAM context");
+        }
+        require(!current,"RAM proof cannot leak beyond store");
+        {
+            NdsArm9PreciseStore code(current,&physical_code);
+            ++physical_code;
+            require(nds_arm9_notify_precise_write(current,caches,0),"peer notification skips writing CPU");
+            require(a.clears==0&&b.clears==1&&a.watches.contains(&physical_code),"writer keeps its existing immediate post-store check");
+            require(nds_arm9_notify_precise_write(current,caches),"precise code write handled");
+        }
+        require(a.clears==1&&b.clears==1&&a.precise_code_hits==1&&b.precise_code_hits==1,"physical code alias invalidates writer and peer");
+        require(!a.watches.take_pending()&&!b.watches.take_pending(),"whole-cache clear discards obsolete pending work");
+#if defined(NDS_NATIVE_PRECISE_WRITES)
+        std::array<uint32_t,1025> generations{};
+        a.watches.add(&generations[0]);a.watches.add(&generations[512]);
+        require(a.watches.contains(&generations[0])&&a.watches.contains(&generations[512]),"filter collisions retain all watched physical pages");
+        require(!a.watches.contains(&generations[1024]),"filter collision requires exact pointer membership");
+        a.clear();require(!a.watches.contains(&generations[0]),"cache clear resets physical filter");
+#endif
+        std::puts("PRECISE_NATIVE_STORES passed: writer/peer aliases, unrelated data, addressless fallback and nested DMA scope");
+    }
     // Read-only page-table lowering exercises the actual patched x64 emitter,
     // not a mock memory wrapper. Stores and special ARM9 reads retain callbacks.
     {

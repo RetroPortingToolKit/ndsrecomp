@@ -59,6 +59,8 @@ def main():
                         'NDS_ARM9_EVENT_WINDOWS', 'NDS_PC_PROFILE', 'NDS_PROFILE_EMU',
                         'NDS_PROFILE_DISPATCH', 'NDS_PROFILE_GPU', 'NDS_PROFILE_SCHED'):
                 env.pop(key, None)
+            if a.diagnostic:
+                env.update(NDS_PROFILE_EMU='31',NDS_PROFILE_EMU_BUS='1009')
             command += ['--execution-model', a.model, '--diagnostics', 'off',
                         '--runtime-settings-path', str(a.out/'settings.json'),
                         '--no-coverage-manifest', '--network', 'off', '--wfc', 'off',
@@ -159,12 +161,21 @@ def main():
         # Continue from the equal warm-up, rather than restoring again and
         # discarding the native code cache immediately before timing.
         client.cmd('keys', mask=fixture.RELEASED & ~(1 << fixture.KEY_BITS['l']))
+        if a.diagnostic:
+            client.cmd('arm9_native_census',on=True,reset=True)
+            assert client.cmd('hostprof_status')['running'], 'diagnostic sampler is not running'
         harvest = fixture.Harvest(client, a.out)
         try:
             def observe():
-                return dict(scene=harvest.status(), native=client.cmd('arm9_native'),
+                value=dict(scene=harvest.status(), native=client.cmd('arm9_native'),
                             math=client.cmd('mph_math'), submission=client.cmd('mph_submit'),
                             events=client.cmd('event_counts'), coverage=client.cmd('static_coverage'))
+                if a.diagnostic:
+                    value.update(emu_attrib=client.cmd('emu_attrib'),profile=client.cmd('profile'),
+                                 pc9=client.cmd('pc_hot',cpu=9,kind='exec',top=64),
+                                 pc7=client.cmd('pc_hot',cpu=7,kind='exec',top=64),
+                                 mem_timing=client.cmd('mem_timing_profile'))
+                return value
             before = observe()
             if a.action == 'sample':
                 host.quiet_gate(fixture.process_cpu, (metadata['pid'], os.getpid()), a.out/'quiet-gate.json')
@@ -172,11 +183,17 @@ def main():
             cpu_start, cycles_start, start = fixture.process_cpu(metadata['pid']), host.process_cycles(metadata['pid']), time.perf_counter()
             result = client.cmd('run_vblanks', count=a.frames)
             wall = time.perf_counter() - start
+            if a.diagnostic:
+                sampled=client.cmd('hostprof_dump',path=(a.out/'cpu.hostprof').as_posix(),window_ms=int(wall*1000))
+                dump(a.out/'hostprof-receipt.json',sampled)
+                assert sampled.get('ok'),sampled
             cpu = fixture.process_cpu(metadata['pid']) - cpu_start
             cycles = host.process_cycles(metadata['pid']) - cycles_start
             host_after = host.census(fixture.process_cpu)
             assert result['vblanks'] == a.frames and not result['terminal'], result
             after = observe()
+            if a.diagnostic:
+                client.cmd('arm9_native_census',on=False)
             assert after['scene']['room'] == 92 and after['scene']['health'] > 0, after['scene']
             if a.model == 'performance':
                 assert after['native']['instructions'] > before['native']['instructions'], 'native CPU did not execute'

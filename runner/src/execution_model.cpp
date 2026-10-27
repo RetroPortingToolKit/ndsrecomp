@@ -39,6 +39,9 @@ const char* nds_execution_model_identity() {
 #if defined(NDS_ARM7_NATIVE)
         "-arm7-v1-timing2"+
 #endif
+#if defined(NDS_NATIVE_CONTROL)
+        "-control-v1"+
+#endif
         (nds_native_options().blocks?"-block64":"")+
         (nds_native_options().data?"-data-window":"")+
         (nds_native_options().gx?"-gx-window":"")+

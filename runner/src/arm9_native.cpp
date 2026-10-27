@@ -17,6 +17,9 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #include "arm9_native_ir.h"
 #include "arm9_native_watch.h"
 #include "arm9_native_options.h"
+#if defined(NDS_NATIVE_CONTROL)
+#include "native_control.h"
+#endif
 #include "io.h"
 #include "scheduler.h"
 #include "dynarmic/interface/A32/a32.h"
@@ -49,6 +52,12 @@ bool batched_writes() {
     return enabled;
 }
 bool census_enabled=false;
+#if defined(NDS_NATIVE_PRECISE_WRITES)
+// Emulation-thread-only scope. This covers one ordinary native RAM store,
+// after the normal bus has changed bytes/generations. I/O and nested DMA stay
+// on addressless notification. Physical pointers preserve mapped aliases.
+const uint32_t* precise_generation=nullptr;
+#endif
 class Native final : public Dynarmic::A32::UserCallbacks {
 public:
     const NdsCpu cpu;
@@ -57,9 +66,22 @@ public:
     std::array<uint32_t,64>* extensions=nullptr;
     NdsArm9GenerationWatch watches;
     std::unordered_map<uint64_t,uint64_t> floor_census;
+    std::unordered_map<uint64_t,uint64_t> entry_census,read_census,write_census;
+    uint64_t census_dropped=0;
+    void census(std::unordered_map<uint64_t,uint64_t>& counts,uint64_t key) {
+        if(!census_enabled)return;
+        auto at=counts.find(key);
+        if(at!=counts.end())++at->second;
+        else if(counts.size()<16384)counts.emplace(key,1);
+        else ++census_dropped;
+    }
+    uint64_t access_key(uint32_t address) const {
+        return uint64_t((*registers)[15]|((jit->Cpsr()&CPSR_T_BIT)?1u:0u))<<32|address;
+    }
     uint64_t checks_by_cpu[2]={};
     uint64_t remaining=0,entries=0,instructions=0,floors=0,devices=0,invalidations=0;
     uint64_t write_notifications=0,deferred_notifications=0,write_batches=0;
+    uint64_t precise_notifications=0,precise_code_hits=0;
     uint32_t pending_pc=0;
     bool pending=false,known_write=false,running=false,device_halted=false;
     struct Running {
@@ -105,6 +127,9 @@ public:
     explicit Native(NdsCpu cpu):cpu(cpu) {
         Dynarmic::A32::UserConfig conf;
         conf.callbacks=this;conf.arch_version=cpu==NDS_ARM9?Dynarmic::A32::ArchVersion::v5TE:Dynarmic::A32::ArchVersion::v4T;
+#if defined(NDS_NATIVE_CONTROL)
+        if(cpu==NDS_ARM9)conf.coprocessors[15]=std::make_shared<NdsNativeCacheMaintenance>();
+#endif
         conf.code_cache_size=32*1024*1024;
         // Normal bus callbacks use address/value arguments, current PC and
         // control state. General registers/flags are canonical at Run return.
@@ -146,8 +171,18 @@ public:
         using Op=armv4t::IrOp;
         return (i.op>=Op::LDR&&i.op<=Op::STM)||i.op==Op::SWP||i.op==Op::SWPB;
     }
-    bool floor(const armv4t::Instr& i) {
+    bool floor(const armv4t::Instr& i,bool thumb) {
         using Op=armv4t::IrOp;
+#if defined(NDS_NATIVE_CONTROL)
+        if(!i.is_undefined) {
+            if(i.op==Op::MRS&&!i.psr.spsr&&i.rd<15)return false;
+            if(i.op==Op::MSR&&!i.psr.spsr&&i.psr.mask==8)return false;
+            if(cpu==NDS_ARM7&&i.op==Op::MUL&&!thumb&&!i.set_flags&&i.rd<15)return false;
+            if(cpu==NDS_ARM9&&i.op==Op::MCR&&nds_native_stateless_cache_encoding(i.raw))return false;
+        }
+#else
+        (void)thumb;
+#endif
         // ARM7's destroyed Thumb MUL carry is modeled by the faithful step.
         // Keep ARMv5-only operations there too, including undefined encodings.
         if(cpu==NDS_ARM7&&(i.op==Op::MUL||i.op==Op::CLZ||i.op==Op::BLX_reg||i.op==Op::BLX_imm))return true;
@@ -186,7 +221,10 @@ public:
             }
         }
         if(bytes&&!thumb&&(*bytes&0x0c000000u)==0x0c000000u)native_encoding=false;
-        if(!native_encoding||floor(decode(thumb,pc))||nds_native_service_entry(cpu,pc,thumb)) {
+#if defined(NDS_NATIVE_CONTROL)
+        if(bytes&&!thumb&&cpu==NDS_ARM9&&nds_native_stateless_cache_encoding(*bytes))native_encoding=true;
+#endif
+        if(!native_encoding||floor(decode(thumb,pc),thumb)||nds_native_service_entry(cpu,pc,thumb)) {
             ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;
         }
         return true;
@@ -204,6 +242,7 @@ public:
     }
     void read_boundary(uint32_t a,unsigned width) {
         if(ram(a,width))return;
+        if(census_enabled)census(read_census,access_key(a));
         ++slow_reads;
         if(nds_native_options().data&&nds_native_plain_video(a,width)) {context();++data_coalesced;}
         else device();
@@ -232,16 +271,22 @@ public:
         const bool batch_gx=!ordinary_ram&&nds_native_options().gx&&nds_native_gx_command(a,width);
         const bool batch_data=!ordinary_ram&&nds_native_options().data&&nds_native_plain_video(a,width);
         if(!ordinary_ram) {
+            if(census_enabled)census(write_census,access_key(a));
             ++slow_writes;
             if(batch_gx||batch_data)context();else device();
         } else {g_cpu.R[15]=(*registers)[15];g_cpu.R[14]=(*registers)[14];}
         // Only this inline RAM store is covered by the exact generation test
         // below. I/O may invoke another bus master, whose writes must stay visible.
-        known_write=ordinary_ram;
-        if(width==4)bus_write_u32(a,value);
-        else if(width==2)bus_write_u16(a,uint16_t(value));
-        else bus_write_u8(a,uint8_t(value));
-        known_write=false;
+        {
+#if defined(NDS_NATIVE_PRECISE_WRITES)
+            NdsArm9PreciseStore precise(precise_generation,ordinary_ram?generation:nullptr);
+#endif
+            known_write=ordinary_ram;
+            if(width==4)bus_write_u32(a,value);
+            else if(width==2)bus_write_u16(a,uint16_t(value));
+            else bus_write_u8(a,uint8_t(value));
+            known_write=false;
+        }
         if(batch_data)++data_coalesced;
         if(batch_gx) {
             // The modeled FIFO IS the ordered queue. Submit each command once
@@ -330,6 +375,7 @@ bool nds_arm9_native_run() {
     n.jit->ClearHalt(Dynarmic::HaltReason::UserDefined1|Dynarmic::HaltReason::MemoryAbort);
     n.remaining=std::max<uint64_t>(1,(g_nds_fast_limit-g_runtime_cycles)/cycles_per_instruction);
     n.pending=false;++n.entries;
+    n.census(n.entry_census,(uint64_t(g_cpu.R[15])<<1)|((g_cpu.cpsr&CPSR_T_BIT)?1u:0u));
     if(diagnostic()&&n.entries<=32)std::fprintf(stderr,"[arm9-native] enter %llu pc=%08x cycles=%llu limit=%llu budget=%llu\n",
         static_cast<unsigned long long>(n.entries),g_cpu.R[15],g_runtime_cycles,g_nds_fast_limit,static_cast<unsigned long long>(n.remaining));
     {Native::Running running(n);n.jit->Run();}
@@ -349,12 +395,54 @@ bool nds_arm9_native_run() {
 // A write by either CPU or DMA is visible to BOTH caches. Only the emitting
 // adapter's exact inline store suppresses its notification; its physical watch
 // is checked immediately after that store. The other adapter is inactive.
-void nds_arm9_native_note_write() {for(auto& n:natives)if(n)n->unknown_write();}
+void nds_arm9_native_note_write() {
+#if defined(NDS_NATIVE_PRECISE_WRITES)
+    if(nds_arm9_notify_precise_write(precise_generation,natives,int(g_nds_active)))return;
+#endif
+    for(auto& n:natives)if(n)n->unknown_write();
+}
 void nds_arm9_native_flush_writes() {for(auto& n:natives)if(n)n->flush_writes();}
 void nds_arm9_native_clear() {for(auto& n:natives)if(n)n->clear();}
 void nds_arm9_native_census(bool enabled,bool reset) {
     census_enabled=enabled;
-    if(reset)for(auto& n:natives)if(n)n->floor_census.clear();
+    if(reset)for(auto& n:natives)if(n) {
+        n->floor_census.clear();n->entry_census.clear();n->read_census.clear();n->write_census.clear();n->census_dropped=0;
+    }
+}
+static std::string native_census_json(const Native* n,int cpu) {
+    std::string out;
+    const auto pcs=[&](const char* name,const auto& counts,bool instructions) {
+        out+=std::string(",\"")+name+"\":[";bool comma=false;
+        for(const auto& [key,hits]:counts) {
+            const uint32_t pc=uint32_t(key>>1);const bool thumb=(key&1)!=0;
+            if(comma)out+=",";
+            comma=true;
+            out+="{\"pc\":"+std::to_string(pc)+",\"thumb\":"+std::to_string(thumb)+",\"hits\":"+std::to_string(hits);
+            if(instructions) {
+                uint32_t word=0;const bool valid=bus_debug_copy(cpu,pc&~3u,reinterpret_cast<uint8_t*>(&word),4);
+                out+=",\"bytes_valid\":"+std::string(valid?"true":"false");
+                if(valid) {
+                    const auto i=thumb?armv4t::ThumbDecoder::decode(uint16_t(word>>((pc&2)*8)),pc):armv4t::ArmDecoder::decode(word,pc);
+                    out+=",\"word\":"+std::to_string(word)+",\"op\":"+std::to_string(unsigned(i.op));
+                }
+            }
+            out+="}";
+        }
+        out+="]";
+    };
+    if(!n)return ",\"reference_census\":[],\"entry_census\":[],\"read_census\":[],\"write_census\":[]";
+    pcs("reference_census",n->floor_census,true);pcs("entry_census",n->entry_census,false);
+    for(const auto& pair:{std::pair{"read_census",&n->read_census},std::pair{"write_census",&n->write_census}}) {
+        out+=std::string(",\"")+pair.first+"\":[";bool comma=false;
+        for(const auto& [key,hits]:*pair.second) {
+            if(comma)out+=",";
+            comma=true;
+            out+="{\"pc\":"+std::to_string(uint32_t(key>>32)&~1u)+",\"thumb\":"+std::to_string((key>>32)&1u)+
+                ",\"address\":"+std::to_string(uint32_t(key))+",\"hits\":"+std::to_string(hits)+"}";
+        }
+        out+="]";
+    }
+    return out+",\"census_dropped\":"+std::to_string(n->census_dropped);
 }
 std::string nds_arm9_native_json() {
     const auto& native=natives[NDS_ARM9];
@@ -371,6 +459,11 @@ std::string nds_arm9_native_json() {
         ",\"event_window_rounds\":"+std::to_string(windows)+
         ",\"event_window_fences\":"+std::to_string(fences)+
         ",\"cycles_per_instruction\":"+std::to_string(cycles_per_instruction);
+#if defined(NDS_NATIVE_PRECISE_WRITES)
+    out+=",\"precise_ram_writes\":true";
+#else
+    out+=",\"precise_ram_writes\":false";
+#endif
     if(native)out+=",\"entries\":"+std::to_string(native->entries)+
         ",\"read_callbacks\":"+std::to_string(native->read_callbacks)+
         ",\"arithmetic_cap_splits\":"+std::to_string(native->arithmetic_cap_splits)+
@@ -388,21 +481,11 @@ std::string nds_arm9_native_json() {
         ",\"write_notifications\":"+std::to_string(native->write_notifications)+
         ",\"deferred_notifications\":"+std::to_string(native->deferred_notifications)+
         ",\"write_batches\":"+std::to_string(native->write_batches)+
+        ",\"precise_notifications\":"+std::to_string(native->precise_notifications)+
+        ",\"precise_code_hits\":"+std::to_string(native->precise_code_hits)+
         ",\"write_checks_arm9\":"+std::to_string(native->checks_by_cpu[0])+
         ",\"write_checks_arm7\":"+std::to_string(native->checks_by_cpu[1]);
-    out+=",\"reference_census\":[";
-    bool comma=false;
-    if(native)for(const auto& [key,hits]:native->floor_census) {
-        const auto pc=uint32_t(key>>1);const bool thumb=(key&1)!=0;
-        uint32_t word=0;const bool valid=bus_debug_copy(0,pc&~3u,reinterpret_cast<uint8_t*>(&word),4);
-        const auto instruction=thumb?armv4t::ThumbDecoder::decode(uint16_t(word>>((pc&2)*8)),pc):armv4t::ArmDecoder::decode(word,pc);
-        if(comma)out+=",";
-        comma=true;
-        out+="{\"pc\":"+std::to_string(pc)+",\"thumb\":"+std::to_string(thumb)+
-            ",\"hits\":"+std::to_string(hits)+",\"bytes_valid\":"+(valid?"true":"false")+
-            ",\"word\":"+std::to_string(word)+",\"op\":"+std::to_string(unsigned(instruction.op))+"}";
-    }
-    out+="]";
+    out+=native_census_json(native.get(),9);
     const auto& arm7=natives[NDS_ARM7];
     out+=",\"arm7\":{\"available\":";
 #if defined(NDS_ARM7_NATIVE)
@@ -416,7 +499,7 @@ std::string nds_arm9_native_json() {
         ",\"device_handoffs\":"+std::to_string(arm7->devices)+
         ",\"watched_pages\":"+std::to_string(arm7->watches.size())+
         ",\"unknown_write_checks\":"+std::to_string(arm7->watches.checks);
-    out+="}";
+    out+=native_census_json(arm7.get(),7)+"}";
     return out+"}";
 }
 #endif

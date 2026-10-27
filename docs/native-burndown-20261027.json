@@ -1,0 +1,145 @@
+{
+  "owner_issue": "beads-yjp.100",
+  "campaign": "beads-2wy8.1",
+  "evidence_root": "G:\\Temp\\Codex\\ndsrecomp\\native-services-20261026\\followup",
+  "items": [
+    {
+      "id": "N01",
+      "title": "MPH native ARM7 reuse",
+      "status": "retained",
+      "evidence": [
+        "nas-mph-arm7-results/result.json",
+        "logs/mph-arm7-focused-tests.log",
+        "profiles/mph-arm7-next/inspection.json"
+      ],
+      "decision": "MPH ARM7 reuse: one matched NAS pair CPU6.328125->5.9375s (-6.17284percent),wall5.271864->4.869309s (+8.26718percent throughput). Focused tests/freshboot/basicvisual/currentbuildrestore pass. Included for final bundle owner check."
+    },
+    {
+      "id": "N02",
+      "title": "Native fallbacks",
+      "status": "retained_mph_rejected_mkds",
+      "evidence": [
+        "nas-control-results/result.json",
+        "early-results/nas-control-reverse-results/result.json",
+        "logs/mph-control-clean-tests.log",
+        "logs/mkds-control-clean-tests.log"
+      ],
+      "decision": "MPH CPU -13.72percent and throughput +4.31percent in matched NAS pair. MKDS CPU +2.91percent, reverse +4.64percent despite neutral wall: exclude for MKDS; retain MPH only."
+    },
+    {
+      "id": "N03",
+      "title": "Animation and skinning",
+      "status": "evaluated_deferred",
+      "evidence": [
+        "diagnostic-evaluation.json",
+        "profiles/mph-arm7-next/inspection.json",
+        "profiles/mkds-diagnostic-next/inspection.json"
+      ],
+      "decision": "Existing complete vector/affine services execute in both games; remaining ordinary arithmetic is already CPU-native. Current boundary census identifies SDK/device/control work, but does not identify a complete hot animation/skinning job with a defensible caller/state/alias contract. No additional safe profitable whole-job replacement established; defer broader semantic reverse engineering, do not claim absence of future opportunity."
+    },
+    {
+      "id": "N04",
+      "title": "Model setup and geometry",
+      "status": "evaluated_neutral_not_retained",
+      "evidence": [
+        "logs/sdk-send-original-code.log",
+        "profiles/mkds-send-only/inspection.json",
+        "nas-sdk-send-only-results/result.json"
+      ],
+      "decision": "Send-only matches original initial race scene and passes512 original-code cases/currentbuildrestore/basicvisual. Matched NAS CPU11.9375->11.984375s (+0.39percent),wall8.4376473->8.5473243s (-1.28percent throughput): neutral/inconclusive, no demonstrated gain. No additional useful replacement established; keep existing native CPU/device ingress and leave duplicate service out. Source retained privately for reproduction."
+    },
+    {
+      "id": "N05",
+      "title": "Bulk memory operations",
+      "status": "evaluated_deferred",
+      "evidence": [
+        "diagnostic-evaluation.json"
+      ],
+      "decision": "Observed MKDS Send32 body849695 entries versus fill683/full Send322849; largest bulk handoff is device ingress covered by N04. Long RAM copy bodies have no observed host entries, which is not proof of zero linked execution. No demonstrated large copy/decode cost justifies bypassing normal alias/provenance/code-write/yield handling. Ordinary memory instructions already native; no additional raw memcpy/decompress replacement retained."
+    },
+    {
+      "id": "N06",
+      "title": "ARM7 sound-driver updates",
+      "status": "evaluated_deferred",
+      "evidence": [
+        "diagnostic-evaluation.json",
+        "profiles/mkds-diagnostic-next/inspection.json"
+      ],
+      "decision": "Both ARM7 instruction streams execute natively; MKDS remaining stops include MUL/status and BIOS SWI1B/1C. Full driver replacement would need voice/IPC/exception/banked-state/timing contracts not established by these PCs. Hardware SPU mixing already host-native (~0.14/0.20ms per diagnostic frame MPH/MKDS); exact tier3 ARM7 about0.15/0.17ms. Native ARM7 gains retained; no guessed BIOS/audio completion HLE."
+    },
+    {
+      "id": "N07",
+      "title": "Code validation and invalidation",
+      "status": "retained_neutral",
+      "evidence": [
+        "nas-precise-results/result.json",
+        "nas-precise-v2-results/result.json",
+        "logs/precise-v2-focused-tests.log",
+        "precise-mph-state-comparison.json",
+        "precise-mkds-state-comparison.json"
+      ],
+      "decision": "First version rejected. Revised exact physical page notifications skip writer duplication and use negative-only bloom filter. Comparison counts62.49m->21.35m MPH,119.94m->36.07m MKDS; small mixed timing is neutral/inconclusive, no proven speedup. Focused alias/DMA/SMC checks pass; guest sections match except verified unused FIFO padding. No further tuning."
+    },
+    {
+      "id": "N08",
+      "title": "RAM/device handoffs",
+      "status": "evaluated_not_retained",
+      "evidence": [
+        "logs/sdk-math-original-code.log",
+        "logs/sdk-math-v2-original-code.log",
+        "early-results/nas-sdk-math-mph-actual-results/result.json",
+        "nas-sdk-math-v2-results/result.json"
+      ],
+      "decision": "V1 slower MPH CPU+29.43percent/throughput-3.24percent. Deadline-bounded v2 passes1024 original-code cases and actualgame sanity/restore with nonzero coalescence. MPH pair CPU6.125->6.140625s (+0.26percent),wall4.6077683->4.5885284s (+0.42percent throughput): neutral. MKDS CPU12.359375->12.625s (+2.15percent),wall8.3467335->8.7410417s (-4.51percent throughput): slower. No retained division helper; stop after two versions, preserve real bus/math model. Experimental services and deadline getter removed from production source; private full source/tests/raw evidence retained."
+    },
+    {
+      "id": "N09",
+      "title": "Graphics capture/presentation",
+      "status": "evaluated_deferred",
+      "evidence": [
+        "diagnostic-evaluation.json",
+        "../framework/docs/performance-burndown.md",
+        "../framework/docs/performance-results-20261022.md"
+      ],
+      "decision": "Existing NativeGL/capture-view reuse for MPH and Compute/window composition for MKDS remain. Current diagnostic exact3D frame bucket is3.21ms MPH and0.50ms MKDS; busy local host prevents a production ceiling claim, and disabled finer GL counters are zeros, not evidence of no cost. Prior measured MKDS readback0.218ms/frame and submit0.265ms/frame are historical diagnostics. No new demonstrated avoidable capture copy or missing native renderer found; replacing integer guest-capture pixels with presentation output lacks equivalence proof. Defer new renderer architecture."
+    },
+    {
+      "id": "N10",
+      "title": "Scheduling and CPU publication",
+      "status": "evaluated_deferred",
+      "evidence": [
+        "diagnostic-evaluation.json",
+        "../framework/docs/performance-burndown.md"
+      ],
+      "decision": "Current estimated scheduler other0.72/0.78ms/frame, context publication0.018/0.038ms, next-event0.098/0.112ms (busy diagnostic attribution only). Exact deadline-cache prototype already lost2.21percent CPU; do not rerun unchanged. N07 reduces repeated validation, N02/N08/N04 reduce avoidable CPU exits. Further larger windows or parallel CPUs require a new shared RAM/IPC/DMA/event contract and demonstrated incremental cost; no additional scheduler change retained."
+    },
+    {
+      "id": "N11",
+      "title": "Final combined candidate owner handoff",
+      "status": "building_final_bundle",
+      "evidence": [],
+      "decision": null
+    },
+    {
+      "id": "N12",
+      "title": "Owner-approved merge and pinned releases",
+      "status": "pending",
+      "evidence": [],
+      "decision": null
+    }
+  ],
+  "selected_packages": {
+    "mph": [
+      "native-arm9-v2-timing2",
+      "native-arm7-v1-timing2",
+      "native-control-v1",
+      "precise-code-writes-v2"
+    ],
+    "mkds": [
+      "native-arm9-v2-timing2",
+      "native-arm7-v1-timing2",
+      "precise-code-writes-v2"
+    ]
+  },
+  "budget": "one diagnostic per game plus one600-frame MPH ARM7 matchedpair; subsequent pairs only for viable affected packages"
+}

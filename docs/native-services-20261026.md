@@ -100,3 +100,56 @@ configurations. No release archive, merge or publication is part of this work.
 Private task data, frozen executables and cleanup inventory are under
 `G:/Temp/Codex/ndsrecomp/native-services-20261026` on each host. Nothing is
 published, merged, promoted by default or placed in a delivery folder.
+
+## Remaining-native burndown (owner goal)
+
+Tracking: `beads-yjp.100`, related to optimization campaign `beads-2wy8.1`.
+The owner requested evaluation of every item below, a final combined build of
+both games for a fresh final visual/play verdict, then merging the accepted
+engine/title branches to main and cutting title releases pinned to the merged
+engine after that verdict. The first-pass acceptance above remains valid for
+its exact builds; it does not approve unreviewed follow-up changes.
+
+| ID | Work item | Current evidence and evaluation needed | Status |
+| --- | --- | --- | --- |
+| N01 | Native ARM7 reuse in MPH | MKDS implementation is accepted; MPH still explicitly disables it. Build the same adapter for MPH, check focused contracts/fresh boot, and take one matched pair. | Retained: additional MPH ARM7 pair CPU -6.17%, throughput +8.27%. |
+| N02 | Remaining ARM9/ARM7 native fallbacks | Accepted MKDS ARM7 sample has about 551k reference stops per 600 frames. Attribute PCs/operations and evaluate cheaper complete handling of common stops. | Retain MPH (-13.72% CPU); exclude MKDS (+2.91/+4.64% CPU). |
+| N03 | Animation and skinning services | Identify complete hot jobs after native CPU changes. Existing small matrix kernels are already native; replacing cold wrappers is insufficient. | Evaluated/deferred: no complete additional hot job/contract established. |
+| N04 | Model setup and geometry services | Review residual model/material/packet handlers. Existing submission/cache/projection work and the old thin SBC-loop result are baseline, not new gains. | Evaluated: neutral/inconclusive Send32 pair; helper not retained. |
+| N05 | Bulk memory operations | Find hot copy/fill/decode operations; preserve overlap, alias/provenance, executable writes, device effects and yield boundaries. | Evaluated: hot bulk device ingress is N04; no additional RAM replacement justified. |
+| N06 | ARM7 sound-driver update services | Identify real guest jobs and their sound/IPC/WiFi contract. Hardware SPU mixing already runs natively; do not replace commands with guessed replies. | Evaluated/deferred: native ARM7 retained; full voice/IPC/BIOS contract unresolved. |
+| N07 | Code validation and invalidation | Accepted MKDS sample still has about 120m physical generation comparisons per 600 frames. MPH's lazy-entry experiment did not win; evaluate different structure/per-title behavior rather than blindly enabling it. | V1 rejected; v2 correctness passes, timing neutral/inconclusive. |
+| N08 | RAM and device handoffs | Native reads already cover ordinary aligned RAM. Quantify callbacks and remaining host transitions; preserve odd/unaligned reads, exact I/O width and single completion. | Evaluated: v1 loses MPH; v2 neutral MPH/slower MKDS. Helper not retained. |
+| N09 | Graphics/capture/presentation | Reuse existing NativeGL, capture views and window composition. Attribute remaining readback, software capture and synchronization cost before changing architecture. | Evaluated/deferred: existing native render/capture paths retained; no new qualified replacement. |
+| N10 | Scheduling and CPU publication | Identify repeated context/deadline/IRQ work on the new paths. Prior deadline cache and larger-window probes are already negative evidence; no unchanged reruns. | Evaluated: reuse prior negative deadline evidence; reduce exits via N02/N04/N08. |
+| N11 | Final selected bundle and owner handoff | Record package per title, focused checks, bounded matched performance, exact source/binary/settings, native-save protection and normal-window/audio owner builds. | Building selected combined candidates; final owner verdict pending. |
+| N12 | Owner-approved merge and pinned releases | After owner says the final N11 builds are good: refresh/freeze remote heads, merge accepted branches to main, rebuild/package titles pinned to merged engine, deliver one verified current archive per title. | Waiting for final owner verdict |
+
+An evaluation ends with a retained positive/neutral implementation, a measured
+rejection, or a documented lack of useful cost/usable contract with supporting
+evidence. A row is not complete merely because its name was listed. Reassess
+after two unsuccessful implementation experiments. Per-game regressions cannot
+be offset by other titles' gains; identical baseline defects are tracked apart.
+
+Initial fresh collection budget: one bounded diagnostic sample per title and
+one 600-frame MPH ARM7 A/B pair. Reuse exact-build checkpoints and prior useful
+profiles. Additional comparisons are one pair per viable affected package,
+only repeated for concrete noise/ambiguity. No route/platform/cold-warm matrix
+or repeated complete campaign/multiplayer check. Diagnostic runs are explicitly
+ineligible as performance claims.
+
+Current detailed dispositions, contract gaps and private evidence paths are in
+`native-burndown-20261027.json` and central `beads-yjp.100`. Small mixed results
+remain neutral/inconclusive. A deferred row means the stated candidate was
+evaluated without establishing a useful complete replacement; it is not a
+claim that no future optimization exists. Final combined owner acceptance,
+merging and pinned releases remain pending.
+
+The final selected Windows package adds native ARM7 and the qualified pure
+status/cache instructions to MPH. MKDS retains native ARM7 with the control
+option explicitly off because of repeatable CPU cost. Both select revised
+physical code-write notifications, measured as neutral/inconclusive. The SDK
+Send32 and DIV-result prototypes supplied no retained gain and were removed
+from production source after preserving their source, tests and raw evidence.
+A final matched pair per title will qualify the selected combination before
+the owner handoff; it is not another route/platform or gameplay matrix.
