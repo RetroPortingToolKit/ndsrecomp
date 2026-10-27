@@ -22,7 +22,9 @@ inline constexpr const char* NativeHiResFS = R"(#version 140
 uniform sampler2D ColorInput;
 out vec4 oColor;
 void main() {
-    uvec4 bytes = uvec4(round(clamp(texelFetch(ColorInput,ivec2(gl_FragCoord.xy),0).bgra,0.0,1.0)*255.0));
+    // The shared presenter expects the HD texture in the opposite RGB order
+    // from the native integer surface, matching ComputeRenderer::FinalFB.
+    uvec4 bytes = uvec4(round(clamp(texelFetch(ColorInput,ivec2(gl_FragCoord.xy),0).rgba,0.0,1.0)*255.0));
     oColor = vec4(vec3(bytes.rgb >> uvec3(2u))/63.0, float(bytes.a >> 3u)/31.0);
 }
 )";

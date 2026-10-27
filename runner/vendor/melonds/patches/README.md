@@ -31,6 +31,16 @@ immutable capture snapshot when bytes are unchanged. The versions are derived
 host history, are not modeled GPU state, and do not enter the serializer.
 Capture reset/load invalidates the snapshot independently of these versions.
 
+## 0024-native-gl-hd-color-transport.patch
+
+2026-10-27: the project-owned normalized HD output shader now preserves
+the compute backend's BGR transport. The shared presenter reverses these
+channels to recover the native integer RGB6 order; applying the native
+packing swizzle here as well inverted red and blue only in HD presentation.
+The native readback and guest capture paths are unchanged. An actual-GL
+test runs both production output shaders on an asymmetric color fixture and
+checks their decoded RGB6 agreement.
+
 ## 0001-wifi-ap-identity.patch
 
 `src/WifiAP.cpp`: changes the hardcoded AP identity from melonDS's default

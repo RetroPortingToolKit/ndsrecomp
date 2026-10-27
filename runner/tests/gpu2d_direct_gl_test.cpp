@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 #include "glad/glad.h"
 #include "melonds_compute/PresentShaders.h"
+#include "GPU3D_OpenGL_Output.h"
 #include <stdexcept>
 
 namespace {
@@ -163,6 +164,49 @@ void test_ssaa() {
     glDeleteShader(vertex);glDeleteShader(fragment);
     std::puts("Actual GPU SSAA integrates HD samples, preserves HUD and leaves native source unchanged");
 }
+
+void test_native_gl_hd_transport() {
+    // Run both production output shaders on the same asymmetric colour.
+    // HD's BGR transport must decode to the native integer RGB6 contract.
+    GLuint vertex=shader(GL_VERTEX_SHADER,nds_compute_present::kPresentVertex);
+    GLuint source,attr,output,fbo,vao;
+    glGenTextures(1,&source);glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,source);
+    const uint32_t color=0xFFCD7931u;
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,&color);
+    glGenTextures(1,&attr);glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,attr);
+    const uint32_t zero=0;
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,&zero);
+    glGenTextures(1,&output);glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+    glGenVertexArrays(1,&vao);glBindVertexArray(vao);glViewport(0,0,1,1);
+    uint32_t results[2]{};
+    for(int pass=0;pass<2;++pass) {
+        GLuint fragment=shader(GL_FRAGMENT_SHADER,pass?melonDS::NativeHiResFS:melonDS::NativePackFS);
+        GLuint program=glCreateProgram();glAttachShader(program,vertex);glAttachShader(program,fragment);glLinkProgram(program);
+        GLint linked=0;glGetProgramiv(program,GL_LINK_STATUS,&linked);ensure(linked,"native GL output shader link");
+        glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,output);
+        glTexImage2D(GL_TEXTURE_2D,0,pass?GL_RGBA8:GL_RGBA8UI,1,1,0,pass?GL_RGBA:GL_RGBA_INTEGER,GL_UNSIGNED_BYTE,nullptr);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,output,0);
+        ensure(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"native output framebuffer");
+        glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,source);
+        glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,attr);
+        glUseProgram(program);glUniform1i(glGetUniformLocation(program,"ColorInput"),0);
+        if(!pass){glUniform1i(glGetUniformLocation(program,"AttrInput"),1);glUniform1i(glGetUniformLocation(program,"SourceScale"),1);}
+        glDrawArrays(GL_TRIANGLES,0,3);
+        glReadPixels(0,0,1,1,pass?GL_RGBA:GL_RGBA_INTEGER,GL_UNSIGNED_BYTE,&results[pass]);
+        ensure(glGetError()==GL_NO_ERROR,"native GL output shader execution");
+        glDeleteProgram(program);glDeleteShader(fragment);
+    }
+    for(unsigned channel=0;channel<3;++channel) {
+        const unsigned native=(results[0]>>(channel*8))&63u;
+        const unsigned hd=((results[1]>>((2-channel)*8))&255u)*63u;
+        ensure(native==(hd+127u)/255u,"HD presenter BGR decode must match native RGB6 colours");
+    }
+    glDeleteVertexArrays(1,&vao);glDeleteFramebuffers(1,&fbo);
+    glDeleteTextures(1,&source);glDeleteTextures(1,&attr);glDeleteTextures(1,&output);glDeleteShader(vertex);
+    std::puts("Native GL HD transport matches native RGB6 without red/blue inversion");
+}
 }
 int main() {
     if(!SDL_Init(SDL_INIT_VIDEO))return 77;
@@ -174,6 +218,6 @@ int main() {
         if(context)SDL_GL_DestroyContext(context);if(window)SDL_DestroyWindow(window);SDL_Quit();return 77;
     }
     std::printf("GL %s / %s\n",glGetString(GL_VERSION),glGetString(GL_RENDERER));
-    int result=0;try{test_shader(true);test_shader(false);test_ssaa();}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());result=1;}
+    int result=0;try{test_shader(true);test_shader(false);test_ssaa();test_native_gl_hd_transport();}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());result=1;}
     SDL_GL_DestroyContext(context);SDL_DestroyWindow(window);SDL_Quit();return result;
 }
