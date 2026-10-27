@@ -41,6 +41,9 @@ layout(location = 11) uniform uint hdMode;
 layout(location = 12) uniform uint order3d;
 layout(binding = 6) uniform usampler2D texRaster;
 layout(location = 13) uniform uint rasterMode;
+// Additional samples come from the real higher-resolution 3D raster. Keep
+// the native 2D coordinate fixed across samples so HUD text remains crisp.
+layout(location = 14) uniform uint resolveSamples;
 uint renderXPos, bldcnt, eva, evb, evy, masterBright, priority3d;
 uvec3 backdrop;
 in vec2 uv;
@@ -164,11 +167,9 @@ uvec3 composeLayers(Layer top, Layer below)
     return top.color;
 }
 
-void main()
+vec4 composeAt(vec2 sampleUV, ivec2 dst)
 {
     ivec2 size = textureSize(texFallback, 0);
-    ivec2 dst = ivec2(clamp(uv * vec2(size), vec2(0.0),
-                            vec2(size) - vec2(1.0)));
     renderXPos = frameRenderXPos;
     backdrop = frameBackdrop;
     bldcnt = frameBldcnt; eva = frameEva; evb = frameEvb; evy = frameEvy;
@@ -184,7 +185,7 @@ void main()
     if (hdMode != 0u) {
         int s = int(max(scale3d, 1u));
         ivec2 hiSize = size * s;
-        ivec2 dstHi = ivec2(clamp(uv * vec2(hiSize), vec2(0.0),
+        ivec2 dstHi = ivec2(clamp(sampleUV * vec2(hiSize), vec2(0.0),
                                   vec2(hiSize) - vec2(1.0)));
         // RenderXPos is a native-pixel scroll and the hi-res 3D surface is
         // unscrolled, so it is applied here scaled to that raster.
@@ -227,13 +228,11 @@ void main()
         uint bf = min(masterBright & 31u, 16u);
         if (bm == 1u) c = brighten(c, bf, 0u);
         else if (bm == 2u) c = darken(c, bf, 15u);
-        outColor = vec4(vec3(c) / 63.0, 1.0);
-        return;
+        return vec4(vec3(c) / 63.0, 1.0);
     }
     if (directMode == 0u) {
         uvec4 pixel = texelFetch(texFallback, dst, 0);
-        outColor = vec4(pixel) / 255.0;
-        return;
+        return vec4(pixel) / 255.0;
     }
 
     // The 3D layer is sampled on its own grid: identical to the 2D grid at
@@ -242,7 +241,7 @@ void main()
     // does -- only the 3D engine gains sample density here.
     int scale = int(max(scale3d, 1u));
     ivec2 hiSize = size * scale;
-    ivec2 dstHi = ivec2(clamp(uv * vec2(hiSize), vec2(0.0),
+    ivec2 dstHi = ivec2(clamp(sampleUV * vec2(hiSize), vec2(0.0),
                               vec2(hiSize) - vec2(1.0)));
     int sourceX = dstHi.x;
     bool outside = false;
@@ -305,7 +304,38 @@ void main()
         color = brighten(color, brightFactor, 0u);
     else if (brightMode == 2u)
         color = darken(color, brightFactor, 15u);
-    outColor = vec4(vec3(color) / 63.0, 1.0);
+    return vec4(vec3(color) / 63.0, 1.0);
+}
+
+void main()
+{
+    ivec2 size = textureSize(texFallback, 0);
+    ivec2 dst = ivec2(clamp(uv * vec2(size), vec2(0.0),
+                            vec2(size) - vec2(1.0)));
+    if (resolveSamples < 2u || scale3d <= 1u ||
+        (hdMode == 0u && directMode == 0u)) {
+        outColor = composeAt(uv, dst);
+        return;
+    }
+    // Integrate within this output pixel's footprint, independently of window
+    // size. At large windows neighbouring taps can select the same source
+    // texel; this never invents detail or changes the guest/capture surface.
+    vec2 dx = dFdx(uv), dy = dFdy(uv);
+    vec4 sum = vec4(0.0);
+    if (resolveSamples == 2u) {
+        sum = composeAt(uv - 0.25 * (dx + dy), dst) +
+              composeAt(uv + 0.25 * (dx + dy), dst);
+        outColor = sum * 0.5;
+    } else {
+        int columns = resolveSamples >= 8u ? 4 : 2;
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < columns; ++x) {
+                vec2 offset = vec2((float(x) + 0.5) / float(columns) - 0.5,
+                                   (float(y) + 0.5) / 2.0 - 0.5);
+                sum += composeAt(uv + offset.x * dx + offset.y * dy, dst);
+            }
+        outColor = sum / float(columns * 2);
+    }
 }
 )GLSL";
 

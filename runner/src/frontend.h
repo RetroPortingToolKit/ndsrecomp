@@ -253,12 +253,14 @@ struct NdsFrontendOptions {
     // contain menu/cinematic projection edge cases without disabling adaptive
     // wide gameplay.
     uint32_t adaptive_center_max_polygons = 0;
-    // Host presentation quality. These are deliberately post-composition:
-    // they never alter guest-visible DS rasterization or framebuffer bytes.
+    // Host presentation quality; neither changes guest-visible framebuffer
+    // bytes. Accelerated HD anti-aliasing resolves real 3D subpixel samples
+    // while holding the native 2D/HUD coordinate fixed. Other presentation
+    // paths retain the reconstruction filter.
     uint8_t supersampling = 1;  // 1x..4x presentation reconstruction
-    uint8_t antialiasing = 0;   // 0/2/4/8 sample-quality preset
-    // Internal-resolution (HD) 3D scaling, 1x..4x. Unlike the two knobs
-    // above this one is pre-composition: it raises the 3D engine's sample
+    uint8_t antialiasing = 0;   // 0/2/4/8 samples per output pixel
+    // Internal-resolution (HD) 3D scaling, 1x..4x. This is pre-composition:
+    // it raises the 3D engine's sample
     // density. It still alters no guest-visible bytes, because every
     // faithful consumer reads the native surface the same render pass
     // point-samples out of the scaled raster. Requires the accelerated

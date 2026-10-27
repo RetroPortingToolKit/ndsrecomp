@@ -407,7 +407,8 @@ bool nds_compute_host_read_presented(std::vector<uint32_t>& pixels,
 bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
                                   unsigned short fallback_width,
                                   const NdsGpu2dDirectFrame* direct_frame,
-                                  NdsComputePresentTicks* ticks)
+                                  NdsComputePresentTicks* ticks,
+                                  unsigned antialiasing)
 {
     if (!g_active || !g_visible || !g_present_program || !ticks)
         return false;
@@ -494,6 +495,7 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
     glUniform1ui(1, static_cast<GLuint>(width));
     glUniform1ui(11, hd_active ? 1u : 0u);
     glUniform1ui(13, direct_frame && direct_frame->raster_params && !hd_active ? 1u : 0u);
+    glUniform1ui(14, antialiasing);
     if (hd_active) {
         glActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_2D, hires_texture);

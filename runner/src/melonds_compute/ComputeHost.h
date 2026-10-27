@@ -27,7 +27,8 @@ bool nds_compute_host_read_presented(std::vector<uint32_t>& pixels,
 bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
                                   unsigned short fallback_width,
                                   const NdsGpu2dDirectFrame* direct_frame,
-                                  NdsComputePresentTicks* ticks);
+                                  NdsComputePresentTicks* ticks,
+                                  unsigned antialiasing = 0);
 void nds_compute_host_stop();
 bool nds_compute_host_active();
 

@@ -97,6 +97,54 @@ void test_shader(bool scanline) {
     glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);
     std::printf("Actual GPU %s RGB6 blending matches native compositor for86016 pixels; one-byte UNORM8 rounding=%u\n",scanline?"window/raster":"legacy direct",transport_rounding);
 }
+void test_ssaa() {
+    GLuint vertex=shader(GL_VERTEX_SHADER,nds_compute_present::kPresentVertex);
+    GLuint fragment=shader(GL_FRAGMENT_SHADER,nds_compute_present::kPresentFragment);
+    GLuint program=glCreateProgram();glAttachShader(program,vertex);glAttachShader(program,fragment);glLinkProgram(program);
+    GLint linked=0;glGetProgramiv(program,GL_LINK_STATUS,&linked);ensure(linked,"SSAA presenter link");
+    std::vector<uint32_t> native(192,0x1F00003Fu),objects(192,0),hi(4*768);
+    for(int y=0;y<768;++y)for(int x=0;x<4;++x)
+        hi[y*4+x]=x<2?0xFFFF0000u:0xFF0000FFu; // BGR transport: red / blue.
+    GLuint inputs[]={texture(0,GL_RGBA8UI,GL_UNSIGNED_BYTE,1,native.data()),
+        texture(1,GL_RGBA8UI,GL_UNSIGNED_BYTE,1,objects.data()),
+        texture(2,GL_RGBA8UI,GL_UNSIGNED_BYTE,1,native.data())};
+    GLuint hires;glGenTextures(1,&hires);glActiveTexture(GL_TEXTURE3);glBindTexture(GL_TEXTURE_2D,hires);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,4,768,0,GL_RGBA,GL_UNSIGNED_BYTE,hi.data());
+    GLuint output,fbo,vao;glGenTextures(1,&output);glBindTexture(GL_TEXTURE_2D,output);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+    glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,output,0);
+    ensure(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"SSAA output framebuffer");
+    glActiveTexture(GL_TEXTURE3);glBindTexture(GL_TEXTURE_2D,hires);
+    glUseProgram(program);glUniform1ui(0,1);glUniform1ui(1,1);glUniform1ui(2,0);
+    glUniform3ui(3,0,0,0);glUniform1ui(4,0);glUniform1ui(8,0);glUniform1ui(9,2);
+    glUniform1ui(10,4);glUniform1ui(11,0);glUniform1ui(13,0);
+    glViewport(0,0,1,1);glGenVertexArrays(1,&vao);glBindVertexArray(vao);
+    const auto draw=[&](unsigned samples) {
+        glUniform1ui(14,samples);glDrawArrays(GL_TRIANGLES,0,3);
+        uint32_t pixel=0;glReadPixels(0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,&pixel);
+        ensure(glGetError()==GL_NO_ERROR,"SSAA draw/readback");return pixel;
+    };
+    ensure((draw(0)&0xFFFFFFu)==0xFF0000u,"point source must select blue half");
+    for(unsigned samples:{2u,4u,8u}) {
+        const uint32_t p=draw(samples);const int r=p&255u,g=(p>>8)&255u,b=(p>>16)&255u;
+        ensure(r>=127&&r<=128&&g==0&&b>=127&&b<=128,"SSAA must integrate real red/blue subpixels");
+    }
+    // The same native HUD pixel is resolved at every sample, never blurred
+    // with its neighbours or altered by the 3D source's channel order.
+    std::fill(objects.begin(),objects.end(),nds_gpu2d_pack_direct_pixel(0x003F00u,0,17,true,63));
+    glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,inputs[1]);
+    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,192,GL_RGBA_INTEGER,GL_UNSIGNED_BYTE,objects.data());
+    ensure((draw(8)&0xFFFFFFu)==0x00FF00u,"SSAA must preserve opaque native HUD");
+    std::fill(objects.begin(),objects.end(),0u);
+    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,192,GL_RGBA_INTEGER,GL_UNSIGNED_BYTE,objects.data());
+    glUniform1ui(10,1);ensure(draw(0)==draw(8),"native source must remain unchanged");
+    glDeleteVertexArrays(1,&vao);glDeleteFramebuffers(1,&fbo);glDeleteTextures(1,&output);
+    glDeleteTextures(3,inputs);glDeleteTextures(1,&hires);glDeleteProgram(program);
+    glDeleteShader(vertex);glDeleteShader(fragment);
+    std::puts("Actual GPU SSAA integrates HD samples, preserves HUD and leaves native source unchanged");
+}
 }
 int main() {
     if(!SDL_Init(SDL_INIT_VIDEO))return 77;
@@ -108,6 +156,6 @@ int main() {
         if(context)SDL_GL_DestroyContext(context);if(window)SDL_DestroyWindow(window);SDL_Quit();return 77;
     }
     std::printf("GL %s / %s\n",glGetString(GL_VERSION),glGetString(GL_RENDERER));
-    int result=0;try{test_shader(true);test_shader(false);}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());result=1;}
+    int result=0;try{test_shader(true);test_shader(false);test_ssaa();}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());result=1;}
     SDL_GL_DestroyContext(context);SDL_DestroyWindow(window);SDL_Quit();return result;
 }

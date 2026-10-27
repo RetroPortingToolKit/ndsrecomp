@@ -1378,6 +1378,7 @@ struct FrontendPresentation {
     int canvas_width = kScreenWidth;
     int configured_sample_scale = 1;
     int sample_scale = 1;
+    uint8_t antialiasing = 0;
 };
 
 // docs/frame_interpolation.md, MVP blend mode. Holds the previous DS frame's
@@ -1750,7 +1751,8 @@ bool create_presentation(const NdsFrontendOptions& options,
         nds_gpu3d_renderer_prefers_compute() &&
         direct_enabled;
 #endif
-    const int aa_scale = options.antialiasing >= 8 ? 4 :
+    presentation.antialiasing = options.antialiasing;
+    const int aa_scale = presentation.gl_top ? 1 : options.antialiasing >= 8 ? 4 :
                          options.antialiasing >= 4 ? 3 :
                          options.antialiasing >= 2 ? 2 : 1;
     presentation.configured_sample_scale =
@@ -1986,7 +1988,8 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
         gl_ticks.diagnostic = latency;
         if (!nds_compute_host_present_top(
                 top_pixels, static_cast<uint16_t>(top_width),
-                direct ? &direct_frame : nullptr, &gl_ticks)) {
+                direct ? &direct_frame : nullptr, &gl_ticks,
+                presentation.antialiasing)) {
             std::fprintf(stderr, "[gpu3d] direct top presentation failed\n");
             ticks.ok = false;
             return ticks;
