@@ -9,13 +9,13 @@ from engine `88ca461`. MPH reference source is `3f5e195`; MKDS reference is
 
 | Candidate | Evidence / current decision |
 | --- | --- |
-| Reuse the retained native ARM9 executor for MPH | Material win: 20–29% lower process CPU and 22–39% higher uncapped throughput in two matched NAS pairs. Exact AMHE0 selection; HLE entries/continuations remain ordinary guarded dispatch barriers. Focused checks, fresh boot, basic visual and current-build restore pass. Owner play feedback pending. |
+| Reuse the retained native ARM9 executor for MPH | Material win: 20–29% lower process CPU and 22–39% higher uncapped throughput in two matched NAS pairs. Exact AMHE0 selection; HLE entries/continuations remain ordinary guarded dispatch barriers. Focused checks, fresh boot, basic visual and current-build restore pass. Owner confirmed it looks and plays right. |
 | Remove redundant native-code validation at inactive CPU boundaries | Not retained for MPH: native baseline 4.77415s wall/5.953125s CPU, validation candidate 5.22496s/6.453125s in one pair. Fewer checks did not produce a demonstrated win. MKDS qualification remains open; do not generalize a one-title outcome. |
 | Native RAM access | Existing MKDS direct reads are reused in MPH. Halfwords, unaligned accesses and all writes retain their existing callbacks. Further changes require new attribution and exact ARM alignment/device-width checks. |
 | Larger geometry/model services | Submission batches, decoded-command reuse, native affine kernels and projection reuse already exist. The earlier MKDS SBC-loop profile mostly charged its handlers; replacing the loop alone has little useful ceiling. Reassess residual work after CPU changes. |
 | Graphics duplication | Native GL and immutable capture reuse already ship for MPH; MKDS's window-aware compositor already exists. Do not count them again as new work. Preserve authoritative guest capture. |
 | ARM7 sound/IPC HLE | A complete sound/WFC service contract is needed. Reviewed touch-only/unknown-command-echo donors do not implement it. Not justified by an entry count or a screenshot. |
-| Native ARM7 execution | Experimental explicit build option `NDS_ARM7_NATIVE`. Reuse the pinned translator with ARMv4T architecture, a separate per-CPU cache, shared physical invalidation, modeled bus/device operations and portable exception/privileged steps. Timing profile is explicitly identified as two ARM7 cycles per instruction. MKDS matched Pinball sample: 13.6% lower process CPU and 13.7% greater uncapped throughput. Focused ISA/memory/invalidation checks, fresh race construction, basic visual and same-build restore of both CPU register files pass. Owner play feedback pending. Not yet qualified for MPH. |
+| Native ARM7 execution | Explicit build option `NDS_ARM7_NATIVE`, qualified for Windows MKDS. Reuse the pinned translator with ARMv4T architecture, a separate per-CPU cache, shared physical invalidation, modeled bus/device operations and portable exception/privileged steps. Timing profile is explicitly identified as two ARM7 cycles per instruction. MKDS matched Pinball sample: 13.6% lower process CPU and 13.7% greater uncapped throughput. Focused ISA/memory/invalidation checks, fresh race construction, basic visual and same-build restore of both CPU register files pass. Owner confirmed it looks and plays right. Not yet qualified for MPH. |
 | Bigger generated regions / deadline caches / speculative graphics handoffs | Prior neutral or losing experiments remain rejected; no unchanged reruns. |
 
 ## Correctness repair discovered during reuse
@@ -78,6 +78,24 @@ HLE activity and restored current-build state. Other processes consume0.546 and
 0.274 cores respectively; this is one bounded sample, not an all-courses or
 every-frame guarantee. Existing full-race evidence is reused, not rerun. No
 campaign, multiplayer or live Wiimmfi qualification is added by this result.
+
+Both owner playchecks passed. An additional explicitly requested NAS check ran
+MKDS at normal pacing through the real WASAPI endpoint with stream output muted.
+It delivered1,853 race frames in30.97seconds (59.83FPS), zero audio underruns,
+11.64ms mean active work (about30% headroom), p9514.00–14.25ms and
+p9916.50–16.75ms. Sixteen frames exceeded the work budget. Other jobs averaged
+2.30cores; this is a real-time diagnosis under observed load, not a controlled
+A/B speedup claim. The initial quiet preflight collected no game sample and is
+retained separately. The old v0.0.7 record also contained a clean Pinball run;
+this is not claimed as the first ever. Raw receipts: `nas-mkds-realtime-actual-load`.
+
+The isolated title build paths select the qualified Windows packages by default:
+MPH native ARM9 with existing HLE, MKDS native ARM9+ARM7 with existing HLE.
+MPH explicitly leaves native ARM7 off. `-PerformanceBackend OFF` retains portable
+Faithful builds without the optional SDK; MKDS's `-Arm7Native OFF` keeps native
+ARM9 only, and the existing math/submission LLE build choices remain. MPH's
+launcher child profile and environment restoration pass in native and portable
+configurations. No release archive, merge or publication is part of this work.
 
 Private task data, frozen executables and cleanup inventory are under
 `G:/Temp/Codex/ndsrecomp/native-services-20261026` on each host. Nothing is
