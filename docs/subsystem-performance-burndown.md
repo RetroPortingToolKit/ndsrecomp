@@ -102,13 +102,47 @@ open; all task-owned game servers are stopped. Per-game package identities and
 raw receipts are in `loading-hitches/resident-preparation-evidence.json` under
 the retained task root. No item is checked off from these partial results.
 
-The next related source lead is unified physical-write publication. Both the
-slow bus and inline generated-code path already know the changed physical page,
-but discard that identity at `runtime_note_code_write()`. This forces the native
-consumer to scan watched generations for non-native writers. Evaluate the whole
-publication path across CPU, DMA and bulk writers, retaining exact aliases,
-provenance and immediate executable-write handling; do not repeat the earlier
-native-store-only notification experiment unchanged.
+Unified physical-write publication is implemented in candidate `24c9643`, owning
+issue `beads-yjp.102`. Both the slow bus and generated inline stores now carry
+their exact physical generation-cell ranges through one publication path to
+native caches and active generated-code guards. This covers CPU, BIOS, DMA and
+bulk writers using those bus paths, while retaining conservative unknown-write
+and backing-replacement handling. The native-store-only ambient scope is removed.
+This advances the publication slices of 08/09/10/13 with the loading work.
+
+The full MKDS generated-bank rebuild is complete at source `1579454`; reused
+older archives would not establish coverage of the changed inline header.
+The bounded built-game check matches the reference MainRAM, ITCM and ARM7 WRAM
+after 180 VBlanks, then reaches the expected race scene with both native CPUs
+running and zero unknown-write scans. Basic track, kart, HUD and map images look
+plausible. The first visual harness stopped before the race intro finished; a
+focused follow-up resolved that harness limitation. These are correctness
+results, not performance measurements.
+
+Focused coverage also includes 100,957 passing real bus/dispatch checks for
+unrelated data, same-page data, code aliases, nested caller guards and legacy
+unknown writes. MPH's native-control profile passes all six targeted tests;
+its HLE mocks now implement the new publication ABI while preserving their
+existing assertions. The portable no-SDK adapter compiles. MPH's full generated-
+bank rebuild and bounded built-game check also pass, including current-build
+save/load, both native CPUs and zero unknown-write scans. Basic images look
+plausible. Matched per-game measurements, owner review and delivery remain
+pending. No performance win or completed
+memory subsystem is claimed. Exact binary/bank identities and raw receipts are
+in `loading-hitches/physical-publication-evidence.json` under the retained task
+root; implementation details are in `docs/physical-write-publication.md` in the
+retained framework worktree.
+
+The related narrow-read boundary is now implemented under `beads-yjp.103`.
+A single private MKDS loading census found that halfwords account for 845,515
+of 910,818 ordinary-RAM read callbacks. The new lowering keeps their true width
+and routes eligible signed/unsigned halfwords and signed bytes through the same
+physical mapping, aliases and remap lifetime as existing direct reads. DS odd-
+address behavior and exact device widths remain intact. Both actual ARM9/ARM7
+probes pass, including 576 added ARM/Thumb differential cases per architecture.
+The game builds and matched timing still need qualification; counts alone are
+not a performance win. This advances 04/08 within the same candidate package.
+See `docs/native-narrow-reads.md` in the retained framework worktree.
 
 Future work should similarly group complete boundaries where useful: BIOS and
 bulk services (02/03/10), execution/memory/scheduling/device ownership

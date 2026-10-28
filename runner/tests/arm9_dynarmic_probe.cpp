@@ -105,16 +105,16 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
         return permitted(a,1,false)?ram.read8(a):0;
     }
     uint16_t MemoryRead16(uint32_t a) override {
+        if(NdsArm9ReadKind(jit->ExtRegs()[0])==NdsArm9ReadKind::HalfSigned&&(a&1u)) {
+            const uint32_t value=MemoryRead8(a);
+            return uint16_t((value^0x80u)-0x80u);
+        }
         ++ram_reads;
         if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"half callback PC");++device_reads;++device_read16;jit->HaltExecution();return uint16_t(device_value);}
         return permitted(a,2,false)?ram.read16(a&~1u):0;
     }
     uint32_t MemoryRead32(uint32_t a) override {
         ++ram_reads;
-        const auto kind=NdsArm9ReadKind(jit->ExtRegs()[0]);
-        if(kind==NdsArm9ReadKind::HalfUnsigned||kind==NdsArm9ReadKind::HalfSigned)
-            return nds_arm9_read_halfword(a,kind==NdsArm9ReadKind::HalfSigned,
-                [this](uint32_t x){return MemoryRead8(x);},[this](uint32_t x){return MemoryRead16(x);});
         if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"read callback PC survives optimization");++device_reads;jit->HaltExecution();return device_value;}
         return permitted(a,4,false)?std::rotr(ram.read32(a&~3u),int((a&3)*8)):0;
     }
@@ -507,7 +507,8 @@ int main() {
         std::puts("PHYSICAL_PUBLICATION passed: native writer/peer, AOT/BIOS/DMA, bulk ranges, aliases and addressless fallback");
     }
     // Read-only page-table lowering exercises the actual patched x64 emitter,
-    // not a mock memory wrapper. Stores and special ARM9 reads retain callbacks.
+    // not a mock memory wrapper. Stores and alignment-sensitive reads retain
+    // callbacks; mapped width-correct reads share the same physical page map.
     {
         Environment direct;direct.bounded_memory=true;
         using Pages=std::array<uint8_t*,Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
@@ -521,7 +522,7 @@ int main() {
         config.page_table_read_filter=[&](uint64_t d) {
             const Dynarmic::A32::LocationDescriptor loc{Dynarmic::IR::LocationDescriptor{d}};
             const auto i=armv4t::ArmDecoder::decode(direct.ram.read32(loc.PC()),loc.PC());
-            return i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM;
+            return i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM||i.op==armv4t::IrOp::LDRH||i.op==armv4t::IrOp::LDRSH||i.op==armv4t::IrOp::LDRSB;
         };
         Dynarmic::A32::Jit fast(config);direct.jit=&fast;
         direct.ram.write32(0x4000,0x89abcdefu);direct.ram.write32(code_pc+4,0xeafffffeu);
@@ -543,8 +544,45 @@ int main() {
         (*pages)[4]=direct.ram.data.data()+0x4000;
         run(0xe5812000u,0x4000);require(direct.ram_writes==1&&direct.ram.read32(0x4000)==0x11223344,"read-only table never bypasses write callback");
         direct.ram.write32(0x4000,0x89abcdefu);
-        run(0xe1d120b0u,0x4001);require(fast.Regs()[2]==0xef0000cdu&&direct.ram_reads,"odd unsigned halfword stays on special callback");
+        run(0xe1d120b0u,0x4001);require(fast.Regs()[2]==0xef0000cdu&&!direct.ram_reads,"odd unsigned halfword rotates a direct aligned read");
         run(0xe1d120f0u,0x4001);require(fast.Regs()[2]==0xffffffcdu&&direct.ram_reads,"odd signed halfword keeps byte semantics");
+        run(0xe1d120b0u,0x4000);require(fast.Regs()[2]==0xcdefu&&!direct.ram_reads,"aligned unsigned half direct");
+        run(0xe1d120f0u,0x4000);require(fast.Regs()[2]==0xffffcdefu&&!direct.ram_reads,"aligned signed half direct");
+        run(0xe1d120d0u,0x4001);require(fast.Regs()[2]==0xffffffcdu&&!direct.ram_reads,"signed byte direct");
+        run(0xe1d120b0u,0x2000);require(fast.Regs()[2]==0xcdefu&&!direct.ram_reads,"half physical alias");
+        unsigned half_direct_cases=0;
+        for(bool thumb:{false,true}) {
+            const unsigned count=thumb?4:unsigned(std::size(half_arm));
+            for(unsigned instruction=0;instruction<count;++instruction)for(unsigned sample=0;sample<32;++sample) {
+                const uint32_t word=thumb?uint32_t(std::array<uint16_t,4>{0x880au,0x5a0au,0x5e0au,0x560au}[instruction]):half_arm[instruction];
+                armv4t::CPUState original{};
+                for(auto& r:original.R)r=random();
+                original.R[0]=0;original.R[1]=0x4000+(sample&3);original.R[3]=0;original.R[15]=code_pc;
+                original.cpsr.mode=0x1f;original.cpsr.t=thumb;original.thumb=thumb;
+                original.cpsr.n=sample&1;original.cpsr.z=(sample>>1)&1;original.cpsr.c=(sample>>2)&1;original.cpsr.v=(sample>>3)&1;
+                for(unsigned at=0x3ff0;at<0x4010;++at)direct.ram.data[at]=uint8_t(random());
+                direct.ram.write32(code_pc,word);direct.ram.write32(code_pc+4,0xeafffffeu);
+                Ram reference=direct.ram;auto expected=original;
+                const auto decoded=thumb?armv4t::ThumbDecoder::decode(uint16_t(word),code_pc):armv4t::ArmDecoder::decode(word,code_pc);
+                require(armv4t::Interpreter::step(expected,reference,decoded)==armv4t::Interpreter::Result::Normal,"direct halfword reference");
+                fast.InvalidateCacheRange(code_pc,8);set_state(fast,original);direct.remaining=1;fast.Run();
+                if(!equal(expected,fast)||reference.data!=direct.ram.data) {
+                    std::fprintf(stderr,"Direct halfword mismatch %08x T=%u sample=%u expected=%08x actual=%08x\n",word,unsigned(thumb),sample,expected.R[2],fast.Regs()[2]);return 1;
+                }
+                ++half_direct_cases;
+            }
+        }
+        direct.complete_io=true;direct.device_value=0x89ab;
+        for(bool sign:{false,true})for(bool odd:{false,true}) {
+            direct.device_reads=direct.device_read8=direct.device_read16=0;
+            run(sign?0xe1d120f0u:0xe1d120b0u,0x04000000u+unsigned(odd));
+            const uint32_t expected=sign?(odd?0xffffff89u:0xffff89abu):(odd?0xab000089u:0x89abu);
+            require(fast.Regs()[2]==expected&&fast.Regs()[15]==code_pc+4,"mapped narrow MMIO value and PC");
+            require(direct.device_reads==1&&direct.device_read8==unsigned(sign&&odd)&&direct.device_read16==unsigned(!(sign&&odd)),"mapped narrow MMIO once/width");
+        }
+        direct.complete_io=false;
+        std::printf("NARROW_DIRECT_DIFFERENTIAL passed: %u ARM/Thumb cases plus direct/alias/MMIO checks\n",half_direct_cases);
+        direct.ram.write32(0x4000,0x89abcdefu);
         (*pages)[4]=nullptr;
         run(0xe5912000u,0x4000);require(fast.Regs()[2]==0x89abcdefu&&direct.ram_reads==1,"unmapped table entry falls back");
         direct.longer_blocks=true;

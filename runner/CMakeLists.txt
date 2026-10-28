@@ -448,7 +448,7 @@ if(NDS_MKDS_PERFORMANCE AND NOT NDS_ARM9_DYNARMIC_ENABLED)
 endif()
 
 if(NDS_ARM9_DYNARMIC_ENABLED)
-    string(APPEND NDS_BUILD_VARIANT "-arm9-native-v2-timing2-dynarmica41c380")
+    string(APPEND NDS_BUILD_VARIANT "-arm9-native-v2-timing2-dynarmica41c380-narrow-reads-v1")
     if(NDS_NATIVE_PRECISE_WRITES)
         string(APPEND NDS_BUILD_VARIANT "-physical-write-publication-v1")
     endif()

@@ -147,10 +147,11 @@ public:
     bool direct_read_instruction(uint64_t descriptor) {
         const Dynarmic::A32::LocationDescriptor location{Dynarmic::IR::LocationDescriptor{descriptor}};
         const auto i=decode(location.TFlag(),location.PC());
-        // The existing halfword lowering intentionally uses a wide callback.
-        // Keep it there, including odd signed-byte device semantics. Unaligned
-        // word/block reads also fall back, via the SDK's alignment guard.
-        const bool ordinary=i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM;
+        // Width-correct reads share one mapping and alias lifetime. Unsigned
+        // halfwords align/rotate in IR; odd signed halves and unaligned words
+        // retain callbacks through the SDK's alignment guard.
+        const bool ordinary=i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM||
+            i.op==armv4t::IrOp::LDRH||i.op==armv4t::IrOp::LDRSH||i.op==armv4t::IrOp::LDRSB;
         if(ordinary)++read_sites;
         return ordinary;
     }
@@ -294,16 +295,18 @@ public:
         else device();
     }
     uint8_t MemoryRead8(uint32_t a) override {++read_callbacks;read_boundary(a,1);return bus_read_u8(a);}
-    uint16_t MemoryRead16(uint32_t a) override {++read_callbacks;read_boundary(a&~1u,2);return bus_read_u16(a&~1u);}
+    uint16_t MemoryRead16(uint32_t a) override {
+        ++read_callbacks;
+        if(NdsArm9ReadKind((*extensions)[0])==NdsArm9ReadKind::HalfSigned&&(a&1u)) {
+            read_boundary(a,1);
+            const uint32_t value=bus_read_u8(a);
+            return uint16_t((value^0x80u)-0x80u);
+        }
+        read_boundary(a&~1u,2);return bus_read_u16(a&~1u);
+    }
     uint32_t MemoryRead32(uint32_t a) override {
         ++read_callbacks;
         const auto kind=NdsArm9ReadKind((*extensions)[0]);
-        if(kind==NdsArm9ReadKind::HalfUnsigned||kind==NdsArm9ReadKind::HalfSigned) {
-            const bool sign=kind==NdsArm9ReadKind::HalfSigned;
-            const bool byte=sign&&(a&1u);
-            read_boundary(byte?a:(a&~1u),byte?1:2);
-            return nds_arm9_read_halfword(a,sign,[](uint32_t x){return bus_read_u8(x);},[](uint32_t x){return bus_read_u16(x);});
-        }
         read_boundary(a&~3u,4);
         if(kind==NdsArm9ReadKind::BlockWord)return bus_read_u32(a&~3u);
         return std::rotr(bus_read_u32(a&~3u),int((a&3)*8));
@@ -617,6 +620,7 @@ std::string nds_arm9_native_json() {
         ",\"compile_census_enabled\":"+std::string(compilation_census()?"true":"false")+
         ",\"batched_writes\":"+std::string(batched_writes()?"true":"false")+
         ",\"direct_reads\":"+(nds_native_options().reads?"true":"false")+
+        ",\"narrow_reads\":true"+
         ",\"long_blocks\":"+(nds_native_options().blocks?"true":"false")+
         ",\"data_handoffs\":"+(nds_native_options().data?"true":"false")+
         ",\"gx_batch\":"+(nds_native_options().gx?"true":"false")+
