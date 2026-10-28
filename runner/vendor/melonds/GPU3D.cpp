@@ -324,6 +324,25 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
 
     CmdFIFO.DoSavestate(file);
     CmdPIPE.DoSavestate(file);
+    if (file->Error) return;
+    if (!file->Saving)
+    {
+        // Stored commands have only eight meaningful bits. Reject malformed
+        // values before execution can use them as command-table indices.
+        for (u32 i = 0; i < 256; ++i)
+            if (CmdFIFO.Peek(i).Command > 0xFF)
+            {
+                file->Error = true;
+                return;
+            }
+        for (u32 i = 0; i < 4; ++i)
+            if (CmdPIPE.Peek(i).Command > 0xFF)
+            {
+                file->Error = true;
+                return;
+            }
+    }
+
 
     file->Var32(&NumCommands);
     file->Var32(&CurCommand);

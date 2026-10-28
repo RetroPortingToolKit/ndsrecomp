@@ -150,10 +150,13 @@ private:
         struct
         {
             u32 Param;
-            u8 Command;
+            // FIFO snapshots copy the full eight-byte entry. A byte command
+            // left three host-padding bytes undefined at every producer.
+            u32 Command;
         };
 
     } CmdFIFOEntry;
+    static_assert(sizeof(CmdFIFOEntry) == sizeof(u64));
 
     void UpdateClipMatrix() noexcept;
     void ResetRenderingState() noexcept;
