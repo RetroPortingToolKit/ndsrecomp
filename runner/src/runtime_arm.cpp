@@ -598,7 +598,9 @@ const CachedStaticLookup* lookup_static_cached_impl(const CpuCtx& c,
     }
 #endif
 #if defined(NDS_MKDS_HLE)
-    if (hit) {
+    // A complete service proof also owns its resumable guest PCs. They need
+    // not coincide with an older generated bank's split points.
+    if (hit || mkds_hle::is_entry(g_nds_active, pc, thumb)) {
         const auto replacement = mkds_hle::resolve(g_nds_active, pc, thumb);
         // A rejected operation must also observe its full range. Otherwise a
         // later repair on a page outside the native prefix leaves a cached
@@ -624,7 +626,7 @@ const CachedStaticLookup* lookup_static_cached_impl(const CpuCtx& c,
         }
     }
 #endif
-    return hit ? &slot : nullptr;
+    return slot.fn ? &slot : nullptr;
 }
 
 // Single dispatch chokepoint. Both consumers -- runtime_dispatch (native

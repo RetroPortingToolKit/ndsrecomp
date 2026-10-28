@@ -398,6 +398,10 @@ bool nds_arm9_native_run() {
 #endif
     if(!nds_performance_execution()||g_insn_hook_armed||
        g_runtime_deep_trace||(g_cpu.cpsr&0x200u)||runtime_deferred_cycles()!=0||!supported_host())return false;
+    // A service whose full proof declined and has no generated entry must
+    // retire its first instruction in the existing reference floor. Otherwise
+    // native translation would stop at this same barrier and redispatch forever.
+    if(nds_native_service_entry(g_nds_active,g_cpu.R[15],(g_cpu.cpsr&CPSR_T_BIT)!=0))return false;
     uint32_t off=0;const auto* w=nds_busf_classify(g_cpu.R[15],&off);
     if(!w||!w->data||!bus_range_has_write_provenance(g_cpu.R[15],4))return false;
     const uint32_t before_poll=g_cpu.R[15];

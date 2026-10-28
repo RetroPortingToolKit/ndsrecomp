@@ -1796,7 +1796,11 @@ int main(int argc, char** argv) {
 #endif
 #if defined(NDS_MKDS_HLE)
     if (mkds_hle::initialize(rom_sha1.c_str())) {
+#if defined(NDS_MKDS_STREAM_HLE)
+        std::fprintf(stderr, "[hle] MKDS native vector math and streaming LZ jobs selected at build time\n");
+#else
         std::fprintf(stderr, "[hle] MKDS native vector math selected at build time\n");
+#endif
     }
 #endif
     if (!cli_savestate_dir.empty() && !rom_sha1.empty()) {

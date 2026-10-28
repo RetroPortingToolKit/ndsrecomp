@@ -2,6 +2,9 @@
 #include "hle_vector_math.h"
 #include "state.h"
 #include "sha1.h"
+#if defined(NDS_MKDS_STREAM_HLE)
+#include "hle_mkds_stream.h"
+#endif
 
 #include <array>
 #include <cstring>
@@ -27,6 +30,10 @@ Binding bindings[] = {
 bool initialize(const char* rom_sha1) {
     counts = {};
     counts.group_mask = 1; // vector/affine kernels; no hardware math or submit replacement
+#if defined(NDS_MKDS_STREAM_HLE)
+    counts.group_mask |= 8;
+    mkds_stream::reset();
+#endif
     counts.rom_supported = rom_sha1 &&
         std::strcmp(rom_sha1, "691e00d9a5dd80b04f80cc7559503e8b06848785") == 0;
     return counts.rom_supported;
@@ -35,12 +42,18 @@ Statistics statistics() { return counts; }
 
 bool is_entry(NdsCpu cpu, uint32_t pc, bool thumb) {
     if (!counts.rom_supported || cpu != NDS_ARM9 || thumb) return false;
+#if defined(NDS_MKDS_STREAM_HLE)
+    if (mkds_stream::is_entry(pc)) return true;
+#endif
     for (const auto& binding : bindings) if (binding.function && binding.entry == pc) return true;
     return false;
 }
 
 Replacement resolve(NdsCpu cpu, uint32_t pc, bool thumb) {
     if (!counts.rom_supported || cpu != NDS_ARM9 || thumb) return {};
+#if defined(NDS_MKDS_STREAM_HLE)
+    if (mkds_stream::is_entry(pc)) return mkds_stream::resolve(pc);
+#endif
     for (auto& b : bindings) {
         if (!b.function || pc != b.entry) continue;
         std::array<uint8_t, 544> live{};

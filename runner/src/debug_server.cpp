@@ -41,6 +41,9 @@
 #endif
 #if defined(NDS_MKDS_HLE)
 #include "hle_mkds.h"
+#if defined(NDS_MKDS_STREAM_HLE)
+#include "hle_mkds_stream.h"
+#endif
 #endif
 #include "host_profile.h"
 #include "dispatch_stats.h"
@@ -1465,7 +1468,14 @@ std::string handle(const std::string& line) {
             ",\"scale_add\":" + std::to_string(c.scale_add) +
             ",\"cross_product\":" + std::to_string(c.cross_product) +
             ",\"transform_translate\":" + std::to_string(c.transform_translate) +
-            ",\"matrix_concat\":" + std::to_string(c.matrix_concat) + "}";
+            ",\"matrix_concat\":" + std::to_string(c.matrix_concat) +
+#if defined(NDS_MKDS_STREAM_HLE)
+            ",\"stream_calls\":" + std::to_string(mkds_stream::statistics().calls) +
+            ",\"stream_batches\":" + std::to_string(mkds_stream::statistics().batches) +
+            ",\"stream_bytes\":" + std::to_string(mkds_stream::statistics().bytes) +
+            ",\"stream_declines\":" + std::to_string(mkds_stream::statistics().declines) +
+#endif
+            "}";
 #else
         return "{\"implementation\":\"LLE\"}";
 #endif
