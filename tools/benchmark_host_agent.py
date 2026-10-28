@@ -178,6 +178,20 @@ def assess(sample, requested, claims=()):
         sample=sample, active_claims=len(claims), policy=FORMAT)
 
 
+def write_record(path, data):
+    # A killed writer must not leave a truncated accounting record that blocks
+    # every other client. Only the completed JSON replaces the current record.
+    temporary=path.with_suffix('.tmp')
+    try:
+        with temporary.open('w') as file:
+            json.dump(data,file)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary,path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def active_claims(root):
     claims = []
     for path in root.glob('lease-*.json'):
@@ -231,7 +245,7 @@ def main():
             lock = FileLock(record.with_suffix('.lock')).acquire()
             data = dict(format=FORMAT, owner=a.owner, pid=os.getpid(), token=token,
                 requested=requested, phase='pending', created=time.time(), host=sample['host'])
-            record.write_text(json.dumps(data))
+            write_record(record,data)
         emit(dict(**decision, token=token, phase='pending'))
         for line in sys.stdin:
             request = json.loads(line)
@@ -240,7 +254,7 @@ def main():
             if request['cmd'] == 'running':
                 with FileLock(root/'ledger.lock'):
                     data['phase'] = 'running'
-                    record.write_text(json.dumps(data))
+                    write_record(record,data)
                 emit(dict(ok=True, phase='running'))
             elif request['cmd'] == 'probe':
                 emit(probe(a.storage))

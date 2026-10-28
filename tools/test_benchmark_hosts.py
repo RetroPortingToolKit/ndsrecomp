@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import eligible_measurement_host as eligibility
 
-from benchmark_host_agent import assess, FileLock, active_claims, FORMAT
+from benchmark_host_agent import assess, FileLock, active_claims, FORMAT, write_record
 from benchmark_hosts import Pool, transport, NoCapacity
 
 
@@ -83,6 +83,18 @@ class CapacityTests(unittest.TestCase):
             with self.assertRaises(NoCapacity) as error:
                 pool.reserve(self.request,'unit')
         self.assertEqual(len(error.exception.receipts),3)
+
+    def test_failed_record_commit_preserves_previous_accounting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'lease.json'
+            path.write_text(json.dumps(dict(phase='pending')))
+            with patch('benchmark_host_agent.os.replace',side_effect=OSError('injected commit failure')):
+                with self.assertRaises(OSError):
+                    write_record(path,dict(phase='running'))
+            self.assertEqual(json.loads(path.read_text()),dict(phase='pending'))
+            self.assertFalse(path.with_suffix('.tmp').exists())
+            write_record(path,dict(phase='running'))
+            self.assertEqual(json.loads(path.read_text()),dict(phase='running'))
 
     def test_deck_aliases_share_one_ledger(self):
         deck=next(h for h in Pool().hosts if h['id']=='steamdeck')

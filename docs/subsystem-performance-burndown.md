@@ -88,7 +88,7 @@ as a complete service or ownership pipeline before we accumulate helper-level
 patches. A deferred evaluation leaves the opportunity open; it does not
 establish that the subsystem is exhausted.
 
-## Coupled work in progress
+## Engineering record (earlier milestones and current decisions)
 
 The owner requested coupling related work on 2026-10-27. The current loading
 package combines item 01 with native-code preparation/lifecycle work in 07,
@@ -507,7 +507,7 @@ Shared validation infrastructure (`beads-2wy8.2`) is complete: local PC, SERVER
 and Steam Deck form a compatible-target pool with capacity reservations.
 CPU/GPU/RAM/storage headroom replaces game/build-name vetoes. Pending claims
 reserve capacity; running claims are not double charged, and total declared
-budgets still fit the host. Both Deck SSH aliases share a ledger.13 tests plus
+budgets still fit the host. Both Deck SSH aliases share a ledger.14 tests plus
 actual Windows/Linux remote commands, concurrent leases, rejection and cleanup
 checks pass. Installed tool: `C:/Users/Matthew/.local/bin/benchmark_hosts.py`.
 Global agent policy and the NDS adapter now use it. The MPH pair ran on SERVER
