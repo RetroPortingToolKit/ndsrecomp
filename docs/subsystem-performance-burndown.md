@@ -195,6 +195,26 @@ profile/compatibility integration and practical qualification remain open.
 Source, incremental SDK patch and raw receipts are retained in
 `loading-hitches/cartridge-transaction-evidence.json` under the task root.
 
+The lab host subsequently became available. One frozen-package pair per game
+passes CPU/competitor host checks. MPH trends modestly positive (9.505 → 9.219
+CPU ms/frame). MKDS remains inconclusive: reversing order changes the apparent
+regression, and telemetry reveals candidate P0 versus baseline P5. GPU operating
+conditions were not matched. Both candidate legs prepare every hinted block
+before construction. Do not turn the raw host-gate booleans into an adoption
+claim. Existing `beads-yjp.72` now owns the coupled emulation/render/readback
+boundary with 01/18/19/20/28: split fence waiting from CPU materialization and
+reuse the existing persistent-map/flush work before choosing a replacement.
+The private clock prototype remains separate; its MPH thread follow-up places
+94% of the extra reported CPU time in secondary threads, weakening a large
+native-core regression claim while leaving qualification open. Raw per-game
+receipts and GPU telemetry are retained in `loading-hitches/lab-package-evidence.json`.
+The private capture phase probe then attributes about 91.5% of readback time
+to fence/map synchronization (1.87 ms versus 0.10 ms CPU unpack per call).
+Evaluate the existing native GL render/capture backend for MKDS before local
+compute tuning; its old comparison was instruction-hook contaminated. Keep
+the compute path and qualify the complete alternative. See
+`docs/lab-loading-qualification-20261028.md` in the retained worktree.
+
 Future work should similarly group complete boundaries where useful: BIOS and
 bulk services (02/03/10), execution/memory/scheduling/device ownership
 (04–09/11–13), model-to-geometry preparation (14–17), render/capture/presentation

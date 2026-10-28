@@ -121,6 +121,23 @@ MKDS functional samples (2.140625 versus 2.078125 CPU seconds) remain historical
 and inconclusive. Actual full-package per-game costs, including the MPH concern,
 must decide adoption; fewer native entries alone are insufficient.
 
+## MPH thread attribution follow-up
+
+One follow-up MPH pair uses read-only thread CPU/cycle queries outside the
+180-VBlank interval, with no suspension, affinity or priority changes. About
+94% of the extra reported CPU time belongs to secondary threads: NVIDIA's
+OpenGL driver and CRT-started workers whose exact roles are unestablished.
+The main emulation thread uses 0.953125 versus 0.968750 CPU seconds, one
+accounting tick apart. Thread totals account for all process CPU time.
+
+Complete after snapshots match. Starting GPU3D payloads differ by ten bytes
+at an equal ARM9 timestamp; other starting sections and guest execution/read
+counters match. Heavy unequal background load still prevents qualification.
+This weakens the claim of a large native-core regression without establishing
+neutrality. Raw data and limitations: `loading-hitches/mph-thread-cost-evidence.json`.
+The separate frozen-package lab comparison is described in
+`docs/lab-loading-qualification-20261028.md`; it excludes this prototype.
+
 ## Remaining decision
 
 Evaluate the complete service-effect contract covering
