@@ -1527,6 +1527,11 @@ std::string handle(const std::string& line) {
     // is it costing? Asked before trusting a table, and the answer carries the
     // observer's own measured overhead.
     if (cmd == "hostprof_status") return nds_hostprof_status_json();
+    if (cmd == "arm9_native_compilations") return nds_arm9_native_compilation_json(json_bool(line,"reset",false));
+    if (cmd == "arm9_native_prepare") {
+        nds_arm9_native_prepare_idle(static_cast<uint32_t>(std::min<uint64_t>(json_u64(line,"budget_us",0),500000)));
+        return nds_arm9_native_preparation_json();
+    }
     if (cmd == "arm9_native" || cmd == "arm9_native_census") {
 #if defined(NDS_ARM9_DYNARMIC)
         if(cmd=="arm9_native_census")

@@ -8,6 +8,10 @@ void nds_arm9_native_flush_writes() {}
 void nds_arm9_native_clear() {}
 void nds_arm9_native_census(bool, bool) {}
 std::string nds_arm9_native_json() { return "{\"available\":false}"; }
+std::string nds_arm9_native_compilation_json(bool) { return "{\"available\":false}"; }
+void nds_arm9_native_prepare_initialize(const std::string&) {}
+bool nds_arm9_native_prepare_idle(uint32_t) { return false; }
+std::string nds_arm9_native_preparation_json() { return "{\"available\":false}"; }
 #else
 #include "state.h"
 #include "tier3.h"
@@ -23,11 +27,13 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #endif
 #include "io.h"
 #include "scheduler.h"
+#include "sha1.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/frontend/A32/a32_ir_emitter.h"
 #include "dynarmic/frontend/A32/a32_types.h"
 #include "dynarmic/ir/terminal.h"
 #include <algorithm>
+#include <chrono>
 #include <bit>
 #include <cstring>
 #include <cstdio>
@@ -58,6 +64,20 @@ bool compilation_census() {
     static const bool on=[] {const char* v=std::getenv("NDS_NATIVE_COMPILE_CENSUS");return v&&std::strcmp(v,"1")==0;}();
     return on;
 }
+bool preparation_selected=false;
+bool preparation_enabled() {
+    static const bool enabled=[] {const char* v=std::getenv("NDS_NATIVE_PREPARE");return !v||std::strcmp(v,"0")!=0;}();
+    return preparation_selected&&enabled;
+}
+#if defined(NDS_MKDS_PERFORMANCE)
+struct PreparationPage {uint32_t address,first,end;const char* sha1;};
+#include "mkds_native_preparation.inc"
+struct PreparationProgress {
+    const uint32_t* generation=nullptr;
+    uint32_t value=0,next=0;
+    bool checked=false,matched=false;
+};
+#endif
 #if defined(NDS_NATIVE_PRECISE_WRITES)
 // Emulation-thread-only scope. This covers one ordinary native RAM store,
 // after the normal bus has changed bytes/generations. I/O and nested DMA stay
@@ -76,6 +96,13 @@ public:
     uint64_t census_dropped=0;
     std::unordered_set<uint64_t> compiled_locations;
     uint64_t compiled_blocks=0,recompiled_blocks=0,compile_census_dropped=0;
+#if defined(NDS_MKDS_PERFORMANCE)
+    std::array<PreparationProgress,std::size(preparation_pages)> preparation_progress{};
+    size_t preparation_cursor=0;
+    bool preparation_full=false,preparation_done=false;
+    uint64_t preparation_epoch=~uint64_t(0);
+    uint64_t preparation_requests=0,preparation_mismatches=0,preparation_ns=0,preparation_max_ns=0;
+#endif
     void census(std::unordered_map<uint64_t,uint64_t>& counts,uint64_t key) {
         if(!census_enabled)return;
         auto at=counts.find(key);
@@ -153,7 +180,16 @@ public:
     }
     void clear() {
         jit->ClearCache();watches.clear();compiled_locations.clear();++invalidations;
+#if defined(NDS_MKDS_PERFORMANCE)
+        reset_preparation();
+#endif
     }
+#if defined(NDS_MKDS_PERFORMANCE)
+    void reset_preparation() {
+        preparation_progress.fill({});preparation_cursor=0;
+        preparation_full=false;preparation_done=false;
+    }
+#endif
     void publish() {
         std::copy(registers->begin(),registers->end(),g_cpu.R);g_cpu.cpsr=jit->Cpsr();
     }
@@ -419,11 +455,123 @@ void nds_arm9_native_note_write() {
 }
 void nds_arm9_native_flush_writes() {for(auto& n:natives)if(n)n->flush_writes();}
 void nds_arm9_native_clear() {for(auto& n:natives)if(n)n->clear();}
+void nds_arm9_native_prepare_initialize(const std::string& rom_sha1) {
+#if defined(NDS_MKDS_PERFORMANCE)
+    preparation_selected=rom_sha1=="691e00d9a5dd80b04f80cc7559503e8b06848785";
+#else
+    (void)rom_sha1;
+#endif
+}
+bool nds_arm9_native_prepare_idle(uint32_t budget_us) {
+#if defined(NDS_MKDS_PERFORMANCE)
+    if(!budget_us||!preparation_enabled()||!nds_performance_execution()||!natives[NDS_ARM9])return false;
+    auto& n=*natives[NDS_ARM9];
+    if(n.running||n.code_mapping_generation!=g_busf_mapping_generation||
+       n.mapping.control!=g_cp15.control||n.mapping.itcm_size!=g_cp15.itcm_size||
+       n.mapping.dtcm_base!=g_cp15.dtcm_base||n.mapping.dtcm_size!=g_cp15.dtcm_size)return false;
+    const auto epoch=n.jit->CodeCacheGeneration();
+    if(n.preparation_epoch!=epoch) {n.reset_preparation();n.preparation_epoch=epoch;}
+    if(n.preparation_full||n.preparation_done)return false;
+    using Clock=std::chrono::steady_clock;
+    const auto begin=Clock::now();
+    const auto deadline=begin+std::chrono::microseconds(std::min(budget_us,500000u));
+    // Only code reads/classification run here. Do not switch scheduler slots or
+    // copy register files; restore the bus's CPU selector before returning.
+    struct CpuView {
+        NdsCpu old=g_nds_active;
+        CpuView() {g_nds_active=NDS_ARM9;}
+        ~CpuView() {g_nds_active=old;}
+    } view;
+    n.flush_writes();n.refresh_reads();
+    bool worked=false;
+    std::array<uint8_t,4096> bytes;
+    for(size_t visited=0;visited<std::size(preparation_pages)&&Clock::now()<deadline;) {
+        const auto& page=preparation_pages[n.preparation_cursor];
+        auto& progress=n.preparation_progress[n.preparation_cursor];
+        uint32_t offset=0;
+        const auto* window=nds_busf_classify(page.address,&offset);
+        if(window&&window->data&&window->gen&&uint64_t(offset)+bytes.size()<=uint64_t(window->mask)+1) {
+            const uint32_t* generation=window->gen+(offset>>12);
+            if(!progress.checked||progress.generation!=generation||progress.value!=*generation) {
+                progress={generation,*generation,page.first,true,false};
+                std::memcpy(bytes.data(),window->data+offset,bytes.size());
+                progress.matched=gba::sha1(bytes.data(),bytes.size()).hex()==page.sha1;
+                if(!progress.matched) {
+                    ++n.preparation_mismatches;progress.next=page.end;
+                }
+            }
+            for(;progress.next<page.end&&Clock::now()<deadline;++progress.next) {
+                const uint64_t location=preparation_locations[progress.next];
+                // Hints never confer executable provenance. The ordinary code
+                // reader and its physical-page watches qualify the live image.
+                if(!n.code(uint32_t(location)&~3u,false)) {progress.matched=false;continue;}
+                if(!n.jit->PrepareBlock(location)) {n.preparation_full=true;break;}
+                n.preparation_epoch=n.jit->CodeCacheGeneration();
+                ++n.preparation_requests;worked=true;
+            }
+            if(progress.next<page.end)break;
+        }
+        n.preparation_cursor=(n.preparation_cursor+1)%std::size(preparation_pages);
+        ++visited;
+    }
+    n.preparation_done=true;
+    for(size_t i=0;i<std::size(preparation_pages);++i) {
+        const auto& p=n.preparation_progress[i];
+        if(!p.matched||p.next<preparation_pages[i].end) {n.preparation_done=false;break;}
+    }
+    const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-begin).count();
+    n.preparation_ns+=uint64_t(ns);n.preparation_max_ns=std::max(n.preparation_max_ns,uint64_t(ns));
+    return worked;
+#else
+    (void)budget_us;return false;
+#endif
+}
+std::string nds_arm9_native_preparation_json() {
+    std::string out="{\"available\":true,\"selected\":"+std::string(preparation_selected?"true":"false")+
+        ",\"enabled\":"+(preparation_enabled()?"true":"false");
+#if defined(NDS_MKDS_PERFORMANCE)
+    out+=",\"seed_pages\":"+std::to_string(std::size(preparation_pages))+
+        ",\"seed_locations\":"+std::to_string(std::size(preparation_locations));
+    if(const auto& n=natives[NDS_ARM9])out+=",\"requests\":"+std::to_string(n->preparation_requests)+
+        ",\"page_mismatches\":"+std::to_string(n->preparation_mismatches)+
+        ",\"wall_work_ns\":"+std::to_string(n->preparation_ns)+
+        ",\"max_call_ns\":"+std::to_string(n->preparation_max_ns)+
+        ",\"complete\":"+(n->preparation_done?"true":"false")+
+        ",\"cache_full\":"+(n->preparation_full?"true":"false");
+#endif
+    return out+"}";
+}
 void nds_arm9_native_census(bool enabled,bool reset) {
     census_enabled=enabled;
     if(reset)for(auto& n:natives)if(n) {
         n->floor_census.clear();n->entry_census.clear();n->read_census.clear();n->write_census.clear();n->census_dropped=0;
     }
+}
+std::string nds_arm9_native_compilation_json(bool reset) {
+    if(reset)for(auto& native:natives)if(native) {
+        // Reset diagnostics without discarding warmed executable code.
+        native->compiled_locations.clear();native->compiled_blocks=0;
+        native->recompiled_blocks=0;native->compile_census_dropped=0;
+    }
+    std::string out="{\"enabled\":"+std::string(compilation_census()?"true":"false");
+    for(const auto cpu:{NDS_ARM9,NDS_ARM7}) {
+        out+=cpu==NDS_ARM9?",\"arm9\":[":",\"arm7\":[";
+        if(const auto& native=natives[cpu]) {
+            std::vector<uint64_t> locations(native->compiled_locations.begin(),native->compiled_locations.end());
+            std::sort(locations.begin(),locations.end());
+            bool comma=false;
+            for(const auto descriptor:locations) {
+                const Dynarmic::A32::LocationDescriptor location{Dynarmic::IR::LocationDescriptor{descriptor}};
+                if(comma)out+=",";
+                comma=true;
+                out+="{\"pc\":"+std::to_string(location.PC())+
+                    ",\"thumb\":"+(location.TFlag()?"true":"false")+
+                    ",\"descriptor\":\""+std::to_string(descriptor)+"\"}";
+            }
+        }
+        out+="]";
+    }
+    return out+"}";
 }
 static std::string native_census_json(const Native* n,int cpu) {
     std::string out;

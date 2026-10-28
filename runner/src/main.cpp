@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "state.h"
+#include "arm9_native.h"
 #include "scheduler.h"
 #include "direct_boot.h"
 #include "generated_firmware.h"
@@ -1783,6 +1784,7 @@ int main(int argc, char** argv) {
     nds_diagnostics_set_identity(rom_sha1.c_str(), rom_name.c_str(),
                                  execution_build_id.c_str());
     debug_set_savestate_identity(execution_build_id, rom_sha1);
+    nds_arm9_native_prepare_initialize(rom_sha1);
 #if defined(NDS_MPH_SUBMIT_HLE)
     if (mph_submit::initialize(rom_sha1.c_str()))
         std::fprintf(stderr, "[hle] MPH submission selected at build time (mph-submit-hle-v3)\n");

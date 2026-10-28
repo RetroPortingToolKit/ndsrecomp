@@ -1,6 +1,7 @@
 #include "frontend.h"
 #include "host_profile.h"
 #include "frontend_window_size.h"
+#include "arm9_native.h"
 
 #include <algorithm>
 #include <array>
@@ -1048,7 +1049,9 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
     // buffered runway instead of having it slept away.
     uint32_t queued = audio_queue_count(device, queue);
     while (throttle && queued > pace_floor) {
-        SDL_Delay(1);
+        // Spend existing audio pacing slack preparing qualified native code.
+        // Guest CPUs remain paused; under load/no slack demand execution wins.
+        if (!nds_arm9_native_prepare_idle(1000)) SDL_Delay(1);
         queued = audio_queue_count(device, queue);
     }
     return queued;

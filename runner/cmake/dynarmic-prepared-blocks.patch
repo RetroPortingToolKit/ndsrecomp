@@ -1,0 +1,104 @@
+diff --git a/src/dynarmic/backend/arm64/a32_interface.cpp b/src/dynarmic/backend/arm64/a32_interface.cpp
+index 6b38c41..ff1d10b 100644
+--- a/src/dynarmic/backend/arm64/a32_interface.cpp
++++ b/src/dynarmic/backend/arm64/a32_interface.cpp
+@@ -184,6 +184,16 @@ void Jit::InvalidateCacheRange(std::uint32_t start_address, std::size_t length)
+     impl->InvalidateCacheRange(start_address, length);
+ }
+ 
++bool Jit::PrepareBlock(std::uint64_t) {
++    // Optional host preparation is currently x64-only. Keep ordinary execution
++    // fully functional and let callers retain demand compilation elsewhere.
++    return false;
++}
++
++std::uint64_t Jit::CodeCacheGeneration() const {
++    return 0;
++}
++
+ void Jit::Reset() {
+     impl->Reset();
+ }
+diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
+index d690aad..05c093b 100644
+--- a/src/dynarmic/backend/x64/a32_interface.cpp
++++ b/src/dynarmic/backend/x64/a32_interface.cpp
+@@ -173,6 +173,25 @@ struct Jit::Impl {
+         return jit_state.SetFpscr(value);
+     }
+ 
++    bool PrepareBlock(u64 location_descriptor) {
++        if (jit_interface->is_executing)
++            return false;
++        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
++        const IR::LocationDescriptor descriptor{location_descriptor};
++        if (emitter.GetBasicBlock(descriptor))
++            return true;
++        // Match GetBasicBlock's reserve, but do not evict useful live code to
++        // make room for speculative preparation.
++        if (block_of_code.SpaceRemaining() < 1 * 1024 * 1024)
++            return false;
++        GetBasicBlock(descriptor);
++        return true;
++    }
++
++    u64 CodeCacheGeneration() const {
++        return code_cache_generation;
++    }
++
+     void DumpDisassembly() const {
+         const size_t size = reinterpret_cast<const char*>(block_of_code.getCurr()) - reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
+         Common::DumpDisassembledX64(block_of_code.GetCodeBegin(), size);
+@@ -247,6 +266,7 @@ private:
+             } else {
+                 emitter.InvalidateCacheRanges(invalid_cache_ranges);
+             }
++            ++code_cache_generation;
+             invalid_cache_ranges.clear();
+             invalidate_entire_cache = false;
+         }
+@@ -265,6 +285,7 @@ private:
+     bool invalidate_entire_cache = false;
+     boost::icl::interval_set<u32> invalid_cache_ranges;
+     std::mutex invalidation_mutex;
++    u64 code_cache_generation = 0;
+ };
+ 
+ Jit::Jit(UserConfig conf)
+@@ -336,6 +357,14 @@ void Jit::ClearExclusiveState() {
+     impl->ClearExclusiveState();
+ }
+ 
++bool Jit::PrepareBlock(std::uint64_t location_descriptor) {
++    return impl->PrepareBlock(location_descriptor);
++}
++
++std::uint64_t Jit::CodeCacheGeneration() const {
++    return impl->CodeCacheGeneration();
++}
++
+ void Jit::DumpDisassembly() const {
+     impl->DumpDisassembly();
+ }
+diff --git a/src/dynarmic/interface/A32/a32.h b/src/dynarmic/interface/A32/a32.h
+index e1c5b40..1fc2fc5 100644
+--- a/src/dynarmic/interface/A32/a32.h
++++ b/src/dynarmic/interface/A32/a32.h
+@@ -40,6 +40,17 @@ public:
+      */
+     void ClearCache();
+ 
++    /**
++     * NDS_PREPARED_BLOCKS_V1: prepare code without executing guest instructions.
++     * Caller owns the CPU thread and supplies a qualified location descriptor.
++     * Refuses to evict cached code for preparation; false also means unsupported.
++     * Normal Run/Step remains available on every backend.
++     */
++    bool PrepareBlock(std::uint64_t location_descriptor);
++    // Changes after cache/range invalidation, including automatic capacity resets.
++    // Preparation-unsupported backends return zero.
++    std::uint64_t CodeCacheGeneration() const;
++
+     /**
+      * Invalidate the code cache at a range of addresses.
+      * @param start_address The starting address of the range to invalidate.

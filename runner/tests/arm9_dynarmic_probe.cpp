@@ -58,6 +58,7 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     unsigned ram_reads=0,ram_writes=0;
     bool isa_guard=false;
     bool watch_code=false,code_alias=false,watch_io_dma=false,watch_immediate=false;
+    bool reject_reentrant_preparation=false;
     std::array<uint32_t,16> generations{};
     NdsArm9GenerationWatch watches;
     uint32_t device_value=0;
@@ -120,6 +121,8 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     void MemoryWrite8(uint32_t a,uint8_t v) override {if(permitted(a,1,true))ram.write8(a,v);}
     void MemoryWrite16(uint32_t a,uint16_t v) override {if(permitted(a,2,true))ram.write16(a&~1u,v);}
     void MemoryWrite32(uint32_t a,uint32_t v) override {
+        if(reject_reentrant_preparation)
+            require(!jit->PrepareBlock(code_pc),"preparation refuses an executing core");
         ++ram_writes;
         if(complete_io&&a>=0x04000000u){
             require(jit->Regs()[15]==code_pc,"write callback PC survives optimization");
@@ -168,6 +171,48 @@ int main() {
     conf.code_cache_size=16*1024*1024;conf.check_halt_on_memory_access=true;
     conf.optimizations=Dynarmic::all_safe_optimizations;
     Dynarmic::A32::Jit jit(conf);env.jit=&jit;
+    {
+        Environment prepared;
+        auto config=conf;config.callbacks=&prepared;
+        Dynarmic::A32::Jit ready(config);prepared.jit=&ready;
+        const auto location=[](const armv4t::CPUState& s) {
+            return Dynarmic::A32::LocationDescriptor{s.R[15],Dynarmic::A32::PSR{flags(s)},Dynarmic::A32::FPSCR{0}}.UniqueHash();
+        };
+        const auto prepare=[&](const armv4t::CPUState& state) {
+            set_state(ready,state);prepared.remaining=2;
+            const auto regs=ready.Regs();const auto ext=ready.ExtRegs();
+            const auto cpsr=ready.Cpsr(),fpscr=ready.Fpscr();
+            const auto ram=prepared.ram.data;
+            const auto ticks=prepared.ticks;
+            const auto reads=prepared.ram_reads,writes=prepared.ram_writes;
+            require(ready.PrepareBlock(location(state)),"prepare qualified code");
+            require(ready.Regs()==regs&&ready.ExtRegs()==ext&&ready.Cpsr()==cpsr&&ready.Fpscr()==fpscr,
+                    "preparation leaves all CPU registers unchanged");
+            require(prepared.remaining==2&&prepared.ticks==ticks&&prepared.ram.data==ram&&
+                    prepared.ram_reads==reads&&prepared.ram_writes==writes,
+                    "preparation does not execute, charge time or access data/device memory");
+        };
+        armv4t::CPUState initial{};initial.R[15]=code_pc;initial.cpsr.mode=0x1f;
+        prepared.ram.write32(code_pc,0xe3a00007u); // MOV r0,#7
+        prepared.ram.write32(code_pc+4,0xeafffffeu);
+        prepare(initial);ready.Run();require(ready.Regs()[0]==7,"execute prepared ARM block");
+        prepared.ram.write32(code_pc,0xe3a00009u);
+        const auto old_cache_generation=ready.CodeCacheGeneration();
+        ready.InvalidateCacheRange(code_pc,4);
+        prepare(initial);
+        require(ready.CodeCacheGeneration()!=old_cache_generation,"preparation observes code-cache invalidation epoch");
+        ready.Run();require(ready.Regs()[0]==9,"prepare processes queued code invalidation");
+        prepared.ram.write16(code_pc,0x2005u); // Thumb MOVS r0,#5
+        prepared.ram.write16(code_pc+2,0xe7feu);
+        initial.cpsr.t=true;ready.InvalidateCacheRange(code_pc,8);
+        prepare(initial);ready.Run();require(ready.Regs()[0]==5,"prepare and execute Thumb descriptor");
+        prepared.ram.write32(code_pc,0xe5810000u); // STR r0,[r1]
+        prepared.ram.write32(code_pc+4,0xeafffffeu);
+        initial.cpsr.t=false;initial.R[0]=0x12345678;initial.R[1]=0x4000;
+        prepared.reject_reentrant_preparation=true;ready.InvalidateCacheRange(code_pc,8);
+        prepare(initial);ready.Run();require(prepared.ram.read32(0x4000)==0x12345678,"prepared memory op executes exactly on Run");
+        std::puts("PREPARED_CODE passed: no state/time/data effects, ARM/Thumb, queued invalidation and executing-core refusal");
+    }
     std::mt19937 random(0x4e445339);
     std::vector<uint32_t> arm;
     for(unsigned op=0;op<16;++op)for(unsigned sh=0;sh<4;++sh) {

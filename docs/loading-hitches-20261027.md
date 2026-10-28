@@ -118,10 +118,67 @@ No complete campaign or multiplayer run was repeated. Native saves/settings and
 the desktop are preserved. Delivery stays at MKDS 0.0.10 until the remaining
 qualification and candidate packaging are complete.
 
+## Integrated resident-code preparation candidate
+
+The owner resumed the subsystem burndown and requested coupling related work.
+The candidate combines item 01 with the native-code lifecycle slice of 07,
+cache/provenance ownership in 09, existing pacing slack in 20 and the retained
+allocator work in 28. Those broader rows remain open; one loading package does
+not complete all their remaining work.
+
+The restored-state samples above have a wider cold-cache effect than the first
+frame. Excluding that frame does not make the rest a natural-load measurement.
+A fresh menu-to-course census, with no state load and the JIT cache retained,
+found 11,550 new ARM9 blocks and 18 ARM7 blocks over 180 VBlanks, no repeated
+compilation, and no ARM9 invalidation during the transition. The observed ARM9
+entries are resident main code/ITCM, not newly loaded overlay code.
+
+For exact AMCE0, fingerprinted page/PC hints now prepare those blocks during
+existing audio pacing waits. Preparation never runs guest instructions,
+advances guest time, or changes guest CPU/data state. It uses ordinary live-code
+provenance and physical-page watches. The SDK compile-only API refuses an
+executing core and refuses speculative cache eviction. Cache/range/capacity
+invalidation epochs restart preparation; completed preparation has a constant
+fast path. Page identity mismatches retain ordinary demand compilation.
+
+The frontend grants a soft 1 ms preparation budget per existing audio wait.
+There is no extra guest delay when no slack is available. Faithful execution,
+unknown ROMs, unsupported hosts and no-audio/no-slack paths retain demand
+execution. `NDS_NATIVE_PREPARE=0` is a developer mechanism control. The game UI
+does not expose a new switch.
+
+All native SDK consumers require both the existing read-only-page/allocator
+patches and `runner/cmake/dynarmic-prepared-blocks.patch`. The latter supplies
+the common tested API and cache epoch, so its hash is in both title identities;
+only MKDS includes and identifies the PC seed. ARM64 has an explicit unsupported
+preparation result while preserving ordinary SDK execution; the engine's
+portable no-SDK adapter remains functional.
+
+`tools/generate_mkds_preparation.py` regenerates the checked-in hints from the
+private census JSON and matching full Main-RAM/ITCM snapshots. Its output has
+146 page hashes and 11,550 locations, no guest instruction payload. It rejects
+unsupported descriptors, alignment and resident-code ranges. Reproduction
+matches the retained seed content exactly; output line endings are fixed LF.
+
+Prior same-binary mechanism evidence (`preparation-comparison.json`) reports
+11,550 to zero ARM9 demand compilations and 79.48 to 26.07 ms maximum step, with
+matching final Main-RAM/ITCM/ARM7 WRAM and byte-identical serialized guest state
+before/after preparation. This is a diagnostic comparison without a quiet-host
+census, not final-source/frontend performance qualification. A prior hidden,
+muted real-GPU frontend check prepared all hints by frame 36, before the
+identified demand burst at frame 136, and showed plausible track/HUD/map output.
+That checkpoint-restored check is not a natural frontend loading A/B result.
+
+After resuming, the final provenance guard and cache-epoch changes build and
+pass the ARM9/ARM7 preparation/ISA probes and allocator-selector test (3/3).
+The no-SDK adapter compiles. Common MPH SDK integration and the final matched
+frontend/shared-consumer checks are tracked separately; no release is promoted
+from the mechanism diagnostics.
+
 ## Remaining release work
 
-- Select and implement the coherent loading-pipeline change described above;
-  retain existing allocator evidence without treating it as completion.
+- Finish common SDK integration and validate the integrated loading-pipeline
+  candidate above; retain allocator evidence without treating it as completion.
 - Qualify the completed package with bounded matched MKDS/MPH comparisons;
   the rejected quiet-host attempt is not a regression result. Use only states
   created by each exact binary. Existing prepared states remain useful only
