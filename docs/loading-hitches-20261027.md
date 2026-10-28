@@ -169,6 +169,51 @@ muted real-GPU frontend check prepared all hints by frame 36, before the
 identified demand burst at frame 136, and showed plausible track/HUD/map output.
 That checkpoint-restored check is not a natural frontend loading A/B result.
 
+## Natural frontend follow-up (2026-10-28)
+
+The combined `928da54` candidate adds physical write publication and width-correct
+direct narrow reads to resident preparation and the SDK allocation change.
+Both rebuilt applications and focused checks pass; exact identities are in
+`loading-hitches/coupled-memory-evidence.json` under the retained task root.
+
+The first new cold-checkpoint frontend pair is diagnostic only: Docker load
+differs by 0.8278 background cores. Its largest frames are 235.9704/188.8338 ms,
+including 180.4614/130.2060 ms before emulation while loading the checkpoint;
+presentation takes only 2.1211/2.1461 ms in those frames. They do not establish a
+natural loading hitch or a presentation improvement. Preserve the separate
+earlier driver-wait evidence rather than attributing these maxima to that lead.
+
+The live harness now traverses normal menus and retains the native cache. Its
+first setup incorrectly copied a cached configuration block across the transition
+and the baseline failed. The corrected setup writes only the three intended
+fields before starting; both baseline and candidate now complete it. No state
+load or identity override is involved. Both runs use course 33/150cc, compute
+4x/AA8 and muted real audio pacing. Images look plausible.
+
+Under heavy **unequal** ambient CPU load, the 180-frame construction windows
+observe maximum emulation frames of 53.5735 ms (baseline) and 16.7671 ms
+(candidate), and whole frames of 57.6278 and 24.3065 ms. Two baseline frames
+exceed 33 ms; none do in the candidate. These are promising diagnostic results,
+not a qualified performance pair: background work is 8.1434 versus 7.3669 cores,
+and both records explicitly retain `performance_eligible:false`.
+
+The candidate automatically finishes all 11,550 preparation requests before
+course construction, with zero page mismatches and no native-cache invalidation
+during the interval. Preparation spends 95.8604 ms across existing menu pacing
+slack; its longest call is 2.7263 ms under this load. No manual prepare request
+is made in this live path. This validates the intended mechanism in the actual
+frontend, while per-game matched timing, MPH qualification, owner review and
+delivery remain open.
+
+Raw receipts: `natural-frontend-setup-check/baseline/result.json` and
+`natural-frontend-candidate-check/candidate/result.json`, including latency CSVs,
+native/preparation counters, settings, background processes and images. Earlier
+rejected preflights and the failed setup are retained. The private host helper
+allows an explicitly identified idle owner playtest only after CPU/GPU checks;
+all its CPU activity remains in the background total. Build jobs always reject.
+The capacity-aware bound is 0.8 background cores on this 16-thread host, plus
+matched-load checking. No passing gate has been manufactured.
+
 After resuming, the final provenance guard and cache-epoch changes build and
 pass the ARM9/ARM7 preparation/ISA probes and allocator-selector test (3/3).
 The no-SDK adapter compiles. Common MPH SDK integration and the final matched

@@ -152,6 +152,26 @@ machine-readable receipts are in `loading-hitches/coupled-memory-evidence.json`
 under the retained task root. This advances 04/08 within the same candidate package.
 See `docs/native-narrow-reads.md` in the retained framework worktree.
 
+The actual frontend path now passes for both the baseline and combined
+candidate: fresh menus, course 33/150cc, compute 4x/AA8, no state restore and no
+native-cache invalidation. The candidate finishes all 11,550 preparation
+requests before construction. Under heavy unequal background CPU load, worst
+emulation frames are 53.6 versus 16.8 ms; whole frames are 57.6 versus 24.3 ms.
+These remain diagnostic, with both performance gates false. A cold-checkpoint
+comparison also remains unqualified; its largest frame includes checkpoint
+loading before emulation. Matched timing, MPH qualification and delivery remain
+open. Details and raw paths are in `docs/loading-hitches-20261027.md` in the
+retained framework worktree.
+
+Existing issue `beads-yjp.60` now owns a related private read/CPU ownership pilot
+for 04/08/09/11/13. ARM9/ARM7 probes pass, and sampled RAM/scene match, but the
+audited status subset removes only 2.11% of native entries. Runtime counters
+and GPU device state still need interpretation; there is no timing win or
+adoption claim. The next decision is a complete device/event-effect contract,
+grounded in loading-phase attribution. This pilot remains outside the release
+candidate. See `docs/native-read-transaction-investigation.md` in the retained
+framework worktree.
+
 Future work should similarly group complete boundaries where useful: BIOS and
 bulk services (02/03/10), execution/memory/scheduling/device ownership
 (04–09/11–13), model-to-geometry preparation (14–17), render/capture/presentation
