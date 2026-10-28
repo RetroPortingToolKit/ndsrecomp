@@ -2,6 +2,47 @@
 
 Tracking: `beads-d8um`, MKDS `beads-04cb`, campaign `beads-2wy8.1`.
 
+## Revised implementation direction
+
+Owner feedback on 2026-10-27 prioritizes complete subsystem work over another
+sequence of local optimizations. The immediate goal is to reduce load-triggered
+long frames by removing avoidable work from the load-to-execution pipeline.
+The allocator candidate below is a retained, unqualified partial improvement;
+its release qualification is no longer the next substantive performance task.
+
+The first implementation slice follows loaded code/data through RAM publication,
+code identity/provenance, native preparation and first execution. Determine
+which code/services and block boundaries create the observed translation burst,
+then choose a coherent change: reuse qualified prepared code, prepare a validated
+loaded image before its first critical use, or replace a costly complete loading
+service and consolidate its bookkeeping. These are alternatives to evaluate,
+not established fixes or authorization to skip executable-write checks.
+
+Reuse the architecture audit, native-service burndown and current traces first.
+The 44,000-block census establishes compilation volume; it does not identify
+the service/PC distribution or prove that all those blocks must exist. Existing
+native execution provides material gains over the older generated-C path, so
+reuse must be assessed against both loading and steady-play costs. Larger block
+limits, global-cache growth, GL error callbacks and prior rejected helper probes
+are not new architectural solutions merely because they can be reconfigured.
+
+Track graphics ownership/submission/presentation as a second complete path when
+its measured cost warrants work. The separately observed driver wait is not a
+compiler improvement, and cannot be counted as fixed by the allocator patch.
+
+Judge the resulting package by loading-frame stall counts/duration, critical
+thread work, steady-play cost and relevant startup/memory costs. Keep matched
+per-game evidence and require neutral or positive results for every affected
+game. Focused checks cover observable memory/device/event behavior, current-build
+restore, native saves and portability. Retain the faithful build; an HLE service
+need not keep its replaced reference machinery executing alongside it.
+
+If another profile is necessary to select the implementation, the initial
+budget is one bounded loading capture, not a workload matrix. Qualification
+after implementation uses the existing bounded MKDS comparison and one MPH
+shared-consumer check, expanded only for a concrete failure or ambiguity.
+Player-speed loss is deferred at the owner's request, not marked resolved.
+
 A bounded Pinball 150cc load census compiled 40,265 ARM9 blocks and 3,420 ARM7
 blocks in 180 VBlanks, with no repeated block translations or dropped census
 entries. Only the expected restore-start invalidations occurred. A later 48 ms
@@ -79,9 +120,12 @@ qualification and candidate packaging are complete.
 
 ## Remaining release work
 
-- Obtain one eligible matched MPH sample from the prepared exact-build states;
-  the rejected quiet-host attempt is not a regression result. Confirm the MKDS
-  loading result under a recorded quiet host before calling it qualified.
+- Select and implement the coherent loading-pipeline change described above;
+  retain existing allocator evidence without treating it as completion.
+- Qualify the completed package with bounded matched MKDS/MPH comparisons;
+  the rejected quiet-host attempt is not a regression result. Use only states
+  created by each exact binary. Existing prepared states remain useful only
+  with their frozen allocator-probe executables.
 - Complete the final runner build, title engine pin/version and source bundle,
   then check banks, DLL closure, licenses, private payloads and archive contents.
 - Prepare a short loading check for the owner to launch. Current review notes
@@ -91,5 +135,5 @@ qualification and candidate packaging are complete.
 
 Keyboard persistence/capture and initial DPI/window fitting are already in
 0.0.10 with focused checks. The reported loss of player speed against offline AI
-under real CPU load remains unreproduced. It is a separate open correctness
+under real CPU load remains unreproduced and owner-deferred. It is a separate open correctness
 report, not established as fixed by lower compilation cost.
