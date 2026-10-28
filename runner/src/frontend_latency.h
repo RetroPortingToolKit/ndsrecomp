@@ -13,7 +13,7 @@
 namespace nds_frontend_latency {
 inline std::atomic<bool> enabled{false};
 inline std::string path;
-inline std::vector<std::array<uint64_t, 28>> frames;
+inline std::vector<std::array<uint64_t, 31>> frames;
 inline size_t frame_count = 0;
 inline std::array<std::array<uint64_t, 4>, 2048> audio{};
 inline std::atomic<uint64_t> audio_count{0};
@@ -52,7 +52,7 @@ inline void shortage(int additional, int total) {
                         static_cast<uint64_t>(total), cycles()};
 }
 
-inline void frame(const std::array<uint64_t, 28>& row) {
+inline void frame(const std::array<uint64_t, 31>& row) {
     if (frame_count < frames.size()) frames[frame_count++] = row;
 }
 
@@ -61,7 +61,7 @@ inline void finish() {
     std::ofstream out(path + ".frames.csv");
     out << "# frequency=" << frequency << ",capacity=" << frames.size()
         << ",audio_capacity=" << audio.size() << '\n';
-    out << "frame,loop_begin,emu_begin,emu_end,present_begin,present_end,drain_end,frame_end,cycles_loop,cycles_emu,cycles_present,cycles_drain,cycles_end,queue_begin,queue_before_drain,queue_after_drain,underruns,adaptive,upload,draw,swap,readback_ns,audio_started,pool_wait,gl_setup,gl_error,overlay,framebuffers\n";
+    out << "frame,loop_begin,emu_begin,emu_end,present_begin,present_end,drain_end,frame_end,cycles_loop,cycles_emu,cycles_present,cycles_drain,cycles_end,queue_begin,queue_before_drain,queue_after_drain,underruns,adaptive,upload,draw,swap,readback_ns,audio_started,pool_wait,gl_setup,gl_error,overlay,framebuffers,keyboard_pressed,key_mask,system_timestamp\n";
     for (size_t i = 0; i < frame_count; ++i) {
         for (size_t j = 0; j < frames[i].size(); ++j) {
             if (j) out << ',';

@@ -1,5 +1,6 @@
 #include "frontend.h"
 #include "host_profile.h"
+#include "frontend_window_size.h"
 
 #include <algorithm>
 #include <array>
@@ -909,26 +910,6 @@ SDL_JoystickID sdl_controller_id(SDL_GameController* controller) {
 #endif
 }
 
-uint16_t key_bit(SDL_Scancode key) {
-    // KEYINPUT/EXTKEYIN are active-low. This layout follows the common DS
-    // emulator convention: Z/X = A/B, A/S = Y/X, Q/W = L/R.
-    switch (key) {
-        case SDL_SCANCODE_Z:         return 1u << 0;  // A
-        case SDL_SCANCODE_X:         return 1u << 1;  // B
-        case SDL_SCANCODE_BACKSPACE: return 1u << 2;  // Select
-        case SDL_SCANCODE_RETURN:    return 1u << 3;  // Start
-        case SDL_SCANCODE_RIGHT:     return 1u << 4;
-        case SDL_SCANCODE_LEFT:      return 1u << 5;
-        case SDL_SCANCODE_UP:        return 1u << 6;
-        case SDL_SCANCODE_DOWN:      return 1u << 7;
-        case SDL_SCANCODE_W:         return 1u << 8;  // R
-        case SDL_SCANCODE_Q:         return 1u << 9;  // L
-        case SDL_SCANCODE_S:         return 1u << 10; // X
-        case SDL_SCANCODE_A:         return 1u << 11; // Y
-        default:                     return 0;
-    }
-}
-
 uint16_t controller_bit(SDL_GameControllerButton button) {
     switch (button) {
         case SDL_CONTROLLER_BUTTON_A:             return 1u << 0;
@@ -1505,6 +1486,10 @@ SDL_Renderer* create_renderer(SDL_Window* window) {
 
 SDL_Window* create_window(const char* title, int x, int y, int w, int h,
                           uint64_t flags) {
+    // Unattended frontend/GPU checks must not show or activate desktop windows.
+    if (const char* hidden = std::getenv("NDS_FRONTEND_HIDDEN");
+        hidden && std::strcmp(hidden, "1") == 0)
+        flags |= SDL_WINDOW_HIDDEN;
 #if defined(NDS_HAVE_SDL3)
     SDL_Window* window = SDL_CreateWindow(
         title, w, h, static_cast<SDL_WindowFlags>(flags));
@@ -1788,6 +1773,43 @@ bool create_presentation(const NdsFrontendOptions& options,
         std::fprintf(stderr, "[sdl] window failed: %s\n", SDL_GetError());
         return false;
     }
+    NdsInitialWindowSize initial_size{
+        presentation.screen_widths[0] * kWindowScale,
+        presentation.screen_widths[1] * kWindowScale, first_height};
+    if (options.window_scale) {
+        SDL_Rect usable{};
+        float coordinate_scale = 1.0f;
+#if defined(NDS_HAVE_SDL3)
+        const auto display = SDL_GetDisplayForWindow(presentation.windows[0]);
+        SDL_GetDisplayUsableBounds(display, &usable);
+        const float density = SDL_GetWindowPixelDensity(presentation.windows[0]);
+        if (density > 0)
+            coordinate_scale = SDL_GetWindowDisplayScale(presentation.windows[0]) / density;
+#else
+        const int display = SDL_GetWindowDisplayIndex(presentation.windows[0]);
+        SDL_GetDisplayUsableBounds(display, &usable);
+#endif
+        initial_size = nds_initial_window_size(
+            presentation.screen_widths[0], presentation.screen_widths[1],
+            presentation.separate, options.window_scale, coordinate_scale,
+            usable.w, usable.h);
+        SDL_SetWindowSize(presentation.windows[0],
+            presentation.separate ? initial_size.top_width
+                : std::max(initial_size.top_width, initial_size.bottom_width),
+            initial_size.height);
+        SDL_SetWindowPosition(presentation.windows[0],
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        if (presentation.separate && usable.w > 96) {
+            const int pair_width = initial_size.top_width + initial_size.bottom_width + 32;
+            SDL_SetWindowPosition(presentation.windows[0],
+                usable.x + (usable.w - pair_width) / 2,
+                usable.y + (usable.h - initial_size.height) / 2);
+        }
+        std::fprintf(stderr,
+            "[sdl] initial window scale=%u dpi=%.3f top=%dx%d bottom=%dx%d\n",
+            options.window_scale, coordinate_scale, initial_size.top_width,
+            initial_size.height, initial_size.bottom_width, initial_size.height);
+    }
     if (!presentation.gl_top) {
         presentation.renderers[0] = create_renderer(presentation.windows[0]);
         if (!presentation.renderers[0]) {
@@ -1803,10 +1825,10 @@ bool create_presentation(const NdsFrontendOptions& options,
         SDL_GetWindowPosition(presentation.windows[0], &top_x, &top_y);
         presentation.windows[1] = create_window(
             "ndsrecomp - Bottom Screen",
-            top_x + presentation.screen_widths[0] * kWindowScale + 32,
+            top_x + initial_size.top_width + 32,
             top_y,
-            presentation.screen_widths[1] * kWindowScale,
-            kScreenHeight * kWindowScale,
+            initial_size.bottom_width,
+            initial_size.height,
             SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
         if (!presentation.windows[1]) {
             std::fprintf(stderr, "[sdl] bottom window failed: %s\n",
@@ -2303,9 +2325,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
 
     std::fprintf(stderr,
         "[sdl] controls: gamepad=Player 1 | bottom mouse=touch | "
-        "arrows=D-pad | Z=A X=B | A=Y S=X | Q=L W=R | "
-        "Enter=Start Backspace=Select | Esc=settings%s\n",
+        "Esc=settings%s\n",
         options.tab_turbo ? " | hold Tab=turbo" : "");
+    std::fputs("[sdl] keyboard:", stderr);
+    for (size_t row = 0; row < options.keyboard_bindings.size(); ++row)
+        std::fprintf(stderr, " %s=%s", kNdsButtonNames[row],
+            options.keyboard_bindings[row] ? SDL_GetScancodeName(
+                static_cast<SDL_Scancode>(options.keyboard_bindings[row])) : "None");
+    std::fputc('\n', stderr);
     if (options.relative_mouse_touch) {
         std::fprintf(stderr,
             "[sdl] relative mouse: click game screen to capture; "
@@ -3244,7 +3271,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 } else if (mph_prime_active()) {
                     // Prime Controls replaces the normal keyboard keypad map;
                     // unbound keys must not leak through as DS buttons.
-                } else if (const uint16_t bit = key_bit(scancode)) {
+                } else if (const uint16_t bit = nds_binding_mask(options.keyboard_bindings, scancode)) {
                     ++host_key_presses;
                     keyboard_pressed |= bit;
                     publish_keys();
@@ -3263,7 +3290,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 } else if (mph_prime_active()) {
                     // See keydown path: ignore generic keyboard bindings
                     // while the Prime Controls capture owns the keyboard.
-                } else if (const uint16_t bit = key_bit(scancode)) {
+                } else if (const uint16_t bit = nds_binding_mask(options.keyboard_bindings, scancode)) {
                     keyboard_pressed &= static_cast<uint16_t>(~bit);
                     publish_keys();
                 }
@@ -3318,7 +3345,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 } else if (process_mph_prime_pad(MphPadInputKind::Button, button,
                                           true)) {
                     // Consumed by Prime Controls.
-                } else if (const uint16_t bit = controller_bit(button)) {
+                } else if (const uint16_t bit = options.custom_gamepad_bindings
+                        ? nds_binding_mask(options.gamepad_bindings, button + 1)
+                        : controller_bit(button)) {
                     controller_pressed |= bit;
                     publish_keys();
                 }
@@ -3332,7 +3361,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 } else if (process_mph_prime_pad(MphPadInputKind::Button, button,
                                           false)) {
                     // Consumed by Prime Controls.
-                } else if (const uint16_t bit = controller_bit(button)) {
+                } else if (const uint16_t bit = options.custom_gamepad_bindings
+                        ? nds_binding_mask(options.gamepad_bindings, button + 1)
+                        : controller_bit(button)) {
                     controller_pressed &= static_cast<uint16_t>(~bit);
                     publish_keys();
                 }
@@ -3824,6 +3855,28 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                     nds_set_touch(128, 96, true);
             }
         }
+        if (options.custom_gamepad_bindings) {
+            // Button events handle digital bindings; poll signed axes here.
+            // Each row has one source, so clearing an axis row cannot release
+            // a different row's button. Keep host pointer/menu ownership.
+            uint16_t axis_rows = 0, axis_pressed = 0;
+            for (size_t row = 0; row < options.gamepad_bindings.size(); ++row) {
+                const int binding = options.gamepad_bindings[row];
+                if (binding < 100 || binding > 111) continue;
+                axis_rows |= kNdsButtonMasks[row];
+                if (!controller || runtime_menu_open() || virtual_stylus_active() ||
+                    mph_prime_controls_available) continue;
+                const int value = SDL_GameControllerGetAxis(controller,
+                    static_cast<decltype(SDL_CONTROLLER_AXIS_LEFTX)>((binding - 100) / 2));
+                if ((binding & 1) ? value > 16384 : value < -16384)
+                    axis_pressed |= kNdsButtonMasks[row];
+            }
+            const uint16_t next = (controller_pressed & ~axis_rows) | axis_pressed;
+            if (next != controller_pressed) {
+                controller_pressed = next;
+                publish_keys();
+            }
+        }
         publish_input_debug();
 
         const uint64_t phase0 = SDL_GetPerformanceCounter();
@@ -4121,7 +4174,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 presentation_ticks.swap, frame_compute_map_ns,
                 audio_started ? 1u : 0u, presentation_ticks.pool_wait,
                 presentation_ticks.gl_setup, presentation_ticks.gl_error,
-                presentation_ticks.overlay, adaptive_start - phase1});
+                presentation_ticks.overlay, adaptive_start - phase1,
+                keyboard_pressed, g_input_debug.published_key_mask,
+                scheduler_system_timestamp()});
         record_frontend_pacing(counter, frame_emu_ticks, phase2 - phase1,
                                frequency);
         if (!savestate_notice.empty() && counter >= savestate_notice_until)
@@ -4406,12 +4461,21 @@ bool nds_frontend_debug_touch(uint16_t x, uint16_t y, bool down) {
     event.button.down = down;
 #endif
     event.button.clicks = 1;
-    event.button.x = (g_input_debug.bottom_content_left +
-                      static_cast<int>(x)) * kWindowScale;
-    event.button.y = (g_input_debug.separate ? static_cast<int>(y)
-                                             : kScreenHeight +
-                                                   static_cast<int>(y)) *
-                     kWindowScale;
+    const int logical_x = g_input_debug.bottom_content_left + static_cast<int>(x);
+    const int logical_y = (g_input_debug.separate ? 0 : kScreenHeight) + static_cast<int>(y);
+    SDL_Window* window = SDL_GetWindowFromID(event.button.windowID);
+    SDL_Renderer* renderer = window ? SDL_GetRenderer(window) : nullptr;
+    if (!renderer) return false;
+#if defined(NDS_HAVE_SDL3)
+    if (!SDL_RenderCoordinatesToWindow(renderer, static_cast<float>(logical_x),
+            static_cast<float>(logical_y), &event.button.x, &event.button.y)) return false;
+#elif SDL_VERSION_ATLEAST(2, 0, 18)
+    SDL_RenderLogicalToWindow(renderer, static_cast<float>(logical_x),
+        static_cast<float>(logical_y), &event.button.x, &event.button.y);
+#else
+    event.button.x = logical_x * kWindowScale;
+    event.button.y = logical_y * kWindowScale;
+#endif
     const bool pushed = sdl_push_event(event);
     if (pushed) ++g_input_debug.debug_touch_events;
     else ++g_input_debug.debug_event_errors;

@@ -1136,6 +1136,10 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_include_directories(perf_governor_test PRIVATE src)
   add_test(NAME perf_governor_test COMMAND perf_governor_test)
 
+  add_executable(frontend_bindings_test tests/frontend_bindings_test.cpp)
+  target_include_directories(frontend_bindings_test PRIVATE src)
+  add_test(NAME frontend_bindings_test COMMAND frontend_bindings_test)
+
   # Always-on host CPU sampler (host_profile.h). Three things are gated here:
   # the sample ring's residency/eviction/tear rules, the leaf histogram, and --
   # the one that actually needs proving -- the x64 .pdata/.xdata unwinder, both

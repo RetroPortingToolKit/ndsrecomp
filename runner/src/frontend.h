@@ -5,6 +5,7 @@
 
 #include "cartridge_config.h"
 #include "perf_governor.h"
+#include "../../launcher/nds_input_bindings.h"
 
 // Run the native, human-facing firmware preview. The emulation remains on the
 // same scheduler/device path used by the deterministic debug verifier; SDL is
@@ -194,6 +195,12 @@ struct NdsFrontendOptions {
     std::string expected_rom_sha1;
     NdsScreenLayout screen_layout = NdsScreenLayout::Stacked;
     NdsFullscreenMode fullscreen = NdsFullscreenMode::Off;
+    // Zero preserves the standalone runner's historical 2x sizing. Title
+    // launchers can request 1..8x with display-DPI-aware desktop fitting.
+    uint8_t window_scale = 0;
+    NdsButtonBindings keyboard_bindings = kNdsDefaultKeys;
+    NdsButtonBindings gamepad_bindings = kNdsDefaultPad;
+    bool custom_gamepad_bindings = false;
     NdsStartupMode startup_mode = NdsStartupMode::Preserve;
     NdsBootMode boot_mode = NdsBootMode::Lle;
     // Opt-in synthesized firmware image (no firmware dump). Forces direct
