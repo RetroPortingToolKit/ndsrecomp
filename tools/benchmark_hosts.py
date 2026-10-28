@@ -90,6 +90,12 @@ class Lease:
         self.close()
 
 
+class NoCapacity(RuntimeError):
+    def __init__(self, receipts):
+        self.receipts=receipts
+        super().__init__('No compatible host has the requested headroom: '+json.dumps(receipts))
+
+
 class Pool:
     def __init__(self, config=None):
         self.config = Path(config) if config else HERE/'benchmark_hosts.json'
@@ -157,7 +163,7 @@ class Pool:
                 result.receipt['other_targets']=receipts
                 return result
             receipts.append(result)
-        raise RuntimeError('No compatible host has the requested headroom: '+json.dumps(receipts))
+        raise NoCapacity(receipts)
 
 
 def main():
@@ -198,7 +204,15 @@ def main():
     env={**job.get('env',{}),**dict(value.split('=',1) for value in a.env)}
     if any(not key.replace('_','').isalnum() or key[0].isdigit() for key in env):
         p.error('invalid environment variable name')
-    with pool.reserve(requested,a.owner,a.host,a.os) as lease:
+    try:
+        reserved=pool.reserve(requested,a.owner,a.host,a.os)
+    except NoCapacity as error:
+        receipt=dict(eligible=False,launched_jobs=0,targets=error.receipts)
+        print(json.dumps(receipt),flush=True)
+        if a.out:
+            a.out.write_text(json.dumps(receipt,indent=2)+'\n')
+        return 2
+    with reserved as lease:
         lease.running()
         env.update(CODEX_BENCHMARK_LEASE_TOKEN=lease.receipt['token'],CODEX_BENCHMARK_TARGET=lease.host['id'])
         receipt=dict(before=lease.receipt,command=a.command[1:])

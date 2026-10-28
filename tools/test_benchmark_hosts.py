@@ -7,7 +7,7 @@ from unittest.mock import patch
 import eligible_measurement_host as eligibility
 
 from benchmark_host_agent import assess, FileLock, active_claims, FORMAT
-from benchmark_hosts import Pool, transport
+from benchmark_hosts import Pool, transport, NoCapacity
 
 
 class CapacityTests(unittest.TestCase):
@@ -76,6 +76,13 @@ class CapacityTests(unittest.TestCase):
         with patch.object(eligibility.capacity,'probe',return_value=sample):
             receipt=eligibility.assess(previous,current,set(),set(),[])
         self.assertFalse(receipt['qualified'])
+
+    def test_exhausted_pool_retains_all_rejection_receipts(self):
+        pool=Pool()
+        with patch.object(pool,'candidates',return_value=pool.hosts), patch.object(pool,'connect',return_value=dict(eligible=False)):
+            with self.assertRaises(NoCapacity) as error:
+                pool.reserve(self.request,'unit')
+        self.assertEqual(len(error.exception.receipts),3)
 
     def test_deck_aliases_share_one_ledger(self):
         deck=next(h for h in Pool().hosts if h['id']=='steamdeck')
