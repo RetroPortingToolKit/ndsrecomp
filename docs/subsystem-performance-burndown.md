@@ -88,11 +88,27 @@ retained allocator change in 28. They share one implementation and combined
 qualification, while each broader item retains its unresolved scope. This does
 not mark five whole subsystems complete.
 
-The resumed source builds and passes the ARM9/ARM7 preparation and ISA probes
-plus the allocator selector (3/3). The no-SDK adapter compiles. The preparation
-seed is reproducible from retained private inputs, with 146 page fingerprints
-and 11,550 locations and no guest instruction payload. Common SDK integration,
-matched runtime qualification and release/owner handoff remain open.
+Candidate `db62776` builds for both MKDS and MPH; each passes the ARM9/ARM7
+preparation and ISA probes plus the allocator selector (3/3 per title). The
+no-SDK adapter compiles. The preparation seed reproduces from retained private
+inputs, with 146 page fingerprints and 11,550 locations and no guest instruction
+payload. Fresh exact-binary MKDS menu setup and MPH current-build restore/60-VBlank
+functional inspection pass. Their timings are not performance evidence.
+
+The matched frontend qualification preflight rejected the local host before
+collecting any timed legs because other games were running. The NAS host was
+also occupied. Matched runtime qualification and release/owner handoff remain
+open; all task-owned game servers are stopped. Per-game package identities and
+raw receipts are in `loading-hitches/resident-preparation-evidence.json` under
+the retained task root. No item is checked off from these partial results.
+
+The next related source lead is unified physical-write publication. Both the
+slow bus and inline generated-code path already know the changed physical page,
+but discard that identity at `runtime_note_code_write()`. This forces the native
+consumer to scan watched generations for non-native writers. Evaluate the whole
+publication path across CPU, DMA and bulk writers, retaining exact aliases,
+provenance and immediate executable-write handling; do not repeat the earlier
+native-store-only notification experiment unchanged.
 
 Future work should similarly group complete boundaries where useful: BIOS and
 bulk services (02/03/10), execution/memory/scheduling/device ownership
