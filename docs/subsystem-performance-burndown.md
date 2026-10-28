@@ -488,10 +488,11 @@ quiet-host gates stay unchanged. Both MPH legs passed the new headroom policy.
 
 115,105 real-bus checks pass. MKDS's new path has plausible track/kart/HUD output
 and current-build restore passes in both legs. MPH restored its own same-build
-checkpoint, but its optional-Pillow screenshot helper silently skipped capture.
-A prepared1-frame stdlib capture was rejected before game launch for current
-SERVER capacity; that additional visual remains open. No performance pair was
-repeated and no owner playtest was launched.
+checkpoint. Its optional-Pillow helper initially skipped capture, and an initial
+stdlib follow-up was rejected for headroom. Once SERVER had capacity, one
+reserved checkpoint frame produced coherent combat/HUD and radar/map images.
+That basic visual passes; no performance pair or owner playtest was repeated.
+Images and inspection receipt are in `loading-hitches/native-ram-mph-visual`.
 
 One current combined MKDS review ZIP is prepared and verified:
 `d91f53706ecb33812791e51dd202c7f7cbf7bf34f83b0799c6980270aa2156f2`.
@@ -507,7 +508,7 @@ Shared validation infrastructure (`beads-2wy8.2`) is complete: local PC, SERVER
 and Steam Deck form a compatible-target pool with capacity reservations.
 CPU/GPU/RAM/storage headroom replaces game/build-name vetoes. Pending claims
 reserve capacity; running claims are not double charged, and total declared
-budgets still fit the host. Both Deck SSH aliases share a ledger.14 tests plus
+budgets still fit the host. Both Deck SSH aliases share a ledger. 14 tests plus
 actual Windows/Linux remote commands, concurrent leases, rejection and cleanup
 checks pass. Installed tool: `C:/Users/Matthew/.local/bin/benchmark_hosts.py`.
 Global agent policy and the NDS adapter now use it. The MPH pair ran on SERVER
