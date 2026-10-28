@@ -4,14 +4,47 @@ Recorded 2026-10-27 from the owner's requested chat burndown.
 Owning engine issue: `beads-0vo`. Optimization campaign: `beads-2wy8.1`.
 Loading-hitch implementation: `beads-d8um`; MKDS consumer report: `beads-04cb`.
 
-The owner resumed work on 2026-10-28 and requested serial improvements, bundling related work. The measured loading bundle is prepared; its owner practical check is **deferred**. Continue serial engineering without repeating that handoff or replacing Nextcloud.
+The owner resumed work on 2026-10-28 and requested serial improvements, bundling related work. The next Nextcloud release follows evaluation of **all remaining identified candidates**: each must be implemented and validated or finally rejected with recorded evidence. The current v0.0.11 package is an internal checkpoint; its practical review remains **deferred**. Continue the engineering campaign before preparing the final release handoff.
 Item 01 is first at the owner's request;
 the remaining order is an inventory, not a measured ranking of potential savings.
 
 
+## Release scope and completion rule (owner clarification, 2026-10-28)
+
+The next release is the outcome of completing this burndown. Review all remaining
+identified candidates within items 01-28, working serially and coupling related
+services or ownership boundaries where useful. Existing implemented work and
+valid rejected experiments retain their evidence; neither needs routine repetition.
+
+For each concrete candidate, record the complete service/ownership contract,
+existing implementation and reusable alternatives, relevant profile or source
+attribution, and a final disposition:
+
+- **Implemented and validated:** integrated code plus focused correctness and
+  per-game built-runtime evidence appropriate to the change. Preserve the rule
+  that another game's reproducible regression cannot be offset by aggregate gains.
+- **Rejected:** a final evidence-backed explanation, such as an unsuitable
+  contract, correctness/portability failure, reproducible regression, or insufficient
+  useful benefit relative to its costs. Record which proposal was rejected and why.
+
+**Held, unmeasured, deferred evaluation and inconclusive are unfinished states.**
+They do not count as final rejection. Reuse existing evidence to resolve them;
+a failed small helper does not reject the broader subsystem or a different
+whole-service replacement. A category closes when its identified candidates
+have final dispositions, including rejection where appropriate.
+
+The prepared v0.0.11 archive is a reproducible internal checkpoint. Packaging,
+interim release handoffs and repeated owner reviews do not drive the work order.
+After all candidate decisions, assemble the accepted combined result, reuse valid
+checks, complete the final practical review, then deliver one current archive.
+The owner's earlier Deferred observation is preserved; no interim check is requested.
+Player-speed-under-load remains separately deferred as instructed. Existing small
+profiling budgets and gameplay limits still apply; this scope change authorizes
+no benchmark matrix.
+
 ## Current status
 
-- **Loading release:** combined v0.0.11 loading + canonical GPU snapshots + complete streaming LZ jobs + shared native RAM transactions is built and artifact-verified. Owner course-loading observation is **deferred**; preserve this candidate and Nextcloud v0.0.10.
+- **Internal loading checkpoint:** combined v0.0.11 loading + canonical GPU snapshots + complete streaming LZ jobs + shared native RAM transactions is built and artifact-verified. Owner course-loading observation is **deferred**; preserve this candidate and Nextcloud v0.0.10.
 - **Measured improvement retained in the candidate:** the complete streaming LZ job (`beads-yjp.105`) is implemented and measured: **7.95% / 13.45% fewer emulation-thread CPU cycles** in two180-frame MKDS construction pairs, including one reverse-order repeat for actual background-load ambiguity. Paced frame times are neutral; no guaranteed worst-frame or general racing gain is claimed. Original ARM caller/memory/timing checks pass.
 - **Current serial result:** shared native physical RAM transactions (`beads-yjp.60`), coupling 04/05/08/09, are retained in the prepared v0.0.11 bundle. One same-binary pair observed **6.65% lower MKDS emulation-thread cycles** locally; one MPH pair on SERVER observed **32.12% lower process cycles / 26.32% lower uncapped wall time**, with matching guest counter deltas and scene fields. Different host/workload/counter types are labeled separately; ambient GPU/load differences limit attribution of the large MPH result. Cache-range jobs remain held, neutral/inconclusive; callback and clock experiments stay private. Next: select another complete measured job/ownership boundary using existing evidence, without retuning the held helpers.
 - **GPU capture:** the native-first experiment stays off; its local pair showed
@@ -20,7 +53,7 @@ the remaining order is an inventory, not a measured ranking of potential savings
 This is the complete inventory of opportunities identified so far. “Open” means
 unfinished or worth evaluating; it does **not** mean we have established a speedup.
 
-- [ ] **01. Loading hitches ? ACTIVE, loading-only candidate measured.** Native-code preparation, physical write publication and narrow reads are implemented together. A local exact-delivered v0.0.10 / new-candidate construction sample at compute 4x/AA8 measured worst whole frames **37.1 / 24.4 ms**, frames over 33 ms **1 / 0**, and normal-paced mean frames **16.74 / 16.77 ms**. Background CPU load and GPU clocks differed; this supports practical review, not a clean sustained-throughput claim. Both own-build save/load checks pass. **v0.0.11 source/runtime package and artifact checks pass. Remaining: owner loading observation, then one-current-ZIP delivery.** The GPU capture split stays off and the service-clock pilot stays excluded.
+- [ ] **01. Loading hitches ? ACTIVE, loading-only candidate measured.** Native-code preparation, physical write publication and narrow reads are implemented together. A local exact-delivered v0.0.10 / new-candidate construction sample at compute 4x/AA8 measured worst whole frames **37.1 / 24.4 ms**, frames over 33 ms **1 / 0**, and normal-paced mean frames **16.74 / 16.77 ms**. Background CPU load and GPU clocks differed; this supports practical review, not a clean sustained-throughput claim. Both own-build save/load checks pass. **v0.0.11 source/runtime package and artifact checks pass. Remaining: resolve the loading candidates during the full campaign; practical review and delivery follow all candidate dispositions.** The GPU capture split stays off and the service-clock pilot stays excluded.
 
 - [ ] **02. Remaining BIOS computational services.** Replace complete hot SWI operations with native services: copy/fill, decompression, unpacking/filtering, CRC, arithmetic and sound-table operations where still executed through BIOS instruction streams. Reuse common kernels and publish results once. Existing SDK vector HLE does not exhaust this opportunity.
 
@@ -494,11 +527,11 @@ reserved checkpoint frame produced coherent combat/HUD and radar/map images.
 That basic visual passes; no performance pair or owner playtest was repeated.
 Images and inspection receipt are in `loading-hitches/native-ram-mph-visual`.
 
-One current combined MKDS review ZIP is prepared and verified:
+One current combined MKDS internal-checkpoint ZIP is prepared and verified:
 `d91f53706ecb33812791e51dd202c7f7cbf7bf34f83b0799c6980270aa2156f2`.
 Matching source ZIP:
 `83bfdaddb4754fda793a5b03df2c0960d80a4b576b70543af605a8af45036e49`.
-The ready selector and owner **Deferred** notes are preserved. Nextcloud remains
+The checkpoint selector and owner **Deferred** notes are preserved. Nextcloud remains
 v0.0.10. Full28-category completion remains0/28; selected decoder/RAM jobs and
 the snapshot fix are real completed engineering slices, not exhausted systems.
 Raw per-game identities, conditions and retention needs:
