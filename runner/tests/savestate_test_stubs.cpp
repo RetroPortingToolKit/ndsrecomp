@@ -73,7 +73,8 @@ uint16_t nds_exmemcnt(int) { return 0; }
 uint16_t nds_powercontrol7() { return 0; }
 uint16_t nds_powercontrol9() { return 0; }
 uint16_t nds_wifiwaitcnt() { return 0; }
-uint8_t nds_wramcnt() { return 0; }
+uint8_t g_test_wramcnt=0;
+uint8_t nds_wramcnt() { return g_test_wramcnt; }
 bool nds_powered_off() { return false; }
 uint32_t nds_irq_pending(int) { return 0; }
 uint32_t g_nds_irq_pending_cache[2]{};

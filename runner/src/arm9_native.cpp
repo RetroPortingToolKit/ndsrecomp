@@ -20,6 +20,7 @@ std::string nds_arm9_native_preparation_json() { return "{\"available\":false}";
 #include "arm_decode.h"
 #include "thumb_decode.h"
 #include "native_service_entries.h"
+#include "native_ram.h"
 #include "arm9_native_ir.h"
 #include "arm9_native_watch.h"
 #include "arm9_native_options.h"
@@ -58,6 +59,13 @@ constexpr uint64_t cycles_per_instruction=2;
 bool diagnostic() {static const bool on=std::getenv("NDS_ARM9_NATIVE_DIAGNOSTIC")!=nullptr;return on;}
 bool batched_writes() {
     static const bool enabled=[] {const char* value=std::getenv("NDS_ARM9_BATCH_WRITES");return value&&std::strcmp(value,"1")==0;}();
+    return enabled;
+}
+bool ram_transactions() {
+    static const bool enabled=[] {
+        const char* value=std::getenv("NDS_NATIVE_RAM_TRANSACTIONS");
+        return !value||std::strcmp(value,"0")!=0;
+    }();
     return enabled;
 }
 bool census_enabled=false;
@@ -190,6 +198,12 @@ public:
         std::copy(registers->begin(),registers->end(),g_cpu.R);g_cpu.cpsr=jit->Cpsr();
     }
     std::optional<uint32_t> code(uint32_t addr,bool watch) {
+        if(ram_transactions()) {
+            const NdsNativeRam view=NdsNativeRam::map<uint32_t>(addr);
+            if(!view||!view.has_provenance<uint32_t>())return std::nullopt;
+            if(watch)watches.add(view.generation());
+            return view.read<uint32_t>();
+        }
         uint32_t off=0;const auto* win=nds_busf_classify(addr,&off);
         // No speculative execution from MMIO, ROM or unmapped bytes. Native
         // BIOS/C helpers and remaining executable regions retain their backend.
@@ -294,29 +308,42 @@ public:
         if(nds_native_options().data&&nds_native_plain_video(a,width)) {context();++data_coalesced;}
         else device();
     }
-    uint8_t MemoryRead8(uint32_t a) override {++read_callbacks;read_boundary(a,1);return bus_read_u8(a);}
+    template<class T> T read(uint32_t a) {
+        if(ram_transactions()&&!g_runtime_deep_trace) {
+            const NdsNativeRam view=NdsNativeRam::map<T>(a);
+            if(view)return view.read<T>();
+        }
+        read_boundary(a,sizeof(T));
+        if constexpr(sizeof(T)==1)return bus_read_u8(a);
+        if constexpr(sizeof(T)==2)return bus_read_u16(a);
+        if constexpr(sizeof(T)==4)return bus_read_u32(a);
+    }
+    uint8_t MemoryRead8(uint32_t a) override {++read_callbacks;return read<uint8_t>(a);}
     uint16_t MemoryRead16(uint32_t a) override {
         ++read_callbacks;
         if(NdsArm9ReadKind((*extensions)[0])==NdsArm9ReadKind::HalfSigned&&(a&1u)) {
-            read_boundary(a,1);
-            const uint32_t value=bus_read_u8(a);
+            const uint32_t value=read<uint8_t>(a);
             return uint16_t((value^0x80u)-0x80u);
         }
-        read_boundary(a&~1u,2);return bus_read_u16(a&~1u);
+        return read<uint16_t>(a&~1u);
     }
     uint32_t MemoryRead32(uint32_t a) override {
         ++read_callbacks;
         const auto kind=NdsArm9ReadKind((*extensions)[0]);
-        read_boundary(a&~3u,4);
-        if(kind==NdsArm9ReadKind::BlockWord)return bus_read_u32(a&~3u);
-        return std::rotr(bus_read_u32(a&~3u),int((a&3)*8));
+        const uint32_t value=read<uint32_t>(a&~3u);
+        if(kind==NdsArm9ReadKind::BlockWord)return value;
+        return std::rotr(value,int((a&3)*8));
     }
     uint64_t MemoryRead64(uint32_t a) override {return uint64_t(MemoryRead32(a))|uint64_t(MemoryRead32(a+4))<<32;}
-    void write(uint32_t a,uint32_t value,unsigned width) {
+    template<class T> void write(uint32_t a,T value) {
+        constexpr unsigned width=sizeof(T);
         a&=~(width-1u);
-        uint32_t off=0;const auto* w=nds_busf_classify(a,&off);
+        const NdsNativeRam view=ram_transactions()?NdsNativeRam::map<T>(a):NdsNativeRam{};
+        uint32_t off=0;
+        const auto* w=view?view.window:nds_busf_classify(a,&off);
+        if(view)off=view.offset;
         const uint32_t* generation=w&&w->data&&w->gen? w->gen+(off>>12):nullptr;
-        const bool ordinary_ram=ram(a,width);
+        const bool ordinary_ram=bool(view)||ram(a,width);
         const bool batch_gx=!ordinary_ram&&nds_native_options().gx&&nds_native_gx_command(a,width);
         const bool batch_data=!ordinary_ram&&nds_native_options().data&&nds_native_plain_video(a,width);
         if(!ordinary_ram) {
@@ -328,9 +355,10 @@ public:
         // below. I/O may invoke another bus master, whose writes must stay visible.
         {
             known_write=ordinary_ram;
-            if(width==4)bus_write_u32(a,value);
-            else if(width==2)bus_write_u16(a,uint16_t(value));
-            else bus_write_u8(a,uint8_t(value));
+            if(view&&!g_runtime_deep_trace)view.write(a,value);
+            else if constexpr(width==4)bus_write_u32(a,value);
+            else if constexpr(width==2)bus_write_u16(a,value);
+            else bus_write_u8(a,value);
             known_write=false;
         }
         if(batch_data)++data_coalesced;
@@ -344,10 +372,10 @@ public:
         }
         if(generation&&watches.contains(generation))clear();
     }
-    void MemoryWrite8(uint32_t a,uint8_t v) override {write(a,v,1);}
-    void MemoryWrite16(uint32_t a,uint16_t v) override {write(a,v,2);}
-    void MemoryWrite32(uint32_t a,uint32_t v) override {write(a,v,4);}
-    void MemoryWrite64(uint32_t a,uint64_t v) override {write(a,uint32_t(v),4);write(a+4,uint32_t(v>>32),4);}
+    void MemoryWrite8(uint32_t a,uint8_t v) override {write(a,v);}
+    void MemoryWrite16(uint32_t a,uint16_t v) override {write(a,v);}
+    void MemoryWrite32(uint32_t a,uint32_t v) override {write(a,v);}
+    void MemoryWrite64(uint32_t a,uint64_t v) override {write(a,uint32_t(v));write(a+4,uint32_t(v>>32));}
     void InterpreterFallback(uint32_t pc,size_t n) override {
         pending=true;pending_pc=pc;floors+=n;
         if(census_enabled)floor_census[(uint64_t(pc)<<1)|((jit->Cpsr()&CPSR_T_BIT)?1u:0u)]+=n;
@@ -402,8 +430,15 @@ bool nds_arm9_native_run() {
     // retire its first instruction in the existing reference floor. Otherwise
     // native translation would stop at this same barrier and redispatch forever.
     if(nds_native_service_entry(g_nds_active,g_cpu.R[15],(g_cpu.cpsr&CPSR_T_BIT)!=0))return false;
-    uint32_t off=0;const auto* w=nds_busf_classify(g_cpu.R[15],&off);
-    if(!w||!w->data||!bus_range_has_write_provenance(g_cpu.R[15],4))return false;
+    const auto entry=ram_transactions()?NdsNativeRam::map<uint32_t>(g_cpu.R[15]):NdsNativeRam{};
+    if(entry) {
+        if(!entry.has_provenance<uint32_t>())return false;
+    } else {
+        // Includes unaligned Thumb entries: preserve the original four-byte
+        // admission rule rather than borrowing provenance from adjacent code.
+        uint32_t off=0;const auto* w=nds_busf_classify(g_cpu.R[15],&off);
+        if(!w||!w->data||!bus_range_has_write_provenance(g_cpu.R[15],4))return false;
+    }
     const uint32_t before_poll=g_cpu.R[15];
     runtime_tick(0);
     if(runtime_unwinding()||runtime_should_yield())return true;
@@ -618,7 +653,7 @@ static std::string native_census_json(const Native* n,int cpu) {
 std::string nds_arm9_native_json() {
     const auto& native=natives[NDS_ARM9];
     uint64_t windows=0,fences=0;scheduler_performance_window_counts(&windows,&fences);
-    std::string out="{\"available\":"+std::string(supported_host()?"true":"false")+
+    std::string out="{\"ram_transactions\":"+std::string(ram_transactions()?"true":"false")+",\"available\":"+std::string(supported_host()?"true":"false")+
         ",\"diagnostic\":"+std::string(diagnostic()?"true":"false")+
         ",\"census_enabled\":"+std::string(census_enabled?"true":"false")+
         ",\"compile_census_enabled\":"+std::string(compilation_census()?"true":"false")+

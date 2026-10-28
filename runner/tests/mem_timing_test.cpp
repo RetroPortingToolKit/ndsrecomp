@@ -40,6 +40,9 @@
 
 #include "runtime_arm.h"
 #include "state.h"
+#include "native_ram.h"
+#include "savestate.h"
+extern uint8_t g_test_wramcnt;
 
 extern "C" uint32_t runtime_mem_cycles_slow(uint32_t addr, uint32_t width,
                                             uint32_t sequential);
@@ -367,18 +370,28 @@ constexpr uint8_t guard_expected[]={0x00,0x00,0xa0,0xe1};
 const NdsStaticValidation guard_root_validation{guard_root_pc,4,guard_expected};
 const NdsStaticValidation guard_child_validation{guard_child_pc,4,guard_expected};
 unsigned guard_case=0,guard_root_calls=0,guard_child_calls=0;
-bool guard_root_yield=false,guard_child_yield=false;
+bool guard_root_yield=false,guard_child_yield=false,guard_native=false;
+template<class T> void guard_store(uint32_t address,T value) {
+    if(guard_native) {
+        auto view=NdsNativeRam::map<T>(address);
+        if(!view){fail("guard fixture expected ordinary RAM");return;}
+        view.write(address,value);
+    } else {
+        if constexpr(sizeof(T)==1)bus_write_u8(address,value);
+        else bus_write_u32(address,value);
+    }
+}
 void guard_child_body() {
     ++guard_child_calls;
-    bus_write_u8(guard_root_pc+0x00400000u,1);
+    guard_store<uint8_t>(guard_root_pc+0x00400000u,1);
     guard_child_yield=runtime_should_yield();
 }
 void guard_root_body() {
     ++guard_root_calls;
     switch(guard_case) {
-    case 0: bus_write_u32(0x02008000u,37);break;
-    case 1: bus_write_u32(guard_root_pc+128,41);break;
-    case 2: bus_write_u8(guard_root_pc+0x00400000u,1);break;
+    case 0: guard_store<uint32_t>(0x02008000u,37);break;
+    case 1: guard_store<uint32_t>(guard_root_pc+128,41);break;
+    case 2: guard_store<uint8_t>(guard_root_pc+0x00400000u,1);break;
     case 3:
         runtime_dispatch(guard_child_pc);
         g_cpu.R[15]=guard_root_pc+4;
@@ -404,8 +417,9 @@ void check_physical_write_guards() {
     g_nds_active=NDS_ARM9;
     g_cpu.cpsr=0x1fu;
     nds_register_dispatch(0,guard_rows,2,0xffff0000u);
-    for(unsigned slow=0;slow<2;++slow) {
-        runtime_set_deep_trace(slow);
+    for(unsigned slow=0;slow<3;++slow) {
+        guard_native=slow==2;
+        runtime_set_deep_trace(slow==1);
         for(guard_case=0;guard_case<5;++guard_case) {
             bus_write_u32(guard_root_pc,0xe1a00000u);
             bus_write_u32(guard_child_pc,0xe1a00000u);
@@ -426,7 +440,110 @@ void check_physical_write_guards() {
 }
 }
 
-int main() {
+namespace {
+template<class T> void native_ram_case(uint32_t address) {
+    const NdsNativeRam view=NdsNativeRam::map<T>(address);
+    ++g_checks;
+    if(!view) {
+        // Unaligned/device/unmapped accesses have deliberately no direct view.
+        return;
+    }
+    ++g_checks;
+    if(view.has_provenance<T>()!=bus_range_has_write_provenance(address,sizeof(T)))
+        fail("native code provenance differs from real bus");
+    const auto slow_read=[&]() -> T {
+        if constexpr(sizeof(T)==1)return bus_read_u8_slow(address);
+        if constexpr(sizeof(T)==2)return bus_read_u16_slow(address);
+        if constexpr(sizeof(T)==4)return bus_read_u32_slow(address);
+    };
+    ++g_checks;
+    if(view.read<T>()!=slow_read())fail("native RAM mapping differs from real bus");
+    auto* bytes=view.window->data+view.offset;
+    auto* written=view.window->written+view.offset;
+    auto* generation=view.window->gen+(view.offset>>12);
+    uint8_t old_data[sizeof(T)],old_written[sizeof(T)];
+    std::memcpy(old_data,bytes,sizeof(T));
+    std::memcpy(old_written,written,sizeof(T));
+    const auto old_generation=*generation;
+    // Original provenance means nonzero, including noncanonical imported flags.
+    for(unsigned i=0;i<sizeof(T);++i)written[i]=uint8_t(2u<<i);
+    ++g_checks;
+    if(!view.has_provenance<T>()||!bus_range_has_write_provenance(address,sizeof(T)))
+        fail("native provenance narrowed valid nonzero flags");
+    for(unsigned i=0;i<sizeof(T);++i) {
+        const auto old=written[i];written[i]=0;
+        ++g_checks;
+        if(view.has_provenance<T>()||bus_range_has_write_provenance(address,sizeof(T)))
+            fail("native code admission overlooked one unwritten byte");
+        written[i]=old;
+    }
+    const T value=static_cast<T>(0x9173a5c9u);
+    *generation=UINT32_MAX;
+    view.write(address,value);
+    uint8_t candidate_data[sizeof(T)],candidate_written[sizeof(T)];
+    std::memcpy(candidate_data,bytes,sizeof(T));
+    std::memcpy(candidate_written,written,sizeof(T));
+    const auto candidate_generation=*generation;
+    std::memcpy(bytes,old_data,sizeof(T));
+    std::memcpy(written,old_written,sizeof(T));
+    *generation=UINT32_MAX;
+    if constexpr(sizeof(T)==1)bus_write_u8_slow(address,value);
+    if constexpr(sizeof(T)==2)bus_write_u16_slow(address,value);
+    if constexpr(sizeof(T)==4)bus_write_u32_slow(address,value);
+    ++g_checks;
+    if(candidate_generation!=1 || *generation!=candidate_generation ||
+       std::memcmp(candidate_data,bytes,sizeof(T)) ||
+       std::memcmp(candidate_written,written,sizeof(T)))
+        fail("native store bytes/provenance/generation differ from real bus");
+    std::memcpy(bytes,old_data,sizeof(T));
+    std::memcpy(written,old_written,sizeof(T));
+    *generation=old_generation;
+}
+void check_native_ram_transactions() {
+    bus_init();cp15_reset();runtime_set_deep_trace(0);
+    for(unsigned config=0;config<4;++config) {
+        if(config==0)cfg_bare();
+        if(config==1)cfg_typical();
+        if(config==2)cfg_tcm_moved();
+        if(config==3) {
+            cfg_typical();cp15_itcm(0);cp15_dtcm(0x02001000u,0);
+        }
+        for(g_test_wramcnt=0;g_test_wramcnt<4;++g_test_wramcnt) {
+            bus_fast_refresh();
+            for(NdsCpu cpu:{NDS_ARM9,NDS_ARM7}) {
+                g_nds_active=cpu;
+                ++g_checks;
+                if(!NdsNativeRam::map<uint32_t>(0x02008000u) ||
+                   NdsNativeRam::map<uint32_t>(0x04000130u) ||
+                   NdsNativeRam::map<uint32_t>(0x02008002u))
+                    fail("native RAM expected coverage/device/unaligned admission");
+                auto addresses=probe_addresses();
+                for(auto edge:{0x00000200u,0x02001200u})
+                    for(int d=-4;d<=4;++d)addresses.push_back(edge+d);
+                for(uint32_t address:addresses) {
+                    native_ram_case<uint8_t>(address);
+                    native_ram_case<uint16_t>(address);
+                    native_ram_case<uint32_t>(address);
+                }
+            }
+        }
+    }
+    g_test_wramcnt=0;bus_fast_refresh();
+    g_nds_active=NDS_ARM9;cfg_typical();
+    NdsCp15SaveState snapshot{};cp15_savestate_export(&snapshot);
+    cfg_tcm_moved();cp15_savestate_import(snapshot,nullptr);
+    native_ram_case<uint32_t>(0x027c0000u);
+    native_ram_case<uint32_t>(0x02400000u);
+    cp15_reset();
+    check_physical_write_guards();
+    std::printf("native_ram_transactions: %lld checks, %d failure(s)\n",g_checks,g_failures);
+}
+}
+int main(int argc,char** argv) {
+    if(argc==2 && std::strcmp(argv[1],"--native-ram-only")==0) {
+        check_native_ram_transactions();return g_failures?1:0;
+    }
+
     // No nds_io_reset(): io.cpp is stubbed in this link (see
     // savestate_test_stubs.cpp). The GBA-slot / Wi-Fi timings that read live
     // I/O registers therefore see the stubs' constant values -- which is

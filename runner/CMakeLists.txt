@@ -1297,6 +1297,7 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   ndsrecomp_link_tomlpp(mem_timing_test)
   target_link_libraries(mem_timing_test PRIVATE nds_armv4t nds_support)
   add_test(NAME mem_timing_test COMMAND mem_timing_test)
+  add_test(NAME native_ram_transactions_test COMMAND mem_timing_test --native-ram-only)
 
   add_executable(savestate_slots_test
       tests/savestate_slots_test.cpp
