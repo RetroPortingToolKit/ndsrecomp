@@ -4,37 +4,23 @@ Recorded 2026-10-27 from the owner's requested chat burndown.
 Owning engine issue: `beads-0vo`. Optimization campaign: `beads-2wy8.1`.
 Loading-hitch implementation: `beads-d8um`; MKDS consumer report: `beads-04cb`.
 
-The owner resumed the full burndown goal on 2026-10-27. Loading work is **active**.
+The owner resumed work on 2026-10-28 and requested serial improvements, bundling related work. The measured loading bundle is prepared; its owner practical check is **deferred**. Continue serial engineering without repeating that handoff or replacing Nextcloud.
 Item 01 is first at the owner's request;
 the remaining order is an inventory, not a measured ranking of potential savings.
 
 
-## Current decision, 2026-10-28
+## Current status
 
-Local measurements are possible and have now been collected. Earlier strict
-quiet-host rejections remain historical diagnostics; they do not mean this
-machine cannot measure. Preserve the ambient-load caveats and original gate
-values rather than relabelling them as controlled measurements.
-
-The exact-delivered MKDS sample and completed new-build sample support a
-loading-only practical candidate, with paced average frame time essentially
-unchanged and the worst sampled loading frame reduced. The earlier 48.9 ms
-control is a retained development build, not shipped v0.0.10; do not confuse
-those baselines. MPH's existing bounded CPU sample trends modestly positive
-(9.505 -> 9.219 ms/frame); it is not the new MKDS GPU experiment.
-
-The same-binary capture-first OFF/ON pair shows no material whole-frame gain
-(16.77 / 16.61 ms mean; 24.42 / 24.18 ms worst) under differing ambient load
-and clocks. Hold that private selector OFF and stop repeating that experiment.
-The CPU service-clock pilot remains excluded pending per-game cost and fixed
-simulation-profile qualification. None of the 28 broad scopes is exhausted.
-Raw local samples, telemetry, exact identities and limitations are retained in
-`loading-hitches/local-loading-package-measurements.json` under the task root.
+- **Loading release:** combined v0.0.11 loading + canonical GPU snapshots + complete streaming LZ jobs + shared native RAM transactions is built and artifact-verified. Owner course-loading observation is **deferred**; preserve this candidate and Nextcloud v0.0.10.
+- **Measured improvement retained in the candidate:** the complete streaming LZ job (`beads-yjp.105`) is implemented and measured: **7.95% / 13.45% fewer emulation-thread CPU cycles** in two180-frame MKDS construction pairs, including one reverse-order repeat for actual background-load ambiguity. Paced frame times are neutral; no guaranteed worst-frame or general racing gain is claimed. Original ARM caller/memory/timing checks pass.
+- **Current serial result:** shared native physical RAM transactions (`beads-yjp.60`), coupling 04/05/08/09, are retained in the prepared v0.0.11 bundle. One same-binary pair observed **6.65% lower MKDS emulation-thread cycles** locally; one MPH pair on SERVER observed **32.12% lower process cycles / 26.32% lower uncapped wall time**, with matching guest counter deltas and scene fields. Different host/workload/counter types are labeled separately; ambient GPU/load differences limit attribution of the large MPH result. Cache-range jobs remain held, neutral/inconclusive; callback and clock experiments stay private. Next: select another complete measured job/ownership boundary using existing evidence, without retuning the held helpers.
+- **GPU capture:** the native-first experiment stays off; its local pair showed
+  no material whole-frame benefit. Player-speed-under-load remains deferred.
 
 This is the complete inventory of opportunities identified so far. “Open” means
 unfinished or worth evaluating; it does **not** mean we have established a speedup.
 
-- [ ] **01. Loading hitches ? ACTIVE, loading-only candidate measured.** Native-code preparation, physical write publication and narrow reads are implemented together. A local exact-delivered v0.0.10 / new-candidate construction sample at compute 4x/AA8 measured worst whole frames **37.1 / 24.4 ms**, frames over 33 ms **1 / 0**, and normal-paced mean frames **16.74 / 16.77 ms**. Background CPU load and GPU clocks differed; this supports practical review, not a clean sustained-throughput claim. Both own-build save/load checks pass. **Remaining: final v0.0.11 source/runtime package and artifact checks, owner loading observation, one-current-ZIP delivery.** The GPU capture split stays off and the service-clock pilot stays excluded.
+- [ ] **01. Loading hitches ? ACTIVE, loading-only candidate measured.** Native-code preparation, physical write publication and narrow reads are implemented together. A local exact-delivered v0.0.10 / new-candidate construction sample at compute 4x/AA8 measured worst whole frames **37.1 / 24.4 ms**, frames over 33 ms **1 / 0**, and normal-paced mean frames **16.74 / 16.77 ms**. Background CPU load and GPU clocks differed; this supports practical review, not a clean sustained-throughput claim. Both own-build save/load checks pass. **v0.0.11 source/runtime package and artifact checks pass. Remaining: owner loading observation, then one-current-ZIP delivery.** The GPU capture split stays off and the service-clock pilot stays excluded.
 
 - [ ] **02. Remaining BIOS computational services.** Replace complete hot SWI operations with native services: copy/fill, decompression, unpacking/filtering, CRC, arithmetic and sound-table operations where still executed through BIOS instruction streams. Reuse common kernels and publish results once. Existing SDK vector HLE does not exhaust this opportunity.
 
@@ -52,7 +38,7 @@ unfinished or worth evaluating; it does **not** mean we have established a speed
 
 - [ ] **09. Code identity, provenance and invalidation ownership.** Consolidate physical-page identity, executable-write notification, generation checks and cache invalidation across execution backends. Precise notifications already shipped; their reduced comparison counts were **not** a proven timing win. The remaining opportunity requires broader ownership changes.
 
-- [ ] **10. Whole bulk-memory and asset-construction jobs.** Replace complete copy/fill/decode/relocation jobs, potentially through to resource publication, rather than swapping individual loads and stores for `memcpy`. Share underlying work with BIOS services; do not count the same improvement twice.
+- [ ] **10. Whole bulk-memory and asset-construction jobs.** Replace complete copy/fill/decode/relocation jobs, potentially through to resource publication, rather than swapping individual loads and stores for `memcpy`. Share underlying work with BIOS services; do not count the same improvement twice. **Selected lead:** the complete 256-byte streaming LZ chunk function accounts for 1,564,781 tracked byte-swap fallbacks (80.8% of ARM9 reference stops) in the existing loading census. `beads-yjp.105` now implements the complete resumable native decoder with its guest frame, split tokens, overlapping backreferences, bounded scheduler continuations and physical output publication. **Measured selected job:** 7.95% / 13.45% lower emulation-thread CPU cycles in MKDS loading; practical acceptance remains open. Other copy/fill/decode/relocation jobs still need attribution and evaluation; this does not exhaust all bulk-memory work.
 
 - [ ] **11. Dual-CPU scheduling and event ownership.** Redesign ARM9/ARM7 execution windows around actual shared-memory, IPC, DMA, timer and interrupt observation points. Reduce repeated catch-up and deadline work where the contract permits. Blindly increasing the quantum or adding CPU threads is insufficient.
 
@@ -82,7 +68,7 @@ unfinished or worth evaluating; it does **not** mean we have established a speed
 
 - [ ] **24. Wireless transport and emulation synchronization.** Reconcile outstanding transport work, then address remaining host waits, packet handling and synchronization costs where demonstrated. Earlier sleep-polling fixes are existing work to reuse. Preserve authentic local-wireless/WFC behavior when changing these boundaries.
 
-- [ ] **25. Save-state and persistent-I/O stalls.** Separate coherent state capture from compression and disk writing so saving does not unnecessarily block gameplay. Review cartridge/native-save I/O where relevant. Old save-state compatibility requires no work; native saves remain protected.
+- [ ] **25. Save-state and persistent-I/O stalls.** Separate coherent state capture from compression and disk writing so saving does not unnecessarily block gameplay. Review cartridge/native-save I/O where relevant. Old save-state compatibility requires no work; native saves remain protected. **Validated slice:** `beads-yjp.104` fixes GPU command snapshot host-padding nondeterminism by defining all eight entry bytes and rejecting invalid command high bits. The poisoned original fails; real FIFO/geometry/current-state tests pass after the fix. It is included in the prepared loading release; asynchronous snapshot/compression/I/O work remains open.
 
 - [ ] **26. Runtime observability overhead.** Aggregate remaining counters, hooks, tracing gates and state publication at useful boundaries. Lean diagnostics already shipped, and deep tracing is already disabled during ordinary play. Any further work must target measured production overhead.
 
@@ -266,6 +252,82 @@ Diagnostics, code layout and resource lifetimes (26–28) should follow the jobs
 they affect. These are coupling guides, not authorization to mix unrelated
 changes or credit a shared improvement more than once.
 
+### Latest measurements and execution follow-up, 2026-10-28
+
+Local measurements are possible and have now been collected. Earlier strict
+quiet-host rejections remain historical diagnostics; they do not mean this
+machine cannot measure. Preserve the ambient-load caveats and original gate
+values rather than relabelling them as controlled measurements.
+
+The v0.0.11 loading-only runtime ZIP is prepared and verified, including
+matching source, all six banks, DLL/license closure and private-payload checks.
+The isolated loading selector and observations live under the retained task
+root (`Review-Loading-v0.0.11.ps1`, `loading-review-v0.0.11-notes.json`).
+Current Nextcloud v0.0.10 remains untouched until practical acceptance.
+
+The exact-delivered MKDS sample and completed new-build sample support a
+loading-only practical candidate, with paced average frame time essentially
+unchanged and the worst sampled loading frame reduced. The earlier 48.9 ms
+control is a retained development build, not shipped v0.0.10; do not confuse
+those baselines. MPH's existing bounded CPU sample trends modestly positive
+(9.505 -> 9.219 ms/frame); it is not the new MKDS GPU experiment.
+
+The same-binary capture-first OFF/ON pair shows no material whole-frame gain
+(16.77 / 16.61 ms mean; 24.42 / 24.18 ms worst) under differing ambient load
+and clocks. Hold that private selector OFF and stop repeating that experiment.
+The CPU service-clock pilot remains excluded pending per-game cost and fixed
+simulation-profile qualification. None of the 28 broad scopes is exhausted.
+Raw local samples, telemetry, exact identities and limitations are retained in
+`loading-hitches/local-loading-package-measurements.json` under the task root.
+
+The execution/device follow-up now has a full-package cost observation:
+MKDS12.24->11.37 CPUms/frame, MPH6.16->7.03, with unequal background load and
+cross-profile starting states. The unchanged service-clock pilot stays held;
+its MKDS result cannot offset the MPH concern. Reassessment targets callback
+context ownership: a private SDK replacement now publishes PC/access-kind/clock
+prefix only on actual callbacks, avoiding those stores on mapped RAM reads.
+Both-CPU legacy/new transport probes (including mixed RAM/MMIO clock cases)
+pass, both titles build, and the A64 shared x64 memory emitter compiles.
+Whole-game state/cost qualification remains open: its180s shared-reservation
+wait ended with zero timed legs. This directly couples04/08/11/13/27 while
+reusing existing loading/publication work, without closing a broad subsystem.
+Source and raw records are in retained `loading-hitches/callback-context-evidence.json`
+and `full-device-package-evidence.json`; SDK commit `54a9140` remains private.
+The prepared loading-only v0.0.11 and Nextcloud archives are unchanged.
+
+
+### Latest coupled result, 2026-10-28
+
+The combined prepared v0.0.11 now includes the default GPU command snapshot
+correctness fix at framework `b365a7f`, title `d6f005a`. Runtime ZIP SHA-256 is
+`23b64649d9eeafecd232eba4695d11a1732e070b6b84d6655a2eb473ea73b58a`;
+runner starts `cd4130cc`. Matching source, all six banks, eight-binary DLL/license
+closure, ZIP integrity and private-payload checks pass. The previous candidate
+was verified before moving to a bounded superseded-review backup. The same
+review selector now uses the combined candidate; notes/settings/native saves
+are preserved. Nextcloud0.0.10 remains unchanged pending practical observation.
+
+The callback-context MKDS pair is complete: emulation-thread CPU1.875/1.890625s
+and cycles8.939/8.884billion over180VBlanks, neutral/inconclusive. Guest counters,
+sampled RAM and all raw sections exceptGP3D match. Every GP3D difference is
+proved unused entry padding in the old binary (nine before,five after), not
+new callback semantics; raw hashes/gates stay unchanged. MPH preparation was
+corrected from Faithful to explicit Performance with both native CPUs verified.
+Its timing attempts still collected zero legs because the reservation was held.
+Reuse the completed MKDS pair; clock/context stay unadopted.
+
+Reassessment selects a complete asset job: retained code/census prove the
+streaming LZ chunk body at0x0214D464..0x0214D564, with literal and backreference
+output sites causing80.8% of ARM9 reference stops in that load. `beads-yjp.105`
+couples the whole decode, continuation and publication contract with01/02/04/05/09/10.
+Code/RAM proof stays private; no new per-byte opcode patch or hostCPU speedup
+claim follows. Caller/interrupt/alias ownership and full service implementation,
+per-game measurement and practical qualification remain required.
+
+Raw receipts: `loading-hitches/gpu-fifo-snapshot-evidence.json`,
+`callback-context-evidence.json`, `streaming-lz-job-lead.json`, and
+`snapshot-candidate-promotion-receipt.json` under the retained task root.
+
 ## Working and completion rules
 
 - Work solo. Preserve owner files, native saves, settings and unrelated work.
@@ -308,3 +370,147 @@ changes or credit a shared improvement more than once.
   `docs/native-burndown-20261027.json` and central `beads-yjp.100`. That prior
   issue is closed after its delivered package was accepted; deferred research
   within it is carried forward by this list.
+
+
+## Serial improvement: complete streaming LZ job (2026-10-28)
+
+`beads-yjp.105`, framework `993ce7073fb9c0c787b6b1f974a0006a69194226`,
+title `9bb0100adc9f4d3b52a113f61e845279f24e27bd`. This is one complete
+decode/publication job bundled with the loading candidate, not another
+callback tweak. Whole-code proof owns cold continuation PCs independently of
+older generated-bank splits. Unsupported mappings, diagnostics and short
+budgets use the existing reference floor; the faithful/LLE path remains.
+
+Focused correctness:60 original-ARM cases /5356 exact materialized boundaries
+match all registers, CPSR, the full caller memory and the original-instruction
+count under the identified two-cycle native-service profile. Split compressed
+tokens, distance-one/overlapping output, input/output/context/stack aliases and
+physical mirrors are covered. Built current-save/load passes in all four legs;
+one candidate image sanity inspection shows plausible output.
+
+One initial180-frame construction pair and one reverse-order repeat (solely to
+resolve real load ambiguity), same compute4x/AA8 configuration and exact binaries:
+
+| Pair | Baseline emulation CPU cycles | Native job cycles | Saving | Baseline/candidate mean paced frame |
+| --- | ---: | ---: | ---: | ---: |
+| A/B | 8,725,871,950 | 7,552,137,190 | 13.45% |16.730 /16.718 ms |
+| B/A repeat | 8,970,385,220 | 8,257,412,140 | 7.95% |16.693 /16.828 ms |
+
+Background activity was unequal (6.34/2.48 and5.30/4.92 cores). These are
+observed positive CPU-cost results and neutral paced presentation, with that
+precision limit. The large first worst-frame difference did not reproduce;
+do not claim a guaranteed hitch reduction or general racing/FPS improvement.
+The old quiet-host gate remains false; no passing performance JSON was invented.
+Other games receive no new decoder binding and have no new qualification claim.
+
+Runtime/source ZIP is verified and prepared as the one current v0.0.11 review
+candidate, SHA256 `2a7a6aa4696d218f128e3a73158f0587908759baf6977bec8c4afb6438cf8fd4`.
+Nextcloud v0.0.10 remains untouched. Remaining: owner loading observation via
+`Review-Loading-v0.0.11.ps1`, then one-current-ZIP replacement. Full28-category
+completion remains0/28; the complete selected decoder job is implemented and
+measured, awaiting that shared practical handoff. Keep the other experiments
+parked and player-speed loss deferred.
+
+Machine-readable per-game rows, raw A/B receipts, exact identities and retained
+storage/cleanup needs are in
+`G:/Temp/Codex/ndsrecomp/mkds-input-load-20261027/loading-hitches/streaming-lz-job-evidence.json`.
+
+Owner follow-up2026-10-28: **practical loading check deferred**. Recorded in the isolated selector notes; Nextcloud remainsv0.0.10. Keep the verified combined candidate for later review. This defers the human check, not the serial optimization campaign. Finish this bundle bookkeeping, then select the next demonstrated cost; do not repeat the completed loading samples.
+
+Next serial engineering work: `beads-yjp.106`, complete transparent cache-maintenance range services (invalidate, clean, drain+clean/invalidate). Retained loading counts and the current CP15 no-cache-state model select this whole-job replacement; no performance claim or new run yet. Work starts from the measured decoder head993ce70 in isolated branch `perf/cache-maintenance-jobs-20261028`; the verified v0.0.11 review artifact remains unchanged. Player-speed report and held callback/capture experiments stay deferred.
+
+Cache-family implementation milestone: `6f381a795ecb338c374d8bca8831c43f4993270e` implements complete transparent range jobs, with216 original-ARM cases/7533 exact boundaries and the real CP15 state contract passing. A single MKDS candidate is building; one matched loading pair against the decoder baseline is next. This is not yet a measured cache-family win or a new release. The ready decoder bundle and deferred owner observation are preserved.
+
+
+Cache-family decision2026-10-28 (`beads-yjp.106`): **held, neutral/inconclusive**.
+One180-frame built pair on the measured decoder baseline, compute4x/AA8,
+observed emulation-thread CPU cycles9,695,623,890 /9,477,776,540 (-2.25%)
+and paced means16.776 /16.712ms. Background9.28/7.01 cores differed; this
+does not establish a timing win. Reference stops908,759 /707,168 and all
+focused/built correctness checks pass, but counts do not justify adoption.
+Keep the cache option LLE by default and out of the ready release. Do not
+repeat/tune this small result now. Raw per-game evidence:
+`loading-hitches/cache-maintenance-job-evidence.json` in the retained task root.
+
+Next serial decision: attribute native bulk-service/scheduler ownership before
+another implementation. The decoder still materializes roughly325,000 host
+batches per construction phase (about4 output bytes/batch); that is a lead,
+not its host CPU share. Reuse existing profiles first and take one small
+purpose-driven host sample only if needed. The supported decoder package,
+owner-deferred practical check and Nextcloudv0.0.10 are unchanged.
+
+
+Post-decoder attribution2026-10-28 (`beads-yjp.60`): one180-frame diagnostic,
+exact runner751b/source993ce70, fresh menus/compute4x/AA8, no practical-QA repeat.
+Raw45,558 host samples are unchanged; the derived filter keeps549 samples in
+exact emu-active intervals. About18% are unresolved native JIT addresses. The
+hybrid attribution puts ARM9 execution first (~1400ms), scheduler bookkeeping
+~231ms and context copies ~7ms against2229ms selected emulation. The hybrid
+query brackets slightly more than the exact sampler window and has estimator
+variance; these are diagnostic magnitudes, not performance results.
+
+The decoder's self-time share is small despite its325k batches. Native entry,
+provenance and ordinary-RAM callbacks show a clearer recurring cost. Selected
+implementation `c24e2e5` gives native code fetch/admission and reads/stores one
+instruction-local physical view, retaining the existing physical publication
+and invalidation authority. It changes no scheduling quantum or guest cycles,
+keeps device/diagnostic fallbacks and preserves unaligned/signed semantics.
+115,105 focused checks cover real bus mappings/provenance, WRAM/TCM, map import,
+store generations and active self-modifying-code/alias/nested guards. One
+same-binary180-frame MKDS off/on pair is budgeted after the build. No adoption
+or new game performance result is claimed yet. Raw diagnostic/filter identities:
+`loading-hitches/decoder-host-attribution/baseline/derivation.json` under the
+retained task root. Ready decoder v0.0.11 remains unchanged; practical check
+Deferred, Nextcloud v0.0.10, player-speed report deferred.
+
+
+Native RAM transaction decision2026-10-28 (`beads-yjp.60`): **retained in the
+combined MKDS candidate**, engine `c24e2e5`, title `76a22b1`.
+
+| Game/host/workload | Original RAM path | Shared RAM view | Observed change |
+| --- | ---: | ---: | ---: |
+| MKDS/local,180 construction frames, compute4x/AA8; emulation-thread cycles |9,263,402,490 |8,647,364,090 | -6.65% |
+| MKDS same pair, process CPU seconds |2.71875 |2.59375 | -4.60% |
+| MPH/SERVER,600 room92 frames, nativeGL1x; process cycles |23,556,684,678 |15,990,829,291 | -32.12% |
+| MPH same pair, uncapped wall seconds |5.148102 |3.792874 | -26.32% |
+
+Each game used one executable with a process-fixed RAM0/1 selector. MKDS keeps
+the loading/snapshot/streaming job package; MPH keeps its native-control/math/
+submission package and has no MKDS decoder/cache binding. These are per-game
+comparisons, not equal packages or an aggregate gain. MKDS background load was
+9.05/9.25 logical core equivalents; both large emu-wall outliers used fewer
+thread cycles than their respective median frame. No hitch/FPS cure is claimed.
+MPH's guest instruction/event/submission/native deltas and initial/final scene
+fields match, excluding diagnostic cumulative VBlank counts. Background CPU was
+1.79/1.95 cores, while sampled background GPU differed (~38%/11%); the large
+positive observation is not an isolated or whole-game win estimate. Existing
+quiet-host gates stay unchanged. Both MPH legs passed the new headroom policy.
+
+115,105 real-bus checks pass. MKDS's new path has plausible track/kart/HUD output
+and current-build restore passes in both legs. MPH restored its own same-build
+checkpoint, but its optional-Pillow screenshot helper silently skipped capture.
+A prepared1-frame stdlib capture was rejected before game launch for current
+SERVER capacity; that additional visual remains open. No performance pair was
+repeated and no owner playtest was launched.
+
+One current combined MKDS review ZIP is prepared and verified:
+`d91f53706ecb33812791e51dd202c7f7cbf7bf34f83b0799c6980270aa2156f2`.
+Matching source ZIP:
+`83bfdaddb4754fda793a5b03df2c0960d80a4b576b70543af605a8af45036e49`.
+The ready selector and owner **Deferred** notes are preserved. Nextcloud remains
+v0.0.10. Full28-category completion remains0/28; selected decoder/RAM jobs and
+the snapshot fix are real completed engineering slices, not exhausted systems.
+Raw per-game identities, conditions and retention needs:
+`loading-hitches/native-ram-transactions-evidence.json` under the task root.
+
+Shared validation infrastructure (`beads-2wy8.2`) is complete: local PC, SERVER
+and Steam Deck form a compatible-target pool with capacity reservations.
+CPU/GPU/RAM/storage headroom replaces game/build-name vetoes. Pending claims
+reserve capacity; running claims are not double charged, and total declared
+budgets still fit the host. Both Deck SSH aliases share a ledger.13 tests plus
+actual Windows/Linux remote commands, concurrent leases, rejection and cleanup
+checks pass. Installed tool: `C:/Users/Matthew/.local/bin/benchmark_hosts.py`.
+Global agent policy and the NDS adapter now use it. The MPH pair ran on SERVER
+alongside another capacity-reserved job; unrelated work was preserved. Target
+rotation does not require a three-host benchmark matrix or establish a Deck
+build/backend qualification.
