@@ -172,6 +172,29 @@ grounded in loading-phase attribution. This pilot remains outside the release
 candidate. See `docs/native-read-transaction-investigation.md` in the retained
 framework worktree.
 
+The actual loading-phase census now identifies cartridge-ready polling as the
+dominant boundary: ROMCTRL contributes 4,570,753 of 5,044,235 slow reads
+(90.61%). The cartridge extension exposed stale device timestamps when native
+execution continues across reads. A private shared service-clock/ownership
+implementation addresses that boundary and couples 01/04/08/09/11/12/13.
+Its same-clock MKDS off/on check has identical complete prepared starting
+snapshots, instruction counts, reference stops, device reads, scene and sampled
+RAM after 180 VBlanks. Native entries fall by 4,680,529 (52.29%). Actual ARM9/ARM7
+clock probes and one bounded MPH check/current-build restore pass; both games'
+basic output is plausible. **This remains structural/correctness evidence.**
+The first cost attempt stopped at the unavailable shared measurement file
+before launch. After it became available, one short diagnostic pair per game
+has completely equal before/after guest snapshots with the clock enabled on
+both sides. MKDS CPU is lower (13.28 → 11.37 ms/frame), while MPH is higher
+(5.90 → 8.07) under substantially unequal background load. Both gates stay
+false. Resolve MPH and measure the full package, including clock overhead,
+against the prior production path. Do not aggregate these results or equate
+fewer entries with a qualified speedup. The
+prototype stays outside `928da54`; matched per-game costs, fixed simulation
+profile/compatibility integration and practical qualification remain open.
+Source, incremental SDK patch and raw receipts are retained in
+`loading-hitches/cartridge-transaction-evidence.json` under the task root.
+
 Future work should similarly group complete boundaries where useful: BIOS and
 bulk services (02/03/10), execution/memory/scheduling/device ownership
 (04–09/11–13), model-to-geometry preparation (14–17), render/capture/presentation
