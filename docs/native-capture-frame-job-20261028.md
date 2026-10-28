@@ -67,3 +67,34 @@ copies, image, isolated state slot and raw functional output are under
 `capture-first-evidence.json`, `nas-capture-first-receipts/` and
 `capture-first-functional-local/`. The native CPU clock/transaction prototype
 is excluded; the candidate uses the original three-patch SDK package.
+
+
+## Completed local measurement and disposition, 2026-10-28
+
+The committed implementation at `926e473` builds through supported CMake;
+runner SHA-256 is `35c9d4ffc158dcca419d9e4ecd241ba51a17e972f237b83b1ba220732a4456ad`.
+The exact original three-patch SDK and validated title-bank archive are retained.
+The final real-GL contract test passes (1/1), as do representative faithful and
+native-GL bridge compile checks.
+
+One local OFF/ON pair uses the same executable, fresh Pinball 150cc construction,
+compute 4x/AA8, normal pacing, hidden frontend and dummy audio. It retains all
+180 selected frames without trimming. OFF/ON mean whole frames are 16.7667 /
+16.6093 ms; worst whole frames are 24.4210 / 24.1838 ms, with zero frames over
+33 ms on either side. Both real frontend save/load checks pass after timing.
+All 11,550 preparation hints finish before course construction on both sides.
+
+This does not demonstrate a material whole-frame improvement. Background CPU
+load differs (10.89 / 9.46 cores) and median GPU graphics clocks differ (855 /
+1965 MHz), although both sampled P0. Readback means fall 0.1081 -> 0.0624 ms;
+that cannot explain or establish causation for the much larger emulation-time
+difference. Normal pacing also prevents treating average wall time as uncapped
+throughput. The private selector stays OFF; no further repetitions are needed
+for this decision. Do not present this experiment as a release performance win.
+
+Local measurements are useful under recorded ambient conditions. The earlier
+absolute quiet-host gate remains false; it is not a reason to claim this host
+cannot measure, nor permission to fabricate a qualified result. Raw samples,
+QPC/UTC mapping, CPU/GPU telemetry and executable identities are retained in
+`loading-hitches/capture-first-local-pair/`, `capture-first-local-pair-job.json`,
+`capture-first-local-gpu.csv` and `capture-first-local-pair-summary.json`.

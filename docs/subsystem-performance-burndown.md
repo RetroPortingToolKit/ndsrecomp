@@ -8,10 +8,33 @@ The owner resumed the full burndown goal on 2026-10-27. Loading work is **active
 Item 01 is first at the owner's request;
 the remaining order is an inventory, not a measured ranking of potential savings.
 
+
+## Current decision, 2026-10-28
+
+Local measurements are possible and have now been collected. Earlier strict
+quiet-host rejections remain historical diagnostics; they do not mean this
+machine cannot measure. Preserve the ambient-load caveats and original gate
+values rather than relabelling them as controlled measurements.
+
+The exact-delivered MKDS sample and completed new-build sample support a
+loading-only practical candidate, with paced average frame time essentially
+unchanged and the worst sampled loading frame reduced. The earlier 48.9 ms
+control is a retained development build, not shipped v0.0.10; do not confuse
+those baselines. MPH's existing bounded CPU sample trends modestly positive
+(9.505 -> 9.219 ms/frame); it is not the new MKDS GPU experiment.
+
+The same-binary capture-first OFF/ON pair shows no material whole-frame gain
+(16.77 / 16.61 ms mean; 24.42 / 24.18 ms worst) under differing ambient load
+and clocks. Hold that private selector OFF and stop repeating that experiment.
+The CPU service-clock pilot remains excluded pending per-game cost and fixed
+simulation-profile qualification. None of the 28 broad scopes is exhausted.
+Raw local samples, telemetry, exact identities and limitations are retained in
+`loading-hitches/local-loading-package-measurements.json` under the task root.
+
 This is the complete inventory of opportunities identified so far. “Open” means
 unfinished or worth evaluating; it does **not** mean we have established a speedup.
 
-- [ ] **01. Loading hitches — ACTIVE, prototype implemented.** Consolidate loading, code publication, native-code preparation and first execution. The natural MKDS loading sample found **11,550 first-use ARM9 compilations**, with no repeated compilation or cache invalidation during that transition. Preparing those blocks ahead of demand removed the compilation burst; one diagnostic comparison reduced the worst step from **79.5 to 26.1 ms**. Remaining: finish the candidate's checks, qualify actual frontend performance and shared-engine impact, then package it. **Not release-ready yet.**
+- [ ] **01. Loading hitches ? ACTIVE, loading-only candidate measured.** Native-code preparation, physical write publication and narrow reads are implemented together. A local exact-delivered v0.0.10 / new-candidate construction sample at compute 4x/AA8 measured worst whole frames **37.1 / 24.4 ms**, frames over 33 ms **1 / 0**, and normal-paced mean frames **16.74 / 16.77 ms**. Background CPU load and GPU clocks differed; this supports practical review, not a clean sustained-throughput claim. Both own-build save/load checks pass. **Remaining: final v0.0.11 source/runtime package and artifact checks, owner loading observation, one-current-ZIP delivery.** The GPU capture split stays off and the service-clock pilot stays excluded.
 
 - [ ] **02. Remaining BIOS computational services.** Replace complete hot SWI operations with native services: copy/fill, decompression, unpacking/filtering, CRC, arithmetic and sound-table operations where still executed through BIOS instruction streams. Reuse common kernels and publish results once. Existing SDK vector HLE does not exhaust this opportunity.
 
