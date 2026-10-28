@@ -223,6 +223,18 @@ complete render/capture/presentation ownership; existing lazy capture views
 must be reused, and guest-capture equivalence remains required. Per-game raw
 data and limitations are in `loading-hitches/renderer-alternative-evidence.json`.
 
+The next coupled prototype separates completion points within one scaled
+compute frame job: exact native samples and the edge-marking neighbour halo
+resolve/pack before the complementary enhanced-display samples. Geometry,
+textures and binning are prepared once. It passes real GPU pixel-equality
+checks and an MKDS basic presented-image/current-build frontend restore check.
+The intended off/on timing pair was rejected before launch because the lab
+host was busy; the local functional run is explicitly unqualified. Keep the
+private switch off by default until whole-frame and presentation costs are
+qualified. No release changed. See `docs/native-capture-frame-job-20261028.md`
+and retained `loading-hitches/capture-first-evidence.json`. This advances
+01/16/17/18/19/20/28 together without closing their remaining scope.
+
 Future work should similarly group complete boundaries where useful: BIOS and
 bulk services (02/03/10), execution/memory/scheduling/device ownership
 (04–09/11–13), model-to-geometry preparation (14–17), render/capture/presentation

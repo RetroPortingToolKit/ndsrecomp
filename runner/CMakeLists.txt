@@ -1145,6 +1145,19 @@ ndsrecomp_link_tomlpp(frontend_config_test)
     target_link_libraries(native_gl_test PRIVATE SDL3::SDL3)
     add_test(NAME native_gl_test COMMAND native_gl_test)
     set_tests_properties(native_gl_test PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(compute_capture_first_test tests/compute_capture_first_test.cpp
+        src/melonds_compute/GPU_OpenGL.cpp src/melonds_compute/PlatformCompute.cpp
+        src/melonds_compute/TextureUpscaleStub.cpp vendor/melonds/GPU3D.cpp
+        vendor/melonds/GPU3D_Soft.cpp vendor/melonds/Savestate.cpp
+        vendor/melonds/GPU3D_Compute.cpp vendor/melonds/GPU3D_Texcache.cpp
+        vendor/melonds/GPU3D_TexcacheOpenGL.cpp vendor/melonds/OpenGLSupport.cpp
+        vendor/melonds/glad/glad.c vendor/melonds/xxhash/xxhash.c)
+    target_include_directories(compute_capture_first_test PRIVATE vendor/melonds src/melonds_compute)
+    target_compile_definitions(compute_capture_first_test PRIVATE MELONDS_GL_HEADER="glad/glad.h")
+    target_link_libraries(compute_capture_first_test PRIVATE SDL3::SDL3)
+    add_test(NAME compute_capture_first_test COMMAND compute_capture_first_test)
+    set_tests_properties(compute_capture_first_test PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 
   add_executable(hle_mkds_test tests/hle_mkds_test.cpp src/hle_mkds.cpp)

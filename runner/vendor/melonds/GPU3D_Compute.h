@@ -46,6 +46,12 @@ public:
     void SetRenderSettings(int scale, bool highResolutionCoordinates);
     void SetRenderWidth(u32 width) override;
 
+    // Configure before compiling shaders. Both consumers share one geometry,
+    // texture and binning job. The optional callback packs native pixels once
+    // their exact scaled samples (and edge-marking neighbours) are ready,
+    // before the remaining enhanced-display samples are rasterised.
+    void SetNativeCaptureCallbacks(bool (*required)(), void (*ready)());
+
     void VCount144(GPU& gpu) override;
 
     void RenderFrame(GPU& gpu) override;
@@ -246,6 +252,9 @@ private:
     GLCompositor CurGLCompositor;
 
     int ShaderStepIdx = 0;
+
+    bool (*NativeCaptureRequired)() = nullptr;
+    void (*NativeCaptureReady)() = nullptr;
 
     void DeleteShaders();
 

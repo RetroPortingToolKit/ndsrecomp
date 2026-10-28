@@ -429,6 +429,28 @@ void compute_finish_readback() {
     }
     g_compute_frame_ready = true;
 }
+
+#if !defined(NDS_USE_NATIVE_GL)
+// Private qualification selector. The normal shader/renderer path is retained
+// until the complete native-capture/display job is qualified per game.
+bool compute_native_capture_first() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NDS_COMPUTE_NATIVE_CAPTURE_FIRST");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+bool compute_native_capture_required() {
+    return compute_readback_overlap() &&
+        (nds_gpu2d_requires_3d_readback() || g_display_readback_latency);
+}
+
+void compute_native_capture_ready() {
+    g_compute_rendered_frame = true;
+    compute_submit_readback();
+}
+#endif
 #endif
 
 bool profiling() {
@@ -828,6 +850,14 @@ bool nds_gpu3d_use_compute_renderer() {
     }
     auto renderer = NdsAcceleratedRenderer::New();
     if (!renderer || compute_gl_stage_failed("initialization")) return false;
+#if !defined(NDS_USE_NATIVE_GL)
+    if (compute_native_capture_first()) {
+        renderer->SetNativeCaptureCallbacks(compute_native_capture_required,
+                                            compute_native_capture_ready);
+        std::fprintf(stderr,
+            "[gpu3d] native capture before enhanced display: private qualification\n");
+    }
+#endif
     // Width is a shader constant and determines every framebuffer/PBO
     // allocation. Establish it before settings allocate or compile anything.
     renderer->SetRenderWidth(render_width);
@@ -1110,7 +1140,9 @@ bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
 #endif
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
         if (gpu.IsRendererAccelerated()) {
-            g_compute_rendered_frame = true;
+            // A native-first job may already own the pack/fence. Never submit
+            // it again after completing that readback during restore.
+            if (!g_compute_readback_pending) g_compute_rendered_frame = true;
             compute_submit_readback();
             compute_finish_readback();
             if (g_compute_runtime_failed) {
@@ -1334,7 +1366,8 @@ void nds_gpu3d_vcount215() {
         latch_capture_reference();
 #endif
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
-        if (g_nds.GPU.GPU3D.IsRendererAccelerated())
+        if (g_nds.GPU.GPU3D.IsRendererAccelerated() &&
+            !g_compute_readback_pending)
             g_compute_rendered_frame = true;
         if (g_compute_rendered_frame &&
             (compute_readback_overlap() || g_display_readback_latency) &&
@@ -1350,7 +1383,8 @@ void nds_gpu3d_vcount215() {
     latch_capture_reference();
 #endif
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
-    if (g_nds.GPU.GPU3D.IsRendererAccelerated())
+    if (g_nds.GPU.GPU3D.IsRendererAccelerated() &&
+        !g_compute_readback_pending)
         g_compute_rendered_frame = true;
 #endif
     profile_add(g_gpu3d_profile.vcount215_ns, start);
