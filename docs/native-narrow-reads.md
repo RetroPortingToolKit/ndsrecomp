@@ -55,8 +55,20 @@ by its newly added random cases. Restoring that assertion's known input fixes
 the fixture; both complete probes pass. The failed log is retained rather than
 reported as a candidate failure or discarded.
 
-The two game applications still need to be rebuilt against this implementation
-and qualified as the combined package. Use the existing bounded per-game
-before/after plan and retain exact package identities. Do not infer a timing
-win from callback counts or passing ISA probes; reject a reproducible regression
-in either affected game.
+Both game applications build at `928da54`, and both title profiles pass their
+ARM9/ARM7 probes. The no-SDK adapter compiles. The new MKDS construction interval
+removes all 899,958 sampled byte/halfword RAM callbacks; guest instruction count,
+device accesses and all three RAM regions remain identical to the reference.
+Resident preparation changes no serialized guest state and leaves zero ARM9
+demand compilations in that interval. MPH's bounded interval and current-build
+restore pass, with both native CPUs active and no unknown-write scans. Basic
+images are plausible in both games.
+
+The matched frontend preflight rejects the local host before any timed legs
+because another game/compiler workload is active; the NAS is also occupied.
+Raw receipts and exact per-game source/binary/bank/settings identities are in
+`loading-hitches/coupled-memory-evidence.json` under the retained task root.
+Continue the existing bounded per-game before/after plan when a host is eligible.
+Do not infer a timing win from callback counts or passing correctness checks;
+reject a reproducible regression in either affected game. Owner review and
+delivery remain open.

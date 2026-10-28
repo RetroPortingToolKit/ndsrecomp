@@ -140,8 +140,16 @@ and routes eligible signed/unsigned halfwords and signed bytes through the same
 physical mapping, aliases and remap lifetime as existing direct reads. DS odd-
 address behavior and exact device widths remain intact. Both actual ARM9/ARM7
 probes pass, including 576 added ARM/Thumb differential cases per architecture.
-The game builds and matched timing still need qualification; counts alone are
-not a performance win. This advances 04/08 within the same candidate package.
+Both games now build at `928da54` and pass their bounded functional checks;
+MPH also passes current-build save/load. The MKDS interval removes all 899,958
+sampled byte/halfword RAM callbacks while preserving the instruction count,
+device accesses and exact RAM contents; prepared ARM9 code needs zero demand
+compilations in that interval. Basic images are plausible. These structural
+results are not a timing win. The matched frontend preflight rejected the busy
+local host before any timed legs; the NAS also has active CPU/GPU workloads.
+Per-game timing qualification, owner review and delivery remain open. Raw
+machine-readable receipts are in `loading-hitches/coupled-memory-evidence.json`
+under the retained task root. This advances 04/08 within the same candidate package.
 See `docs/native-narrow-reads.md` in the retained framework worktree.
 
 Future work should similarly group complete boundaries where useful: BIOS and
