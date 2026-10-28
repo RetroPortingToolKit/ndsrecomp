@@ -34,6 +34,7 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #include <cstdlib>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -53,6 +54,10 @@ bool batched_writes() {
     return enabled;
 }
 bool census_enabled=false;
+bool compilation_census() {
+    static const bool on=[] {const char* v=std::getenv("NDS_NATIVE_COMPILE_CENSUS");return v&&std::strcmp(v,"1")==0;}();
+    return on;
+}
 #if defined(NDS_NATIVE_PRECISE_WRITES)
 // Emulation-thread-only scope. This covers one ordinary native RAM store,
 // after the normal bus has changed bytes/generations. I/O and nested DMA stay
@@ -69,6 +74,8 @@ public:
     std::unordered_map<uint64_t,uint64_t> floor_census;
     std::unordered_map<uint64_t,uint64_t> entry_census,read_census,write_census;
     uint64_t census_dropped=0;
+    std::unordered_set<uint64_t> compiled_locations;
+    uint64_t compiled_blocks=0,recompiled_blocks=0,compile_census_dropped=0;
     void census(std::unordered_map<uint64_t,uint64_t>& counts,uint64_t key) {
         if(!census_enabled)return;
         auto at=counts.find(key);
@@ -145,7 +152,7 @@ public:
         registers=&jit->Regs();extensions=&jit->ExtRegs();mapping=g_cp15;
     }
     void clear() {
-        jit->ClearCache();watches.clear();++invalidations;
+        jit->ClearCache();watches.clear();compiled_locations.clear();++invalidations;
     }
     void publish() {
         std::copy(registers->begin(),registers->end(),g_cpu.R);g_cpu.cpsr=jit->Cpsr();
@@ -199,6 +206,13 @@ public:
     }
     bool PreCodeReadHook(bool thumb,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {
         const uint32_t start=Dynarmic::A32::LocationDescriptor{ir.block.Location()}.PC();
+        if(pc==start&&compilation_census()) {
+            ++compiled_blocks;
+            const uint64_t location=ir.block.Location().Value();
+            if(compiled_locations.contains(location))++recompiled_blocks;
+            else if(compiled_locations.size()<65536)compiled_locations.insert(location);
+            else ++compile_census_dropped;
+        }
         const unsigned width=thumb?2:4;
         if(pc!=start&&(pc-start>=nds_native_block_limit(nds_native_options().blocks)*width||memory(decode(thumb,pc-width)))) {
             if(pc-start>=nds_native_block_limit(nds_native_options().blocks)*width)++arithmetic_cap_splits;
@@ -452,6 +466,7 @@ std::string nds_arm9_native_json() {
     std::string out="{\"available\":"+std::string(supported_host()?"true":"false")+
         ",\"diagnostic\":"+std::string(diagnostic()?"true":"false")+
         ",\"census_enabled\":"+std::string(census_enabled?"true":"false")+
+        ",\"compile_census_enabled\":"+std::string(compilation_census()?"true":"false")+
         ",\"batched_writes\":"+std::string(batched_writes()?"true":"false")+
         ",\"direct_reads\":"+(nds_native_options().reads?"true":"false")+
         ",\"long_blocks\":"+(nds_native_options().blocks?"true":"false")+
@@ -478,6 +493,9 @@ std::string nds_arm9_native_json() {
         ",\"reference_stops\":"+std::to_string(native->floors)+
         ",\"device_handoffs\":"+std::to_string(native->devices)+
         ",\"invalidations\":"+std::to_string(native->invalidations)+
+        ",\"compiled_blocks\":"+std::to_string(native->compiled_blocks)+
+        ",\"recompiled_blocks\":"+std::to_string(native->recompiled_blocks)+
+        ",\"compile_census_dropped\":"+std::to_string(native->compile_census_dropped)+
         ",\"unknown_write_checks\":"+std::to_string(native->watches.checks)+
         ",\"watched_pages\":"+std::to_string(native->watches.size())+
         ",\"write_notifications\":"+std::to_string(native->write_notifications)+
@@ -496,6 +514,10 @@ std::string nds_arm9_native_json() {
     out+="false";
 #endif
     if(arm7)out+=",\"entries\":"+std::to_string(arm7->entries)+
+        ",\"invalidations\":"+std::to_string(arm7->invalidations)+
+        ",\"compiled_blocks\":"+std::to_string(arm7->compiled_blocks)+
+        ",\"recompiled_blocks\":"+std::to_string(arm7->recompiled_blocks)+
+        ",\"compile_census_dropped\":"+std::to_string(arm7->compile_census_dropped)+
         ",\"instructions\":"+std::to_string(arm7->instructions)+
         ",\"reference_stops\":"+std::to_string(arm7->floors)+
         ",\"device_handoffs\":"+std::to_string(arm7->devices)+

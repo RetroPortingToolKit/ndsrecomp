@@ -1,0 +1,132 @@
+diff --git a/src/dynarmic/backend/x64/reg_alloc.cpp b/src/dynarmic/backend/x64/reg_alloc.cpp
+index 61a3a6c..6f35c25 100644
+--- a/src/dynarmic/backend/x64/reg_alloc.cpp
++++ b/src/dynarmic/backend/x64/reg_alloc.cpp
+@@ -309,7 +309,7 @@ OpArg RegAlloc::UseOpArg(Argument& arg) {
+ void RegAlloc::Use(Argument& arg, HostLoc host_loc) {
+     ASSERT(!arg.allocated);
+     arg.allocated = true;
+-    UseImpl(arg.value, {host_loc});
++    UseImpl(arg.value, {&host_loc, 1});
+ }
+ 
+ Xbyak::Reg64 RegAlloc::UseScratchGpr(Argument& arg) {
+@@ -327,7 +327,7 @@ Xbyak::Xmm RegAlloc::UseScratchXmm(Argument& arg) {
+ void RegAlloc::UseScratch(Argument& arg, HostLoc host_loc) {
+     ASSERT(!arg.allocated);
+     arg.allocated = true;
+-    UseScratchImpl(arg.value, {host_loc});
++    UseScratchImpl(arg.value, {&host_loc, 1});
+ }
+ 
+ void RegAlloc::DefineValue(IR::Inst* inst, const Xbyak::Reg& reg) {
+@@ -353,7 +353,7 @@ Xbyak::Reg64 RegAlloc::ScratchGpr() {
+ }
+ 
+ Xbyak::Reg64 RegAlloc::ScratchGpr(HostLoc desired_location) {
+-    return HostLocToReg64(ScratchImpl({desired_location}));
++    return HostLocToReg64(ScratchImpl({&desired_location, 1}));
+ }
+ 
+ Xbyak::Xmm RegAlloc::ScratchXmm() {
+@@ -361,10 +361,10 @@ Xbyak::Xmm RegAlloc::ScratchXmm() {
+ }
+ 
+ Xbyak::Xmm RegAlloc::ScratchXmm(HostLoc desired_location) {
+-    return HostLocToXmm(ScratchImpl({desired_location}));
++    return HostLocToXmm(ScratchImpl({&desired_location, 1}));
+ }
+ 
+-HostLoc RegAlloc::UseImpl(IR::Value use_value, const std::vector<HostLoc>& desired_locations) {
++HostLoc RegAlloc::UseImpl(IR::Value use_value, std::span<const HostLoc> desired_locations) {
+     if (use_value.IsImmediate()) {
+         return LoadImmediate(use_value, ScratchImpl(desired_locations));
+     }
+@@ -396,7 +396,7 @@ HostLoc RegAlloc::UseImpl(IR::Value use_value, const std::vector<HostLoc>& desir
+     return destination_location;
+ }
+ 
+-HostLoc RegAlloc::UseScratchImpl(IR::Value use_value, const std::vector<HostLoc>& desired_locations) {
++HostLoc RegAlloc::UseScratchImpl(IR::Value use_value, std::span<const HostLoc> desired_locations) {
+     if (use_value.IsImmediate()) {
+         return LoadImmediate(use_value, ScratchImpl(desired_locations));
+     }
+@@ -423,7 +423,7 @@ HostLoc RegAlloc::UseScratchImpl(IR::Value use_value, const std::vector<HostLoc>
+     return destination_location;
+ }
+ 
+-HostLoc RegAlloc::ScratchImpl(const std::vector<HostLoc>& desired_locations) {
++HostLoc RegAlloc::ScratchImpl(std::span<const HostLoc> desired_locations) {
+     const HostLoc location = SelectARegister(desired_locations);
+     MoveOutOfTheWay(location);
+     LocInfo(location).WriteLock();
+@@ -485,7 +485,7 @@ void RegAlloc::HostCall(IR::Inst* result_def,
+     }
+ 
+     for (HostLoc caller_saved : other_caller_save) {
+-        ScratchImpl({caller_saved});
++        ScratchImpl({&caller_saved, 1});
+     }
+ }
+ 
+@@ -519,14 +519,26 @@ void RegAlloc::EmitVerboseDebuggingOutput() {
+     }
+ }
+ 
+-HostLoc RegAlloc::SelectARegister(const std::vector<HostLoc>& desired_locations) const {
+-    std::vector<HostLoc> candidates = desired_locations;
++HostLoc RegAlloc::SelectARegister(std::span<const HostLoc> desired_locations) const {
++    // Preserve both partition operations and their order exactly: replacing
++    // them with a first-match search can choose a different register and alter
++    // generated code. Keep a general heap fallback for unusually long lists.
++    std::array<HostLoc, 32> local;
++    std::vector<HostLoc> overflow;
++    std::span<HostLoc> candidates;
++    if (desired_locations.size() <= local.size()) {
++        std::copy(desired_locations.begin(), desired_locations.end(), local.begin());
++        candidates = {local.data(), desired_locations.size()};
++    } else {
++        overflow.assign(desired_locations.begin(), desired_locations.end());
++        candidates = overflow;
++    }
+ 
+     // Find all locations that have not been allocated..
+     const auto allocated_locs = std::partition(candidates.begin(), candidates.end(), [this](auto loc) {
+         return !this->LocInfo(loc).IsLocked();
+     });
+-    candidates.erase(allocated_locs, candidates.end());
++    candidates = candidates.first(static_cast<size_t>(allocated_locs - candidates.begin()));
+     ASSERT_MSG(!candidates.empty(), "All candidate registers have already been allocated");
+ 
+     // Selects the best location out of the available locations.
+diff --git a/src/dynarmic/backend/x64/reg_alloc.h b/src/dynarmic/backend/x64/reg_alloc.h
+index 19debf5..4226705 100644
+--- a/src/dynarmic/backend/x64/reg_alloc.h
++++ b/src/dynarmic/backend/x64/reg_alloc.h
+@@ -8,6 +8,7 @@
+ #include <array>
+ #include <functional>
+ #include <optional>
++#include <span>
+ #include <utility>
+ #include <vector>
+ 
+@@ -155,12 +156,14 @@ private:
+     std::vector<HostLoc> gpr_order;
+     std::vector<HostLoc> xmm_order;
+ 
+-    HostLoc SelectARegister(const std::vector<HostLoc>& desired_locations) const;
++    // NDS_COLD_REGISTER_ALLOCATION_V1: borrowed candidate lists; no per-call
++    // singleton vector or heap-backed partition scratch for ordinary registers.
++    HostLoc SelectARegister(std::span<const HostLoc> desired_locations) const;
+     std::optional<HostLoc> ValueLocation(const IR::Inst* value) const;
+ 
+-    HostLoc UseImpl(IR::Value use_value, const std::vector<HostLoc>& desired_locations);
+-    HostLoc UseScratchImpl(IR::Value use_value, const std::vector<HostLoc>& desired_locations);
+-    HostLoc ScratchImpl(const std::vector<HostLoc>& desired_locations);
++    HostLoc UseImpl(IR::Value use_value, std::span<const HostLoc> desired_locations);
++    HostLoc UseScratchImpl(IR::Value use_value, std::span<const HostLoc> desired_locations);
++    HostLoc ScratchImpl(std::span<const HostLoc> desired_locations);
+     void DefineValueImpl(IR::Inst* def_inst, HostLoc host_loc);
+     void DefineValueImpl(IR::Inst* def_inst, const IR::Value& use_inst);
+ 

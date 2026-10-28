@@ -65,6 +65,10 @@ if(NDS_ARM9_DYNARMIC_ROOT)
         if(NOT _nds_dynarmic_config MATCHES "NDS_READONLY_PAGE_TABLE_V1")
             message(FATAL_ERROR "Pinned Dynarmic needs runner/cmake/dynarmic-readonly-pages.patch; see docs/mkds-boundary-consolidation.md")
         endif()
+        file(READ "${NDS_ARM9_DYNARMIC_ROOT}/src/dynarmic/backend/x64/reg_alloc.h" _nds_dynarmic_allocator)
+        if(NOT _nds_dynarmic_allocator MATCHES "NDS_COLD_REGISTER_ALLOCATION_V1")
+            message(FATAL_ERROR "Pinned Dynarmic needs runner/cmake/dynarmic-cold-register-allocation.patch; see docs/loading-hitches-20261027.md")
+        endif()
         set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
         set(DYNARMIC_FRONTENDS A32 CACHE STRING "" FORCE)
         set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
@@ -456,6 +460,9 @@ if(NDS_ARM9_DYNARMIC_ENABLED)
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-readonly-pages.patch" _nds_read_patch_sha)
     string(SUBSTRING "${_nds_read_patch_sha}" 0 12 _nds_read_patch_short)
     string(APPEND NDS_BUILD_VARIANT "-pages${_nds_read_patch_short}")
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-cold-register-allocation.patch" _nds_alloc_patch_sha)
+    string(SUBSTRING "${_nds_alloc_patch_sha}" 0 12 _nds_alloc_patch_short)
+    string(APPEND NDS_BUILD_VARIANT "-alloc${_nds_alloc_patch_short}")
 endif()
 
 # Build one registry translation unit from the configured dispatch filenames.
@@ -1437,6 +1444,14 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   endif()
 
   if(Python3_Interpreter_FOUND)
+    if(NDS_ARM9_DYNARMIC_ENABLED)
+      add_test(NAME dynarmic_register_selection_test
+          COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dynarmic_register_allocation.py"
+              --sdk "${NDS_ARM9_DYNARMIC_ROOT}" --cxx "${CMAKE_CXX_COMPILER}"
+              --compiler-id "${CMAKE_CXX_COMPILER_ID}"
+              --out "${CMAKE_CURRENT_BINARY_DIR}/register-selection-test")
+    endif()
     # The deadline-bounded per-instruction machinery has no value anyone can
     # assert; its correctness is a set of structural properties (fast path
     # present and slice-bounded, every re-arm site zeroing it, faithful path
