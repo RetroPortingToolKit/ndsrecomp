@@ -213,7 +213,15 @@ to fence/map synchronization (1.87 ms versus 0.10 ms CPU unpack per call).
 Evaluate the existing native GL render/capture backend for MKDS before local
 compute tuning; its old comparison was instruction-hook contaminated. Keep
 the compute path and qualify the complete alternative. See
-`docs/lab-loading-qualification-20261028.md` in the retained worktree.
+`docs/lab-loading-qualification-20261028.md` in the retained worktree. The
+complete native-GL alternative now builds and passes basic presented-image
+and actual frontend current-build save/load checks. Its one matched-settings
+pair reduces the worst whole frame (34.9 → 24.0 ms) but raises the mean, with
+compute at P0 and native GL at P8. It is not adopted. Atomic live scene reads
+replace the unsafe multi-RPC validation reader. Keep the remaining work on
+complete render/capture/presentation ownership; existing lazy capture views
+must be reused, and guest-capture equivalence remains required. Per-game raw
+data and limitations are in `loading-hitches/renderer-alternative-evidence.json`.
 
 Future work should similarly group complete boundaries where useful: BIOS and
 bulk services (02/03/10), execution/memory/scheduling/device ownership

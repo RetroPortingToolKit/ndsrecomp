@@ -80,6 +80,36 @@ its existing capture-reference/view ownership and preserve the compute path.
 This is a candidate to build and validate, not an assumption that native GL
 will be faster or correct for MKDS.
 
+That complete alternative now builds from the same CPU package and verified
+imported banks, with native control still off and existing capture-view reuse
+on. Candidate SHA-256 begins `dba0a6fe…`. Its actual presented image looks
+plausible. The real frontend Shift+F1 save/F1 load path rewinds race frame 175
+to 150 using an isolated current-build slot.
+
+Two setup failures remain recorded: an attempted headless debug state command
+in interactive mode, then a race-object timeout. The latter used a multi-RPC
+scene reader while the frontend kept advancing. That reader could tear; its
+exact role in the timeout is unproven. One atomic main-thread MainRAM snapshot
+now supplies all scene fields, and the corrected restore check passes.
+
+One compute/native-GL pair keeps preparation enabled on both sides. Mean
+emulation time is 15.8233 → 18.8301 ms, while worst whole-frame time falls
+34.9015 → 23.9767 ms. Combined readback is 3.8707 → 6.4454 ms; time outside it
+is 11.9526 → 12.3847 ms. GPU telemetry is **P0 for compute and P8 for native
+GL**. The lower worst frame cannot erase the higher mean, and the unmatched
+GPU states prevent a supported adoption or reproducible-regression claim.
+The backend remains an unadopted alternative, with verified raw receipts in
+`loading-hitches/renderer-alternative-evidence.json` and
+`nas-renderer-receipts/`. No additional timing legs are justified without
+resolving the operating-state/ownership question.
+
+Reassess complete rendering, native guest-capture production and presentation
+as consumers of a frame job. Existing `CaptureReference` is already lazy;
+do not propose that again. A native-resolution integer capture job separated
+from enhanced display work is an architectural candidate to evaluate, with
+actual guest-pixel equivalence and resource lifetimes required. Neither
+delayed guest capture nor a slower complete backend is an accepted shortcut.
+
 Verified receipts, trace CSVs, images, identities, GPU telemetry and QPC/UTC
 mapping live under the retained task's `loading-hitches/` in
 `lab-package-evidence.json`, `nas-qualification-receipts/` and
