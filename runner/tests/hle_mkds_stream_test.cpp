@@ -111,8 +111,9 @@ void differential(const char* path) {
         while(g_cpu.R[15]!=target) {
             require(++rounds<100000,"job failed to finish");
             g_nds_unwinding=0;g_nds_fast_limit=g_runtime_cycles+std::array<uint32_t,4>{8,32,128,512}[(rounds+test)%4];
+            const auto cycle_begin=g_runtime_cycles;
             if(mkds_stream::is_entry(g_cpu.R[15]))mkds_stream::decode();
-            else {auto one=from_host();step(one,live);std::memcpy(g_cpu.R,one.R,sizeof(one.R));g_cpu.cpsr=packed(one.cpsr);}
+            else {auto one=from_host();step(one,live);std::memcpy(g_cpu.R,one.R,sizeof(one.R));g_cpu.cpsr=packed(one.cpsr);g_runtime_cycles+=2;}
             // Compare every materialized scheduler/dispatch boundary against
             // the actual ARM byte stream, including all scratch registers,
             // CPSR, the dead stack frame, and all caller-visible memory.
@@ -125,6 +126,7 @@ void differential(const char* path) {
                 }
                 step(cpu,reference);
             }
+            require(g_runtime_cycles-cycle_begin==local*2u,"native-service instruction timing profile mismatch");
             require(live.bytes==reference.bytes,"memory differs at continuation");++comparisons;
         }
         require(!std::memcmp(cpu.R,g_cpu.R,sizeof(cpu.R))&&packed(cpu.cpsr)==g_cpu.cpsr,"complete caller contract");
@@ -138,7 +140,7 @@ void differential(const char* path) {
 bool bus_range_has_write_provenance(uint32_t,uint32_t){return provenance;}
 bool bus_debug_copy(int,uint32_t a,uint8_t* out,uint32_t size){for(uint32_t i=0;i<size;++i)out[i]=actual->read8(a+i);return true;}
 bool nds_performance_execution(){return performance;}
-void tier3_step_one(uint32_t){auto c=from_host();step(c,*actual);std::memcpy(g_cpu.R,c.R,sizeof(c.R));g_cpu.cpsr=packed(c.cpsr);}
+void tier3_step_one(uint32_t){auto c=from_host();step(c,*actual);std::memcpy(g_cpu.R,c.R,sizeof(c.R));g_cpu.cpsr=packed(c.cpsr);g_runtime_cycles+=2;}
 extern "C" {
 ArmCpuState g_cpu{};NdsCpu g_nds_active=NDS_ARM9;
 unsigned char g_nds_unwinding=0;unsigned long long g_runtime_cycles=0,g_nds_fast_limit=0;

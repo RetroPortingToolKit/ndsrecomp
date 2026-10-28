@@ -51,7 +51,7 @@ template<class Memory> uint32_t run(State& s, Memory& m, uint32_t budget) {
             }
             const bool compressed = (s.flags & 0x80u) != 0;
             const uint32_t cost = !compressed ? 20u :
-                (s.pending ? 32u : (s.available == 1 ? 22u : 38u));
+                (s.pending ? 36u : (s.available == 1 ? 22u : 42u));
             if (!room(cost)) return used;
             used += cost;
             sub_flags(s, s.available, 0);
