@@ -59,6 +59,7 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     bool isa_guard=false;
     bool watch_code=false,code_alias=false,watch_io_dma=false,watch_immediate=false;
     bool reject_reentrant_preparation=false;
+    bool publish_dma_pages=false;
     std::array<uint32_t,16> generations{};
     NdsArm9GenerationWatch watches;
     uint32_t device_value=0;
@@ -129,7 +130,10 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
             ++device_writes;device_value=v;jit->HaltExecution();
             if(watch_io_dma) {
                 require(nds_arm9_can_defer_generation_check(true,true),"device halt permits coalescing");
-                ram.write32(code_pc+4,0xe3a00007u);++generations[(code_pc+4)>>12];watches.defer();
+                ram.write32(code_pc+4,0xe3a00007u);++generations[(code_pc+4)>>12];
+                if(publish_dma_pages) {
+                    if(watches.intersects(&generations[(code_pc+4)>>12],1)) {jit->ClearCache();watches.clear();}
+                } else watches.defer();
             }
             return;
         }
@@ -137,7 +141,7 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
             ram.write32(a&~3u,v);
             if(watch_code&&watch_immediate) {
                 ++generations[a>>12];
-                if(watches.changed()){jit->ClearCache();watches.clear();}
+                if(watches.intersects(&generations[a>>12],1)){jit->ClearCache();watches.clear();}
             }
         }
     }
@@ -448,6 +452,17 @@ int main() {
     require(jit.Regs()[0]==7,"resume observes DMA-modified instruction");
     env.ram.write32(code_pc+4,0xe3a00001u);jit.ClearCache();env.watches.clear();
     watched.R[15]=code_pc+4;set_state(jit,watched);env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==1,"physical DMA fixture caches the original target");
+    watched.R[15]=code_pc;watched.R[1]=0x04000000;watched.R[2]=37;
+    env.complete_io=true;env.watch_io_dma=true;env.publish_dma_pages=true;
+    set_state(jit,watched);env.remaining=100;jit.Run();
+    require(jit.Regs()[15]==code_pc+4&&!env.watches.take_pending()&&env.watches.size()==0,
+            "physical DMA publication immediately invalidates cached code at completed device boundary");
+    env.complete_io=false;env.watch_io_dma=false;env.publish_dma_pages=false;
+    jit.ClearHalt();env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==7,"physical DMA target executes updated instruction");
+    env.ram.write32(code_pc+4,0xe3a00001u);jit.ClearCache();env.watches.clear();
+    watched.R[15]=code_pc+4;set_state(jit,watched);env.remaining=16;jit.Run();
     watched.R[15]=code_pc;watched.R[1]=code_pc+4;watched.R[2]=0xe3a00009u;
     env.watch_immediate=true;set_state(jit,watched);env.remaining=100;jit.Run();
     require(jit.Regs()[15]==code_pc+4,"self-modifying native store exits at completed instruction");
@@ -465,29 +480,23 @@ int main() {
         std::array<Cache*,2> caches={&a,&b};
         uint32_t physical_code=1,physical_data=1;
         a.watches.add(&physical_code);b.watches.add(&physical_code);
-        const uint32_t* current=nullptr;
-        require(!nds_arm9_notify_precise_write(current,caches),"addressless writes retain ordinary validation");
-        {
-            NdsArm9PreciseStore data(current,&physical_data);
-            ++physical_data;
-            require(nds_arm9_notify_precise_write(current,caches),"precise data store handled");
-            require(!a.clears&&!b.clears&&a.watches.size()==1&&b.watches.size()==1,"unrelated data leaves both code caches intact");
-            {
-                NdsArm9PreciseStore device(current,nullptr);
-                require(!nds_arm9_notify_precise_write(current,caches),"nested I/O/DMA keeps addressless notification");
-            }
-            require(current==&physical_data,"nested device scope restores exact RAM context");
-        }
-        require(!current,"RAM proof cannot leak beyond store");
-        {
-            NdsArm9PreciseStore code(current,&physical_code);
-            ++physical_code;
-            require(nds_arm9_notify_precise_write(current,caches,0),"peer notification skips writing CPU");
-            require(a.clears==0&&b.clears==1&&a.watches.contains(&physical_code),"writer keeps its existing immediate post-store check");
-            require(nds_arm9_notify_precise_write(current,caches),"precise code write handled");
-        }
+        require(!nds_arm9_notify_write_pages(nullptr,0,caches),"addressless writes retain ordinary validation");
+        require(!nds_arm9_notify_write_pages(&physical_data,0,caches),"empty publication remains conservative");
+        ++physical_data;
+        require(nds_arm9_notify_write_pages(&physical_data,1,caches),"physical data store handled");
+        require(!a.clears&&!b.clears&&a.watches.size()==1&&b.watches.size()==1,"unrelated data leaves both code caches intact");
+        ++physical_code;
+        require(nds_arm9_notify_write_pages(&physical_code,1,caches,0),"peer notification skips writing CPU");
+        require(a.clears==0&&b.clears==1&&a.watches.contains(&physical_code),"writer keeps its existing immediate post-store check");
+        require(nds_arm9_notify_write_pages(&physical_code,1,caches),"AOT/BIOS/DMA code write reaches both caches without a native store scope");
         require(a.clears==1&&b.clears==1&&a.precise_code_hits==1&&b.precise_code_hits==1,"physical code alias invalidates writer and peer");
         require(!a.watches.take_pending()&&!b.watches.take_pending(),"whole-cache clear discards obsolete pending work");
+        std::array<uint32_t,8> bulk{};
+        a.watches.add(&bulk[2]);a.watches.add(&bulk[6]);b.watches.add(&bulk[3]);
+        require(nds_arm9_notify_write_pages(&bulk[0],2,caches)&&a.watches.size()==2&&b.watches.size()==1,
+                "adjacent data-only bulk range preserves both caches");
+        require(nds_arm9_notify_write_pages(&bulk[1],3,caches)&&!a.watches.size()&&!b.watches.size(),
+                "bulk publication includes the last touched physical page in both caches");
 #if defined(NDS_NATIVE_PRECISE_WRITES)
         std::array<uint32_t,1025> generations{};
         a.watches.add(&generations[0]);a.watches.add(&generations[512]);
@@ -495,7 +504,7 @@ int main() {
         require(!a.watches.contains(&generations[1024]),"filter collision requires exact pointer membership");
         a.clear();require(!a.watches.contains(&generations[0]),"cache clear resets physical filter");
 #endif
-        std::puts("PRECISE_NATIVE_STORES passed: writer/peer aliases, unrelated data, addressless fallback and nested DMA scope");
+        std::puts("PHYSICAL_PUBLICATION passed: native writer/peer, AOT/BIOS/DMA, bulk ranges, aliases and addressless fallback");
     }
     // Read-only page-table lowering exercises the actual patched x64 emitter,
     // not a mock memory wrapper. Stores and special ARM9 reads retain callbacks.

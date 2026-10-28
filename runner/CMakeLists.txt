@@ -450,7 +450,7 @@ endif()
 if(NDS_ARM9_DYNARMIC_ENABLED)
     string(APPEND NDS_BUILD_VARIANT "-arm9-native-v2-timing2-dynarmica41c380")
     if(NDS_NATIVE_PRECISE_WRITES)
-        string(APPEND NDS_BUILD_VARIANT "-precise-code-writes-v2")
+        string(APPEND NDS_BUILD_VARIANT "-physical-write-publication-v1")
     endif()
     if(NDS_NATIVE_CONTROL)
         string(APPEND NDS_BUILD_VARIANT "-native-control-v1")
@@ -1064,6 +1064,11 @@ if(NDS_CAPTURE_VIEW_REUSE)
 endif()
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
+
+add_executable(physical_write_test tests/physical_write_test.cpp)
+target_include_directories(physical_write_test PRIVATE src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+add_test(NAME physical_write_test COMMAND physical_write_test)
 
   add_executable(frontend_config_test
       tests/frontend_config_test.cpp

@@ -220,6 +220,10 @@ void     bus_write_u8_slow (uint32_t addr, uint8_t  val);
 // The static runtime uses this to invalidate the currently executing
 // provenance-validated bank without polling page vectors per instruction.
 void runtime_note_code_write(void);
+// Exact physical cells touched by this write, after their generation bumps.
+// Aliased virtual addresses share these cells. The addressless entry above
+// remains conservative for backing replacement and older compiled banks.
+void runtime_note_code_write_pages(const uint32_t* first, uint32_t count);
 void runtime_note_live_write(uint32_t addr, uint32_t width,
                              uint32_t old_value, uint32_t new_value);
 
@@ -292,7 +296,7 @@ static inline void nds_busf_note_write(const NdsBusFastWin* w, uint32_t off,
         const uint32_t g = w->gen[page] + 1u;
         w->gen[page] = g ? g : 1u;
     }
-    runtime_note_code_write();
+    runtime_note_code_write_pages(w->gen + first, last - first + 1u);
     {
         uint32_t i;
         for (i = 0; i < width; ++i) w->written[off + i] = 1u;

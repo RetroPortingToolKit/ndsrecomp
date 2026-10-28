@@ -6,6 +6,7 @@
 
 #include "coverage_manifest.h"
 #include "diagnostics.h"
+#include "execution_model.h"
 #include "io.h"
 #include "live_overlay.h"
 #include "runtime_arm.h"
@@ -25,6 +26,9 @@ uint64_t g_coverage_write_epoch = 0;
 CoverageExecCache g_coverage_exec_cache[2]{};
 extern "C" uint64_t g_insn_count[2]{};
 bool g_nds_insn_stop = false;
+// The real scheduler is shared with title performance builds; this isolated
+// bus/state fixture deliberately exercises its faithful timing contract.
+bool nds_performance_execution() { return false; }
 
 void coverage_capture_exec_page(int, uint32_t, uint32_t) {}
 void coverage_note_generation_entry(int, uint32_t, bool, uint8_t, uint32_t) {}

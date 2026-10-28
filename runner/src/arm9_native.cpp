@@ -4,6 +4,7 @@
 bool nds_arm9_native_run() { return false; }
 bool nds_arm9_native_supported() { return false; }
 void nds_arm9_native_note_write() {}
+void nds_arm9_native_note_write_pages(const uint32_t*, uint32_t) {}
 void nds_arm9_native_flush_writes() {}
 void nds_arm9_native_clear() {}
 void nds_arm9_native_census(bool, bool) {}
@@ -77,12 +78,6 @@ struct PreparationProgress {
     uint32_t value=0,next=0;
     bool checked=false,matched=false;
 };
-#endif
-#if defined(NDS_NATIVE_PRECISE_WRITES)
-// Emulation-thread-only scope. This covers one ordinary native RAM store,
-// after the normal bus has changed bytes/generations. I/O and nested DMA stay
-// on addressless notification. Physical pointers preserve mapped aliases.
-const uint32_t* precise_generation=nullptr;
 #endif
 class Native final : public Dynarmic::A32::UserCallbacks {
 public:
@@ -329,9 +324,6 @@ public:
         // Only this inline RAM store is covered by the exact generation test
         // below. I/O may invoke another bus master, whose writes must stay visible.
         {
-#if defined(NDS_NATIVE_PRECISE_WRITES)
-            NdsArm9PreciseStore precise(precise_generation,ordinary_ram?generation:nullptr);
-#endif
             known_write=ordinary_ram;
             if(width==4)bus_write_u32(a,value);
             else if(width==2)bus_write_u16(a,uint16_t(value));
@@ -444,14 +436,22 @@ bool nds_arm9_native_run() {
     runtime_tick(0);
     return true;
 }
-// A write by either CPU or DMA is visible to BOTH caches. Only the emitting
-// adapter's exact inline store suppresses its notification; its physical watch
-// is checked immediately after that store. The other adapter is inactive.
+// Addressless/legacy publications remain conservative. Normal writes from every
+// bus master use the physical-page entry below, including AOT/BIOS and DMA.
 void nds_arm9_native_note_write() {
-#if defined(NDS_NATIVE_PRECISE_WRITES)
-    if(nds_arm9_notify_precise_write(precise_generation,natives,int(g_nds_active)))return;
-#endif
     for(auto& n:natives)if(n)n->unknown_write();
+}
+void nds_arm9_native_note_write_pages(const uint32_t* first,uint32_t count) {
+#if defined(NDS_NATIVE_PRECISE_WRITES)
+    // A native writer still performs its existing immediate post-store check.
+    // Nested I/O/DMA has no known_write proof and publishes to both CPUs.
+    const auto& active=natives[g_nds_active];
+    const int writer=active&&active->known_write?int(g_nds_active):-1;
+    if(nds_arm9_notify_write_pages(first,count,natives,writer))return;
+#else
+    (void)first;(void)count;
+#endif
+    nds_arm9_native_note_write();
 }
 void nds_arm9_native_flush_writes() {for(auto& n:natives)if(n)n->flush_writes();}
 void nds_arm9_native_clear() {for(auto& n:natives)if(n)n->clear();}
@@ -625,9 +625,9 @@ std::string nds_arm9_native_json() {
         ",\"event_window_fences\":"+std::to_string(fences)+
         ",\"cycles_per_instruction\":"+std::to_string(cycles_per_instruction);
 #if defined(NDS_NATIVE_PRECISE_WRITES)
-    out+=",\"precise_ram_writes\":true";
+    out+=",\"precise_ram_writes\":true,\"physical_write_publication\":true";
 #else
-    out+=",\"precise_ram_writes\":false";
+    out+=",\"precise_ram_writes\":false,\"physical_write_publication\":false";
 #endif
     if(native)out+=",\"entries\":"+std::to_string(native->entries)+
         ",\"read_callbacks\":"+std::to_string(native->read_callbacks)+

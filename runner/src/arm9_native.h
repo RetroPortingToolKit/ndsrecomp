@@ -7,6 +7,7 @@
 bool nds_arm9_native_run();
 bool nds_arm9_native_supported();
 void nds_arm9_native_note_write();
+void nds_arm9_native_note_write_pages(const uint32_t* first, uint32_t count);
 void nds_arm9_native_flush_writes();
 void nds_arm9_native_clear();
 void nds_arm9_native_census(bool enabled, bool reset);

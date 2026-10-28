@@ -98,6 +98,7 @@ EXPORTS
     runtime_msr_spsr
     runtime_mul_cycles
     runtime_note_code_write
+    runtime_note_code_write_pages
     runtime_read_user_reg
     runtime_restore_cpsr_from_spsr
     runtime_set_deep_trace

@@ -8,6 +8,7 @@
 // always-on trace ring, the cooperative yield/halt, and lifecycle.
 
 #include "runtime_arm.h"
+#include "physical_write.h"
 #if defined(NDS_ARM9_DYNARMIC)
 #include "arm9_native.h"
 #endif
@@ -717,6 +718,13 @@ bool guard_generation_changed(const StaticExecutionGuard& guard) {
     return false;
 }
 
+bool write_may_change_guard(const StaticExecutionGuard& guard,
+                            const uint32_t* first,uint32_t count) {
+    for(uint32_t page=0;page<guard.page_count;++page)
+        if(nds_physical_write_may_touch(first,count,guard.generation_ptr[page]))return true;
+    return false;
+}
+
 bool refresh_guard_after_generation_change(StaticExecutionGuard& guard) {
     if (!guard.validation) return true;
     if (!validation_identity_live(guard.validation)) return false;
@@ -999,9 +1007,9 @@ extern "C" void runtime_request_yield_poll(void) { request_yield_poll(); }
 // instruction boundary, and the fast tick path does not look at it).
 extern "C" void runtime_clear_fast_limit(void) { g_nds_fast_limit = 0u; }
 
-extern "C" void runtime_note_code_write(void) {
+static void publish_code_write(const uint32_t* first,uint32_t count) {
 #if defined(NDS_ARM9_DYNARMIC)
-    nds_arm9_native_note_write();
+    nds_arm9_native_note_write_pages(first,count);
 #endif
     // beads-yjp.28: every guest RAM write funnels through here -- the slow bus
     // path (bus.cpp note_ram_write) and the generated-bank inline fast path
@@ -1010,12 +1018,20 @@ extern "C" void runtime_note_code_write(void) {
     // paying a generation lookup per interpreted instruction.
     ++g_coverage_write_epoch;
     if (g_static_guard && !g_static_guard->invalidated &&
+        write_may_change_guard(*g_static_guard,first,count) &&
         guard_generation_changed(*g_static_guard)) {
         if (!refresh_guard_after_generation_change(*g_static_guard)) {
             g_static_guard->invalidated = true;
             request_yield_poll();
         }
     }
+}
+
+extern "C" void runtime_note_code_write_pages(const uint32_t* first,uint32_t count) {
+    publish_code_write(first,count);
+}
+extern "C" void runtime_note_code_write(void) {
+    publish_code_write(nullptr,0);
 }
 
 extern "C" void runtime_note_live_write(uint32_t addr, uint32_t width,
