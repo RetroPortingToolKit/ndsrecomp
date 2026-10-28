@@ -361,6 +361,71 @@ void check_tcm_mirrors(const char* when) {
 
 }  // namespace
 
+namespace {
+constexpr uint32_t guard_root_pc=0x02004000u,guard_child_pc=0x02006000u;
+constexpr uint8_t guard_expected[]={0x00,0x00,0xa0,0xe1};
+const NdsStaticValidation guard_root_validation{guard_root_pc,4,guard_expected};
+const NdsStaticValidation guard_child_validation{guard_child_pc,4,guard_expected};
+unsigned guard_case=0,guard_root_calls=0,guard_child_calls=0;
+bool guard_root_yield=false,guard_child_yield=false;
+void guard_child_body() {
+    ++guard_child_calls;
+    bus_write_u8(guard_root_pc+0x00400000u,1);
+    guard_child_yield=runtime_should_yield();
+}
+void guard_root_body() {
+    ++guard_root_calls;
+    switch(guard_case) {
+    case 0: bus_write_u32(0x02008000u,37);break;
+    case 1: bus_write_u32(guard_root_pc+128,41);break;
+    case 2: bus_write_u8(guard_root_pc+0x00400000u,1);break;
+    case 3:
+        runtime_dispatch(guard_child_pc);
+        g_cpu.R[15]=guard_root_pc+4;
+        break;
+    case 4: {
+        // An older compiled bank bumps the physical generation but publishes
+        // through the legacy addressless ABI rather than the new page API.
+        const uint32_t offset=guard_root_pc&g_busf_main.mask;
+        g_busf_main.data[offset]=1;
+        auto& generation=g_busf_main.gen[offset>>12];
+        if(++generation==0)generation=1;
+        runtime_note_code_write();
+        break;
+    }
+    }
+    guard_root_yield=runtime_should_yield();
+}
+const DispatchEntry guard_rows[]={
+    {guard_root_pc,0,guard_root_body,&guard_root_validation},
+    {guard_child_pc,0,guard_child_body,&guard_child_validation},
+};
+void check_physical_write_guards() {
+    g_nds_active=NDS_ARM9;
+    g_cpu.cpsr=0x1fu;
+    nds_register_dispatch(0,guard_rows,2,0xffff0000u);
+    for(unsigned slow=0;slow<2;++slow) {
+        runtime_set_deep_trace(slow);
+        for(guard_case=0;guard_case<5;++guard_case) {
+            bus_write_u32(guard_root_pc,0xe1a00000u);
+            bus_write_u32(guard_child_pc,0xe1a00000u);
+            guard_root_calls=guard_child_calls=0;
+            guard_root_yield=guard_child_yield=false;
+            nds_slice_begin(g_runtime_cycles+1000000000ull);
+            runtime_dispatch(guard_root_pc);
+            ++g_checks;
+            if(guard_root_calls!=1||guard_child_calls!=(guard_case==3))
+                fail("physical guard fixture did not execute its registered bodies");
+            if(guard_root_yield!=(guard_case>=2)||guard_child_yield)
+                fail("physical guard lost data/content/alias/nested/legacy write contract");
+        }
+    }
+    runtime_set_deep_trace(0);
+    nds_unregister_dispatch(0,guard_rows,2);
+    std::puts("PHYSICAL_GUARDS passed: real fast/slow bus, unrelated data, same-page data, code alias, nested caller and legacy ABI");
+}
+}
+
 int main() {
     // No nds_io_reset(): io.cpp is stubbed in this link (see
     // savestate_test_stubs.cpp). The GBA-slot / Wi-Fi timings that read live
@@ -392,6 +457,8 @@ int main() {
     // And bus_init (which republishes the mirrors) must agree too.
     bus_init();
     check_tcm_mirrors("after bus_init");
+
+    check_physical_write_guards();
 
     std::printf("mem_timing_test: %lld checks, %d failure(s)\n",
                 g_checks, g_failures);

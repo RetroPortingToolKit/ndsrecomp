@@ -43,6 +43,15 @@ collisions, immediate self-modification and nested DMA-modified execution. The
 real bus timing and current-build save/load tests pass. All five focused checks
 pass in the MKDS configuration (7.14 seconds total).
 
+The real-runtime memory fixture additionally exercises ten active generated-code
+guard cases through actual dispatch and both fast/slow bus paths: unrelated
+data, same-page data outside the validated span, writes through a code alias,
+a nested child modifying its saved caller, and the legacy addressless ABI.
+The child retains its own valid guard while its caller becomes invalid on
+unwind. All 100,957 fixture checks pass. This extension is maintained in
+`runner/tests/mem_timing_test.cpp`; it was built against the already-built real
+runtime objects without running a second Ninja against the active bank build.
+
 Building these existing bus/state fixtures in a title performance configuration
 exposed a pre-existing missing `nds_performance_execution` test stub. The fixture
 now explicitly selects faithful timing; production execution selection is
