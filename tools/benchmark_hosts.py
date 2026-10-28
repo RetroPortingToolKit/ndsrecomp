@@ -200,6 +200,7 @@ def main():
         p.error('invalid environment variable name')
     with pool.reserve(requested,a.owner,a.host,a.os) as lease:
         lease.running()
+        env.update(CODEX_BENCHMARK_LEASE_TOKEN=lease.receipt['token'],CODEX_BENCHMARK_TARGET=lease.host['id'])
         receipt=dict(before=lease.receipt,command=a.command[1:])
         print(json.dumps(lease.receipt),flush=True)
         try:
