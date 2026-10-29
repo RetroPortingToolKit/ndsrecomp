@@ -1532,4 +1532,8 @@ ndsrecomp_link_tomlpp(frontend_config_test)
         NAME coverage_generation_identity_test
         COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_coverage_generation_identity.py")
+    add_test(
+        NAME live_compile_owner_test
+        COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/live_compile_owner_test.py")
   endif()
