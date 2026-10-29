@@ -48,7 +48,8 @@ no benchmark matrix.
 
 - **Internal loading checkpoint:** combined v0.0.11 loading + canonical GPU snapshots + complete streaming LZ jobs + shared native RAM transactions is built and artifact-verified. Owner course-loading observation is **deferred**; preserve this candidate and Nextcloud v0.0.10.
 - **Measured improvement retained in the candidate:** the complete streaming LZ job (`beads-yjp.105`) is implemented and measured: **7.95% / 13.45% fewer emulation-thread CPU cycles** in two180-frame MKDS construction pairs, including one reverse-order repeat for actual background-load ambiguity. Paced frame times are neutral; no guaranteed worst-frame or general racing gain is claimed. Original ARM caller/memory/timing checks pass.
-- **Current serial result:** shared native physical RAM transactions (`beads-yjp.60`), coupling 04/05/08/09, are retained in the prepared v0.0.11 bundle. One same-binary pair observed **6.65% lower MKDS emulation-thread cycles** locally; one MPH pair on SERVER observed **32.12% lower process cycles / 26.32% lower uncapped wall time**, with matching guest counter deltas and scene fields. Different host/workload/counter types are labeled separately; ambient GPU/load differences limit attribution of the large MPH result. Cache-range jobs remain held, neutral/inconclusive; callback and clock experiments stay private. Next: select another complete measured job/ownership boundary using existing evidence, without retuning the held helpers.
+- **Retained earlier result:** shared native physical RAM transactions (`beads-yjp.60`), coupling 04/05/08/09, are retained in the prepared v0.0.11 bundle. One same-binary pair observed **6.65% lower MKDS emulation-thread cycles** locally; one MPH pair on SERVER observed **32.12% lower process cycles / 26.32% lower uncapped wall time**, with matching guest counter deltas and scene fields. Different host/workload/counter types are labeled separately; ambient GPU/load differences limit attribution of the large MPH result. Cache-range jobs remain held, neutral/inconclusive; callback and clock experiments stay private. Next: select another complete measured job/ownership boundary using existing evidence, without retuning the held helpers.
+- **Current serial result:** generated native RAM stores now own data, written-byte provenance, physical generation and coverage publication as one operation (`beads-yjp.102`), coupling04/08/09. Retained after five focused checks and one pair per selected game: MKDS neutral (2.75% fewer emulation-thread cycles under unequal ambient load, paced mean unchanged); MPH positive bounded observation (21.15% fewer process cycles,18.58% less uncapped wall time, matching guest counter deltas). Memory cost is about14-16MiB. Basic images and current-build restore pass. This accepts one concrete candidate, not three whole areas;26 areas remain open. See [native published stores](native-published-stores-20261028.md).
 - **GPU capture:** the native-first experiment stays off; its local pair showed
   no material whole-frame benefit. Player-speed-under-load remains deferred.
 
@@ -550,3 +551,28 @@ Global agent policy and the NDS adapter now use it. The MPH pair ran on SERVER
 alongside another capacity-reserved job; unrelated work was preserved. Target
 rotation does not require a three-host benchmark matrix or establish a Deck
 build/backend qualification.
+
+
+### Generated RAM store transaction decision, 2026-10-28
+
+The next serial candidate is implemented and retained on private branch
+`perf/native-published-stores-20261028`, runtime source `d77cda6`, SDK feature
+`269cded`. The optional SDK lowering publishes complete ordinary physical RAM
+stores; both CPUs protect every alias of native code pages. Observed/guarded,
+unaligned and unsupported accesses keep their original callbacks. Five focused
+checks pass, including540 real generated ARM/Thumb cases, plus an SDK-free
+32-bit ABI component compilation.
+
+Only one same-binary OFF/ON pair was collected per game. MKDS fresh180-frame
+construction is neutral under differing background load; MPH600-VBlank room92
+shows a positive21.15% process-cycle observation with identical instruction,
+event, math and submission deltas. The MPH scene includes informational dialogue;
+no all-combat or universal speedup is claimed. Memory cost is14.18/15.70MiB.
+Current-build restore and basic images pass. The complete decision, exact source,
+SDK/bank/executable identities, per-game raw samples and host telemetry are in
+`loading-hitches/native-published-stores/decision.json` under the task root.
+
+Areas04/08/09 remain open for their other proposals. Evaluation progress remains
+**2/28 areas resolved,26 open**. The final combined practical review is deferred
+until all candidate decisions; existing internal checkpoint and Nextcloud
+archives stay unchanged.
