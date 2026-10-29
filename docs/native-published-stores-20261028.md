@@ -50,7 +50,7 @@ native RAM transactions and use the same title-specific optimization package.
 | MKDS180 natural construction frames, emulation-thread cycles |7,977,300,600 |7,757,943,610 |2.75% lower; neutral observation under unequal ambient load. |
 | MKDS mean paced frame |16.696ms |16.773ms |Essentially unchanged. Max24.50/24.97ms; neither interval exceeds33ms. |
 | MPH600 room92 VBlanks, process cycles |18,599,482,908 |14,665,167,307 |21.15% lower in this sample. |
-| MPH process CPU / uncapped wall |5.78125s /4.28461s |4.46875s /3.48849s |22.70% /18.58% lower. |
+| MPH process CPU / uncapped wall |5.78125s /4.28461s |4.46875s /3.48850s |22.70% /18.58% lower. |
 
 MKDS runs on the local PC with compute4x/AA8 and streaming-LZ/vector HLE.
 Its background CPU is2.455/1.868 logical cores. Process CPU decreases17.78%,

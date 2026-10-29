@@ -48,7 +48,7 @@ no benchmark matrix.
 
 - **Internal loading checkpoint:** combined v0.0.11 loading + canonical GPU snapshots + complete streaming LZ jobs + shared native RAM transactions is built and artifact-verified. Owner course-loading observation is **deferred**; preserve this candidate and Nextcloud v0.0.10.
 - **Measured improvement retained in the candidate:** the complete streaming LZ job (`beads-yjp.105`) is implemented and measured: **7.95% / 13.45% fewer emulation-thread CPU cycles** in two180-frame MKDS construction pairs, including one reverse-order repeat for actual background-load ambiguity. Paced frame times are neutral; no guaranteed worst-frame or general racing gain is claimed. Original ARM caller/memory/timing checks pass.
-- **Retained earlier result:** shared native physical RAM transactions (`beads-yjp.60`), coupling 04/05/08/09, are retained in the prepared v0.0.11 bundle. One same-binary pair observed **6.65% lower MKDS emulation-thread cycles** locally; one MPH pair on SERVER observed **32.12% lower process cycles / 26.32% lower uncapped wall time**, with matching guest counter deltas and scene fields. Different host/workload/counter types are labeled separately; ambient GPU/load differences limit attribution of the large MPH result. Cache-range jobs remain held, neutral/inconclusive; callback and clock experiments stay private. Next: select another complete measured job/ownership boundary using existing evidence, without retuning the held helpers.
+- **Retained earlier result:** shared native physical RAM transactions (`beads-yjp.60`), coupling 04/05/08/09, are retained in the prepared v0.0.11 bundle. One same-binary pair observed **6.65% lower MKDS emulation-thread cycles** locally; one MPH pair on SERVER observed **32.12% lower process cycles / 26.32% lower uncapped wall time**, with matching guest counter deltas and scene fields. Different host/workload/counter types are labeled separately; ambient GPU/load differences limit attribution of the large MPH result. The standalone cache-range jobs are now finally rejected for insufficient demonstrated useful benefit versus their retained runtime/service boundaries; see [the final decision](cache-range-final-decision-20261028.md). Callback and clock proposals remain open and private. Next: select another complete measured job/ownership boundary using existing evidence, without retuning the held helpers.
 - **Current serial result:** generated native RAM stores now own data, written-byte provenance, physical generation and coverage publication as one operation (`beads-yjp.102`), coupling04/08/09. Retained after five focused checks and one pair per selected game: MKDS neutral (2.75% fewer emulation-thread cycles under unequal ambient load, paced mean unchanged); MPH positive bounded observation (21.15% fewer process cycles,18.58% less uncapped wall time, matching guest counter deltas). Memory cost is about14-16MiB. Basic images and current-build restore pass. This accepts one concrete candidate, not three whole areas;26 areas remain open. See [native published stores](native-published-stores-20261028.md).
 - **GPU capture:** the native-first experiment stays off; its local pair showed
   no material whole-frame benefit. Player-speed-under-load remains deferred.
@@ -576,3 +576,16 @@ Areas04/08/09 remain open for their other proposals. Evaluation progress remains
 **2/28 areas resolved,26 open**. The final combined practical review is deferred
 until all candidate decisions; existing internal checkpoint and Nextcloud
 archives stay unchanged.
+
+
+### Held cache proposal resolved, 2026-10-28
+
+`beads-yjp.106` now has a final rejection of the standalone invalidate/clean/
+drain-clean-invalidate range service package. Existing complete-function proofs
+and one built pair were reused; no game or timing run was repeated. The2.25%
+cycle observation under unequal background load did not demonstrate useful
+whole-loading benefit, while the separate wrappers retain short continuations,
+code proofs, return/dispatch/publication boundaries and a distinct simulation
+profile. The normal implementation stays. This rejects this proposal, not wider
+asset-construction or CPU/device ownership. See [the decision](cache-range-final-decision-20261028.md).
+The broader area count remains2/28 resolved,26 open.
