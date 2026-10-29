@@ -2,7 +2,7 @@
 
 Area 05; owning issue `beads-yjp.108`; campaign `beads-2wy8.1`.
 Final proposal dispositions for selected Windows MKDS/MPH packages are below.
-Independent durable handoff verification remains pending. No production changes
+Independent durable handoff verification passed. No production changes
 or new implementation PR are proposed.
 
 ## Instruction and control inventory

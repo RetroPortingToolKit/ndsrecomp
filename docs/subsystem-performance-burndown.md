@@ -52,12 +52,12 @@ proposal is documented in central Beads. The validator verifies that handoff
 and explicitly instructs the primary agent to advance to the next named item.
 Do not start the next implementation before that instruction. No automatic
 merge or intermediate release/playtest is implied. Existing final dispositions
-are reused. Current validator: `/root/validate_native_cpu_fallbacks`; active item05
-reviews remaining instruction/status/control/exception fallbacks. Area04 passed its final handoff; its rejected runtime is absent from continuation.
+are reused. Current validator: `/root/validate_faithful_architecture`; active item06
+reviews generated-C/faithful execution architecture. Areas04/05 passed their final handoffs; rejected runtime is absent from continuation.
 
 ## Current status
 
-- **Evaluation progress: 3/28 areas resolved; 25 remain open.** Area04 now has independently validated final A-E decisions; see [CPU boundary decisions](cpu-boundary-final-decision-20261029.md). Areas02/03 now have final evidence-backed rejection of15 concrete BIOS service/control proposals for the selected packages. The exact global count of individual candidates inside the remaining areas is still unenumerated. See [the BIOS evaluation](bios-service-evaluation-20261028.md).
+- **Evaluation progress: 4/28 areas resolved; 24 remain open.** Area05 now has independently validated final instruction-family decisions; see [native fallbacks](native-fallback-decisions-20261029.md). Area04 now has independently validated final A-E decisions; see [CPU boundary decisions](cpu-boundary-final-decision-20261029.md). Areas02/03 now have final evidence-backed rejection of15 concrete BIOS service/control proposals for the selected packages. The exact global count of individual candidates inside the remaining areas is still unenumerated. See [the BIOS evaluation](bios-service-evaluation-20261028.md).
 
 - **Internal loading checkpoint:** combined v0.0.11 loading + canonical GPU snapshots + complete streaming LZ jobs + shared native RAM transactions is built and artifact-verified. Owner course-loading observation is **deferred**; preserve this candidate and Nextcloud v0.0.10.
 - **Measured improvement retained in the candidate:** the complete streaming LZ job (`beads-yjp.105`) is implemented and measured: **7.95% / 13.45% fewer emulation-thread CPU cycles** in two180-frame MKDS construction pairs, including one reverse-order repeat for actual background-load ambiguity. Paced frame times are neutral; no guaranteed worst-frame or general racing gain is claimed. Original ARM caller/memory/timing checks pass.
@@ -77,7 +77,7 @@ unfinished or worth evaluating; it does **not** mean we have established a speed
 
 - [x] **04. Native CPU / HLE / reference execution boundaries.** All identified A-E proposals have final decisions and passed independent handoff verification: retain accepted RAM/publication, reject exact metadata, live-clock/read-whitelist, retained-frame and new cross-backend ABI proposals on benefit versus their contracts; reuse quantum/deadline rejections. Focused frame checks pass, but game costs show no useful demonstrated gain. Rejected runtime stays private; continuation uses the accepted foundation. See [CPU boundary decisions](cpu-boundary-final-decision-20261029.md). Generated execution06 and scheduler/device algorithms11/13 remain open.
 
-- [ ] **05. Remaining native CPU fallbacks.** Complete nine-family inventory and intentional exit review has final dispositions, pending independent handoff verification. Retain existing MPH control coverage and repeatable MKDS exclusion; reject new flag/Thumb multiply coverage, unbundled profiles, privileged/banked/exception/coproc, exchange/paired-transfer and special-PC/suffix proposals on contract or demonstrated-benefit grounds. One accepted MPH120-frame census selects no recurring remaining MUL work; no new runtime or A/B. See [native fallback decisions](native-fallback-decisions-20261029.md).
+- [x] **05. Remaining native CPU fallbacks.** Complete nine-family inventory and intentional exit review has final dispositions and passed independent handoff verification. Retain existing MPH control coverage and repeatable MKDS exclusion; reject new flag/Thumb multiply coverage, unbundled profiles, privileged/banked/exception/coproc, exchange/paired-transfer and special-PC/suffix proposals on contract or demonstrated-benefit grounds. One accepted MPH120-frame census selects no recurring remaining MUL work; no new runtime or A/B. See [native fallback decisions](native-fallback-decisions-20261029.md).
 
 - [ ] **06. Generated-C/faithful execution architecture.** Revisit register ownership, state materialization, instruction accounting, linking and event exits as one execution design. The earlier small register-local pilot did not establish a repeatable gain; simply enlarging the same regions is not a new approach.
 
@@ -606,3 +606,7 @@ The broader area count remains2/28 resolved,26 open.
 ### Independent area04 gate, 2026-10-29
 
 Validator `/root/validate_cpu_device_handoffs` passed the final rejection handoff: source, focused correctness, per-game costs, A-E table, clean documentation-only accepted continuation, canonical Markdown, Beads notes and completed central sync. Rejected runtime remains private; no implementation PR applies. Assessment: `loading-hitches/cpu-device-ownership/validator-assessment.json`, SHA256 `55f6d65423c0abb7773e222672463920615c33f43d8da68dde13197ab22463d8`. The validator explicitly instructed moving to05 (remaining native CPU fallbacks) with a fresh validator. **3/28 resolved,25 open.** Historical counts above describe their earlier milestones.
+
+### Independent area05 gate, 2026-10-29
+
+Validator `/root/validate_native_cpu_fallbacks` passed the complete instruction/control decision and Beads handoff after successful sync. Assessment: `loading-hitches/native-cpu-fallbacks/validator-assessment.json`, SHA256 `42bdc360fb39d30463908ecd7421232af7e944b30fc5a74f65ca5022de6cffe8`. Existing accepted MPH control coverage and repeatable MKDS exclusion are reused; no new runtime or implementation PR. The validator instructed closing `beads-yjp.108` and moving to06 with a fresh validation-only agent. **4/28 resolved,24 open.**
