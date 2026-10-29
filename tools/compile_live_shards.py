@@ -14,6 +14,7 @@ import argparse
 import ast
 import base64
 import collections
+import errno
 import hashlib
 import json
 import os
@@ -54,6 +55,11 @@ def atomic_json(path: Path, value: object) -> None:
 
 
 INDEX_LOCK_NAME = "live-index.lock"
+# One provider owns discovery through publication and queue/snapshot retirement.
+# The short index lock alone cannot stop two processes compiling a missing key
+# into the same work files, or replacing each other's pending queue. Keep lock
+# order compile -> index; the runner only takes index, never compile.
+COMPILE_LOCK_NAME = "live-compile.lock"
 
 # Pending-work queue, persisted next to live-index.json and guarded by the SAME
 # live-index.lock. One lock for both files is deliberate: the queue is derived
@@ -103,7 +109,9 @@ def exclusive_file_lock(lock_path: Path, timeout: float | None = 120.0):
                     fcntl.flock(lock_file.fileno(),
                                 fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
-            except OSError:
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
                 if deadline is not None and time.monotonic() >= deadline:
                     raise TimeoutError(
                         f"timed out waiting for live index lock {lock_path}")
@@ -221,19 +229,25 @@ def store_queue(args: argparse.Namespace, pending: list[dict]) -> None:
 
 
 def prune_snapshots(args: argparse.Namespace, pending: list[dict]) -> int:
-    """Keep only the snapshots the queue still needs, plus the current one.
+    """Retire only this runner's snapshots, preserving pending and current.
 
     The runner writes one ~400 KiB snapshot per compiler run and nothing ever
     removed them. That was tolerable at one run per 30 s; it is not once the
     adaptive cadence runs many times a minute. The safe keep-set is exactly
     what resume depends on: the manifest this run was handed, and every
-    manifest a still-pending candidate names. Anything else can only be
-    re-derived work that is already either compiled or dropped.
+    manifest a still-pending candidate names. Another runner's snapshot may be
+    a waiting provider's unconsumed input, so it must never be retired here.
+    Runner filenames carry its PID namespace. Custom names have no ownership
+    proof and are conservatively retained.
 
     Skipped entirely under --merge-cache-snapshots, which deliberately mines
     the whole accumulated history.
     """
     if args.merge_cache_snapshots:
+        return 0
+    owner = re.fullmatch(r"manifest-([0-9a-fA-F]{8})-[0-9]{6,}\.json",
+                         args.manifest.name)
+    if owner is None:
         return 0
     snapshots = args.cache / "snapshots"
     if not snapshots.is_dir():
@@ -246,7 +260,10 @@ def prune_snapshots(args: argparse.Namespace, pending: list[dict]) -> int:
         except OSError:
             continue
     removed = 0
-    for path in snapshots.glob("manifest-*.json"):
+    for path in snapshots.glob(f"manifest-{owner[1]}-*.json"):
+        if re.fullmatch(r"manifest-" + re.escape(owner[1]) +
+                        r"-[0-9]{6,}\.json", path.name) is None:
+            continue
         try:
             if path.resolve() in keep:
                 continue
@@ -1304,11 +1321,36 @@ def compile_page(args: argparse.Namespace, page: dict, entries: list[dict],
             print(f"capture {key}: already compiled as {dll}", flush=True)
             return "skipped", dll
 
+    # A killed provider releases its kernel lock while a compiler/recompiler
+    # child may still be exiting. Never reuse that abandoned child's writable
+    # paths. Completed sources remain available for diagnostics as before.
+    work_root = args.cache / "work" / key
+    work_root.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="attempt-", dir=work_root))
+    (work / ".attempt-owner").write_text(key, encoding="ascii")
+    try:
+        return build_page(args, page, entries, index, key, raw, work)
+    finally:
+        # Retain only the latest completed attempt per identity, including
+        # failure diagnostics. A killed provider never reaches this point;
+        # abandoned attempt-* paths may still have live children and are not
+        # touched by another provider. They can be removed with the cache once
+        # its processes have exited.
+        completed = work_root / "completed"
+        if completed.exists():
+            if (completed.is_symlink() or not (completed / ".attempt-owner").is_file()
+                    or (completed / ".attempt-owner").read_text(encoding="ascii") != key):
+                raise RuntimeError(f"refusing to replace unmanaged build directory: {completed}")
+            shutil.rmtree(completed)
+        os.replace(work, completed)
+
+
+def build_page(args, page, entries, index, key, raw, work):
+    cpu = int(page["cpu"])
+    addr = int(page["addr"], 16)
+    page_sha1 = str(page["sha1"]).lower()
     bank = shard_bank_name(cpu, addr)
-    work = args.cache / "work" / key
     src_dir = work / "src"
-    if src_dir.exists():
-        shutil.rmtree(src_dir)
     src_dir.mkdir(parents=True)
     image = work / "page.bin"
     config = work / "page.toml"
@@ -1349,8 +1391,7 @@ def compile_page(args: argparse.Namespace, page: dict, entries: list[dict],
         sources = shard_source_set(src_dir, bank)
         if len(bank_sources) < 2 or not all(path.is_file() for path in sources):
             raise RuntimeError(f"generated source set is incomplete for {bank}")
-        stage = library.with_suffix(f".stage{SHARED_LIBRARY_SUFFIX}")
-        stage.unlink(missing_ok=True)
+        stage = work / f"output.stage{SHARED_LIBRARY_SUFFIX}"
         if not compile_shard_dll(args, sources, src_dir, stage, cpu):
             stage.unlink(missing_ok=True)
             # Account for the failure per shard instead of retrying this exact
@@ -1505,6 +1546,17 @@ def main() -> int:
     # publishes the same producer codegen version the runner will compare
     # against its own ndsrecomp::kCodegenVersion.
     args.recompiler_codegen_version = recompiler_codegen_version(args)
+
+    # Waiting happens in the background provider, never on the emulation
+    # thread. Kernel ownership survives long builds and releases on process
+    # death; do not time out healthy work or unlink the permanent lock file.
+    print(f"NDS_SHARD_WAITING {args.cache}", flush=True)
+    with exclusive_file_lock(args.cache / COMPILE_LOCK_NAME, timeout=None):
+        return compile_batch(args)
+
+
+def compile_batch(args: argparse.Namespace) -> int:
+    """One cache-owned read/discover/build/publish/retire transaction."""
 
     manifest = load_json(args.manifest)
     if (not isinstance(manifest, dict) or
