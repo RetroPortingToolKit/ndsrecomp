@@ -1528,4 +1528,8 @@ ndsrecomp_link_tomlpp(frontend_config_test)
         NAME coverage_span_promotion_test
         COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_coverage_span_promotion.py")
+    add_test(
+        NAME coverage_generation_identity_test
+        COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_coverage_generation_identity.py")
   endif()
