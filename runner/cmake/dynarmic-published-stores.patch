@@ -1,0 +1,169 @@
+diff --git a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+index 75ce187..cd16af2 100644
+--- a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
++++ b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+@@ -144,9 +144,83 @@ template<std::size_t bitsize, auto callback>
+ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+     const bool ordered = IsOrdered(args[3].GetImmediateAccType());
+-    const auto fastmem_marker = ShouldFastmem(ctx, inst);
++    // Publication is the write authority when selected: a declined operation
++    // must reach callbacks, never an unannotated ordinary fastmem/page store.
++    const auto fastmem_marker = conf.published_memory_writes
++        ? std::optional<DoNotFastmemMarker>{} : ShouldFastmem(ctx, inst);
++
++    if constexpr (bitsize <= 32) {
++        const auto* publication = conf.published_memory_writes;
++        if (publication && publication->pages && publication->enabled &&
++            publication->write_epoch && !ordered && !fastmem_marker &&
++            (!conf.published_write_filter ||
++             conf.published_write_filter(inst->GetArg(0).GetU64()))) {
++            const auto vaddr = ctx.reg_alloc.UseGpr(args[1]);
++            const auto value = ctx.reg_alloc.UseGpr(args[2]);
++            const auto page = ctx.reg_alloc.ScratchGpr();
++            const auto offset = ctx.reg_alloc.ScratchGpr();
++            const auto generation = ctx.reg_alloc.ScratchGpr();
++            const auto pointer = ctx.reg_alloc.ScratchGpr();
++            const auto wrapped_fn = write_fallbacks[std::make_tuple(
++                false, bitsize, vaddr.getIdx(), value.getIdx())];
++            SharedLabel abort = GenSharedLabel(), end = GenSharedLabel();
++
++            code.mov(pointer, reinterpret_cast<u64>(publication->enabled));
++            code.cmp(code.byte[pointer], 0);
++            code.je(*abort, code.T_NEAR);
++            if (inst->GetArg(1).GetType() == IR::Type::U64) {
++                code.mov(offset, vaddr);
++                code.shr(offset, 32);
++                code.jnz(*abort, code.T_NEAR);
++            }
++            if constexpr (bitsize > 8) {
++                code.test(vaddr.cvt32(), bitsize / 8 - 1);
++                code.jnz(*abort, code.T_NEAR);
++            }
++            code.mov(offset.cvt32(), vaddr.cvt32());
++            code.shr(offset.cvt32(), 12);
++            code.mov(page, reinterpret_cast<u64>(publication->pages));
++            code.mov(page, code.qword[page + offset * 8]);
++            code.test(page, page);
++            code.jz(*abort, code.T_NEAR);
++            code.mov(generation, code.qword[page + offsetof(PublishedMemoryWrites::Page, generation)]);
++            // A wrapping generation keeps its zero-skipping callback behavior.
++            code.cmp(code.dword[generation], -1);
++            code.jae(*abort, code.T_NEAR);
++            code.mov(offset.cvt32(), vaddr.cvt32());
++            code.and_(offset.cvt32(), 4095);
++            code.mov(pointer, code.qword[page + offsetof(PublishedMemoryWrites::Page, data)]);
++            code.add(pointer, offset);
++            EmitWriteMemoryMov<bitsize>(code, pointer, value.getIdx(), false);
++            code.mov(pointer, code.qword[page + offsetof(PublishedMemoryWrites::Page, written)]);
++            code.add(pointer, offset);
++            if constexpr (bitsize == 32) {
++                code.mov(code.dword[pointer], 0x01010101u);
++            } else if constexpr (bitsize == 16) {
++                code.mov(code.word[pointer], 0x0101u);
++            } else {
++                code.mov(code.byte[pointer], 1);
++            }
++            code.inc(code.dword[generation]);
++            code.mov(page, reinterpret_cast<u64>(publication->write_epoch));
++            code.inc(code.qword[page]);
++            if (publication->transactions) {
++                code.mov(page, reinterpret_cast<u64>(publication->transactions));
++                code.inc(code.qword[page]);
++            }
++            code.jmp(*end, code.T_NEAR);
++            ctx.deferred_emits.emplace_back([=, this, &ctx] {
++                code.L(*abort);
++                code.call(wrapped_fn);
++                EmitCheckMemoryAbort(ctx, inst, end.get());
++                code.jmp(*end, code.T_NEAR);
++            });
++            code.L(*end);
++            return;
++        }
++    }
+ 
+-    if ((!conf.page_table || conf.page_table_read_only) && !fastmem_marker) {
++    if ((!conf.page_table || conf.page_table_read_only || conf.published_memory_writes) && !fastmem_marker) {
+         // Neither fastmem nor page table: Use callbacks
+         if constexpr (bitsize == 128) {
+             ctx.reg_alloc.Use(args[1], ABI_PARAM2);
+diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
+index 2779c2a..efe533f 100644
+--- a/src/dynarmic/interface/A32/config.h
++++ b/src/dynarmic/interface/A32/config.h
+@@ -15,6 +15,7 @@
+ #include "dynarmic/frontend/A32/translate/translate_callbacks.h"
+ #include "dynarmic/interface/A32/arch_version.h"
+ #include "dynarmic/interface/optimization_flags.h"
++#include "dynarmic/interface/published_memory.h"
+ 
+ namespace Dynarmic {
+ class ExclusiveMonitor;
+@@ -174,6 +175,10 @@ struct UserConfig {
+     /// same integer and update the pointer attribute pair atomically.
+     /// If the configured value is 3, all pointers will be forcefully aligned to 8 bytes.
+     int page_table_pointer_mask_bits = 0;
++    // NDS_PUBLISHED_STORES_V1: unsupported backends keep callbacks.
++    PublishedMemoryWrites* published_memory_writes = nullptr;
++    std::function<bool(std::uint64_t)> published_write_filter;
++
+     /// Determines if we should detect memory accesses via page_table that straddle are
+     /// misaligned. Accesses that straddle page boundaries will fallback to the relevant
+     /// memory callback.
+diff --git a/src/dynarmic/interface/A64/config.h b/src/dynarmic/interface/A64/config.h
+index 5d27660..63f9ac3 100644
+--- a/src/dynarmic/interface/A64/config.h
++++ b/src/dynarmic/interface/A64/config.h
+@@ -13,6 +13,7 @@
+ #include <optional>
+ 
+ #include "dynarmic/interface/optimization_flags.h"
++#include "dynarmic/interface/published_memory.h"
+ 
+ namespace Dynarmic {
+ class ExclusiveMonitor;
+@@ -214,6 +215,10 @@ struct UserConfig {
+     /// same integer and update the pointer attribute pair atomically.
+     /// If the configured value is 3, all pointers will be forcefully aligned to 8 bytes.
+     int page_table_pointer_mask_bits = 0;
++    // NDS_PUBLISHED_STORES_V1: unsupported backends keep callbacks.
++    PublishedMemoryWrites* published_memory_writes = nullptr;
++    std::function<bool(std::uint64_t)> published_write_filter;
++
+     /// Determines what happens if the guest accesses an entry that is off the end of the
+     /// page table. If true, Dynarmic will silently mirror page_table's address space. If
+     /// false, accessing memory outside of page_table bounds will result in a call to the
+diff --git a/src/dynarmic/interface/published_memory.h b/src/dynarmic/interface/published_memory.h
+new file mode 100644
+index 0000000..bd1fde0
+--- /dev/null
++++ b/src/dynarmic/interface/published_memory.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: 0BSD */
++#pragma once
++#include <cstdint>
++
++namespace Dynarmic {
++
++// Optional x64 lowering for a caller-owned, single-threaded physical RAM
++// transaction. Null pages, disabled windows, unaligned/ordered/exclusive
++// accesses and generation wrap retain the ordinary memory callbacks.
++// The caller must exclude executable/watched pages and every observer whose
++// effects are not represented here, and keep descriptors stable during Run.
++struct PublishedMemoryWrites {
++    struct Page {
++        std::uint8_t* data;
++        std::uint8_t* written;
++        std::uint32_t* generation;
++    };
++    // A 4KiB table for the 32-bit guest address space. An eligible descriptor
++    // publishes data, written-byte flags (1), generation (+1 for 8/16/32 bits)
++    // and the global coverage epoch as one instruction-owned transaction.
++    Page* const* pages;
++    const std::uint8_t* enabled;
++    std::uint64_t* write_epoch;
++    std::uint64_t* transactions;
++};
++
++} // namespace Dynarmic

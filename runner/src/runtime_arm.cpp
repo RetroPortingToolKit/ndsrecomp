@@ -1036,6 +1036,15 @@ extern "C" void runtime_note_code_write(void) {
     publish_code_write(nullptr,0);
 }
 
+extern "C" uint64_t* runtime_native_store_epoch(void) {
+    return &g_coverage_write_epoch;
+}
+extern "C" uint32_t runtime_native_store_window(void) {
+    // Nested callers are revalidated by StaticGuardScope on unwind. An active
+    // current guard and all traced execution keep immediate callback handling.
+    return !g_runtime_deep_trace && !g_static_guard;
+}
+
 extern "C" void runtime_note_live_write(uint32_t addr, uint32_t width,
                                         uint32_t old_value,
                                         uint32_t new_value) {

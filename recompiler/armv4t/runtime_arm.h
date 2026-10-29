@@ -226,6 +226,10 @@ void runtime_note_code_write(void);
 void runtime_note_code_write_pages(const uint32_t* first, uint32_t count);
 void runtime_note_live_write(uint32_t addr, uint32_t width,
                              uint32_t old_value, uint32_t new_value);
+// Optional native RAM stores may publish directly only within this qualified
+// execution window. The coverage epoch remains part of every store transaction.
+uint64_t* runtime_native_store_epoch(void);
+uint32_t runtime_native_store_window(void);
 
 // Deep-trace policy flag — full declaration/comment further down; the
 // inline fast paths and Tier 3 need it in scope here.

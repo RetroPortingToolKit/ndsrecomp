@@ -41,6 +41,8 @@
 #include "runtime_arm.h"
 #include "state.h"
 #include "native_ram.h"
+#include "native_store_pages.h"
+#include <unordered_set>
 #include "savestate.h"
 extern uint8_t g_test_wramcnt;
 
@@ -382,11 +384,15 @@ template<class T> void guard_store(uint32_t address,T value) {
     }
 }
 void guard_child_body() {
+    ++g_checks;
+    if(runtime_native_store_window())fail("active nested guard allowed direct publication");
     ++guard_child_calls;
     guard_store<uint8_t>(guard_root_pc+0x00400000u,1);
     guard_child_yield=runtime_should_yield();
 }
 void guard_root_body() {
+    ++g_checks;
+    if(runtime_native_store_window())fail("active guard allowed direct publication");
     ++guard_root_calls;
     switch(guard_case) {
     case 0: guard_store<uint32_t>(0x02008000u,37);break;
@@ -538,8 +544,65 @@ void check_native_ram_transactions() {
     check_physical_write_guards();
     std::printf("native_ram_transactions: %lld checks, %d failure(s)\n",g_checks,g_failures);
 }
+void check_native_store_pages() {
+    struct Page {uint8_t* data;uint8_t* written;uint32_t* generation;};
+    NdsNativeStorePages<Page> tables[2];
+    std::unordered_set<const uint32_t*> protected_pages;
+    bus_init();cp15_reset();runtime_set_deep_trace(0);
+    for(unsigned config=0;config<4;++config) {
+        if(config==0)cfg_bare();
+        if(config==1)cfg_typical();
+        if(config==2)cfg_tcm_moved();
+        if(config==3){cfg_typical();cp15_itcm(0);cp15_dtcm(0x02001000u,0);}
+        for(g_test_wramcnt=0;g_test_wramcnt<4;++g_test_wramcnt) {
+            bus_fast_refresh();
+            for(NdsCpu cpu:{NDS_ARM9,NDS_ARM7}) {
+                g_nds_active=cpu;protected_pages.clear();
+                auto& table=tables[cpu];table.refresh(protected_pages);
+                ++g_checks;
+                if(!table.at(0x02008000u)||table.at(0x04000130u)||table.at(0x027e0010u))
+                    fail("store plan lost ordinary/device/observer admission");
+                for(uint32_t address:probe_addresses()) {
+                    if(auto* page=table.at(address)) {
+                        const auto view=NdsNativeRam::map<uint8_t>(address);
+                        ++g_checks;
+                        if(!view||page->data+(address&4095u)!=view.window->data+view.offset||
+                           page->written+(address&4095u)!=view.window->written+view.offset||
+                           page->generation!=view.generation())
+                            fail("store plan bytes/provenance/generation disagree with real mapping");
+                    }
+                }
+                const auto view=NdsNativeRam::map<uint32_t>(0x02008000u);
+                protected_pages.insert(view.generation());
+                table.protect(view.generation());
+                ++g_checks;
+                if(table.at(0x02008000u)||table.at(0x02408000u))
+                    fail("store plan failed to exclude a code page through its alias");
+                table.refresh(protected_pages);
+                ++g_checks;
+                if(table.at(0x02008000u)||table.at(0x02408000u))
+                    fail("store plan mapping refresh forgot protected physical identity");
+            }
+            // Both CPU plans retain their own map while sharing protection.
+            const auto* generation=NdsNativeRam::map<uint32_t>(0x02009000u).generation();
+            for(auto& table:tables)table.protect(generation);
+            ++g_checks;
+            if(tables[0].at(0x02009000u)||tables[1].at(0x02409000u))
+                fail("store plan protection did not reach both CPU aliases");
+        }
+    }
+    runtime_set_deep_trace(1);++g_checks;
+    if(runtime_native_store_window())fail("tracing allowed direct publication");
+    runtime_set_deep_trace(0);++g_checks;
+    if(!runtime_native_store_window())fail("unobserved store window unavailable");
+    cp15_reset();check_physical_write_guards();
+    std::printf("native_store_pages: %lld checks, %d failure(s)\n",g_checks,g_failures);
+}
 }
 int main(int argc,char** argv) {
+    if(argc==2 && std::strcmp(argv[1],"--native-store-pages-only")==0) {
+        check_native_store_pages();return g_failures?1:0;
+    }
     if(argc==2 && std::strcmp(argv[1],"--native-ram-only")==0) {
         check_native_ram_transactions();return g_failures?1:0;
     }
