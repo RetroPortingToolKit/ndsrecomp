@@ -37,6 +37,7 @@ void tier3_run(uint32_t pc);
 // Reference floor for one instruction at an already covered RAM PC. Unlike a
 // normal stretch, the initial native-bank takeover is intentionally bypassed.
 void tier3_step_one(uint32_t pc);
+bool tier3_canonical_state_enabled();
 
 uint32_t tier3_debug_trace_copy(Tier3TraceEvent* out, uint32_t max_entries);
 
@@ -44,6 +45,7 @@ struct Tier3Stats {
     uint64_t entries[2];
     uint64_t instructions[2];
     uint64_t clean_ram_rejects[2];
+    uint64_t canonical_entries[2];
 };
 void tier3_reset();
 void tier3_note_clean_ram_reject();

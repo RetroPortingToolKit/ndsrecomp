@@ -1,0 +1,15 @@
+foreach(mode 0 1)
+    set(transcript "${CMAKE_CURRENT_BINARY_DIR}/tier3-state-${mode}.bin")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env
+        "NDS_TIER3_CANONICAL_STATE=${mode}" "${TEST_EXE}" "${transcript}"
+        RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    message("${output}")
+    if(NOT status EQUAL 0)
+        message(FATAL_ERROR "Tier3 mode ${mode} failed (${status}): ${error}")
+    endif()
+    file(SHA256 "${transcript}" hash_${mode})
+endforeach()
+if(NOT hash_0 STREQUAL hash_1)
+    message(FATAL_ERROR "Legacy and canonical full transcripts differ")
+endif()
+message("Identical full Tier3 state/control/timing transcripts: ${hash_0}")

@@ -6,6 +6,7 @@
 
 #include "coverage_manifest.h"
 #include "diagnostics.h"
+#include "execution_model.h"
 #include "io.h"
 #include "live_overlay.h"
 #include "runtime_arm.h"
@@ -25,6 +26,9 @@ uint64_t g_coverage_write_epoch = 0;
 CoverageExecCache g_coverage_exec_cache[2]{};
 extern "C" uint64_t g_insn_count[2]{};
 bool g_nds_insn_stop = false;
+// The real scheduler is shared with performance builds; this device fixture
+// deliberately exercises faithful timing without a title execution model.
+bool nds_performance_execution() { return false; }
 
 void coverage_capture_exec_page(int, uint32_t, uint32_t) {}
 void coverage_note_generation_entry(int, uint32_t, bool, uint8_t, uint32_t) {}
@@ -44,41 +48,54 @@ void live_overlay_note_write(int, uint32_t, uint32_t, uint32_t, uint32_t,
                              uint32_t) {}
 void live_overlay_poll() {}
 bool live_overlay_note_tier3_entry(int, uint32_t) { return false; }
+void live_overlay_note_tier3(int, uint32_t) {}
 bool live_overlay_dormant_covers(int, uint32_t) { return false; }
 
 bool nds_diagnostics_enabled() { return false; }
 std::string nds_diagnostics_dispatch_miss_log_path() { return {}; }
 
+#ifndef NDS_BUILD_TIER3_STATE_TEST
 uint32_t nds_io_read(uint32_t, uint32_t) {
     unexpected_device_call("nds_io_read");
 }
 void nds_io_write(uint32_t, uint32_t, uint32_t) {
     unexpected_device_call("nds_io_write");
 }
+#endif
 uint64_t nds_next_system_event_time() { return UINT64_MAX; }
 uint64_t nds_next_timer_overflow_time() { return UINT64_MAX; }
 void nds_run_system_events(uint64_t) {}
 void nds_tick_timers(int, unsigned long long) {}
 void nds_tick_display(unsigned long long) {}
 void nds_tick_rtc(unsigned long long) {}
+#ifndef NDS_BUILD_TIER3_STATE_TEST
 bool nds_event_break_hit() { return false; }
 void nds_note_insn_retired(int) {}
+#endif
 void nds_insn_hook_recompute() {}
+#ifndef NDS_BUILD_TIER3_STATE_TEST
 void nds_note_irq_accept(int, uint32_t) {}
+#endif
 uint16_t nds_exmemcnt(int) { return 0; }
 uint16_t nds_powercontrol7() { return 0; }
 uint16_t nds_powercontrol9() { return 0; }
 uint16_t nds_wifiwaitcnt() { return 0; }
 uint8_t nds_wramcnt() { return 0; }
 bool nds_powered_off() { return false; }
+#ifndef NDS_BUILD_TIER3_STATE_TEST
 uint32_t nds_irq_pending(int) { return 0; }
+#endif
 uint32_t g_nds_irq_pending_cache[2]{};
+#ifndef NDS_BUILD_TIER3_STATE_TEST
 bool nds_cpu_halted(int) { return false; }
+#endif
 void nds_cpu_enter_halt(int) {}
 void nds_cpu_wake(int) {}
 bool nds_halt_wake_pending(int) { return false; }
 unsigned long long nds_halt_entry_cycle(int) { return 0; }
+#ifndef NDS_BUILD_TIER3_STATE_TEST
 bool nds_dma_cpu_stalled(int) { return false; }
+#endif
 unsigned long long nds_dma_entry_cycle(int) { return 0; }
 void nds_dma_run(int, unsigned long long) {}
 bool nds_gxfifo_stalled() { return false; }
@@ -393,8 +410,10 @@ bool nds_vram_live_bytes_equal(int, uint32_t, const uint8_t*, uint32_t) {
 int32_t nds_gpu3d_cycles_to_run() { return 0; }
 void nds_gpu3d_run(unsigned long long) {}
 
+#ifndef NDS_BUILD_TIER3_STATE_TEST
 void tier3_reset() {}
 void tier3_note_clean_ram_reject() {}
 void tier3_run(uint32_t) {
     unexpected_device_call("tier3_run");
 }
+#endif
