@@ -1,5 +1,9 @@
 # Native read and CPU ownership investigation
 
+Historical investigation. The remaining clock and metadata proposals now have
+final campaign rejections in [CPU boundary decisions](cpu-boundary-final-decision-20261029.md).
+The private prototypes below remain evidence, not active or accepted features.
+
 Owning issue: existing `beads-yjp.60`, related to `beads-0vo` and campaign
 `beads-2wy8.1`. Its older v0.6.6 measurements are historical; they do not size
 the current native implementation. This investigation couples execution,
