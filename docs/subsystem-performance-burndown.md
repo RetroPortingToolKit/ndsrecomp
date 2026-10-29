@@ -57,7 +57,7 @@ includes its coupled CPU/device handoff proposals, with the loading evidence reu
 
 ## Current status
 
-- **Evaluation progress: 2/28 areas resolved; 26 remain open.** Areas02/03 now have final evidence-backed rejection of15 concrete BIOS service/control proposals for the selected packages. The exact global count of individual candidates inside the remaining areas is still unenumerated. See [the BIOS evaluation](bios-service-evaluation-20261028.md).
+- **Evaluation progress: 3/28 areas resolved; 25 remain open.** Area04 now has independently validated final A-E decisions; see [CPU boundary decisions](cpu-boundary-final-decision-20261029.md). Areas02/03 now have final evidence-backed rejection of15 concrete BIOS service/control proposals for the selected packages. The exact global count of individual candidates inside the remaining areas is still unenumerated. See [the BIOS evaluation](bios-service-evaluation-20261028.md).
 
 - **Internal loading checkpoint:** combined v0.0.11 loading + canonical GPU snapshots + complete streaming LZ jobs + shared native RAM transactions is built and artifact-verified. Owner course-loading observation is **deferred**; preserve this candidate and Nextcloud v0.0.10.
 - **Measured improvement retained in the candidate:** the complete streaming LZ job (`beads-yjp.105`) is implemented and measured: **7.95% / 13.45% fewer emulation-thread CPU cycles** in two180-frame MKDS construction pairs, including one reverse-order repeat for actual background-load ambiguity. Paced frame times are neutral; no guaranteed worst-frame or general racing gain is claimed. Original ARM caller/memory/timing checks pass.
@@ -75,7 +75,7 @@ unfinished or worth evaluating; it does **not** mean we have established a speed
 
 - [x] **03. BIOS control and exception services ? evaluated/rejected for this campaign.** Consolidate SWI entry/return, interrupt waits, halt/sleep and relevant reset/boot services around their actual caller/device contracts. Avoid rebuilding an instruction emulator inside each replacement. Source/runtime review confirms existing hardware-HALT/event fast-forward behavior. Six additional control-layer proposals are finally rejected for these packages; general CPU/device ownership remains open. See [the BIOS evaluation](bios-service-evaluation-20261028.md).
 
-- [ ] **04. Native CPU / HLE / reference execution boundaries.** All identified A-E proposals have final decisions, pending independent handoff verification: retain accepted RAM/publication, reject exact metadata, live-clock/read-whitelist, retained-frame and new cross-backend ABI proposals on benefit versus their contracts; reuse quantum/deadline rejections. Focused frame checks pass, but game costs show no useful demonstrated gain. Rejected runtime stays private; continuation uses the accepted foundation. See [CPU boundary decisions](cpu-boundary-final-decision-20261029.md). Generated execution06 and scheduler/device algorithms11/13 remain open.
+- [x] **04. Native CPU / HLE / reference execution boundaries.** All identified A-E proposals have final decisions and passed independent handoff verification: retain accepted RAM/publication, reject exact metadata, live-clock/read-whitelist, retained-frame and new cross-backend ABI proposals on benefit versus their contracts; reuse quantum/deadline rejections. Focused frame checks pass, but game costs show no useful demonstrated gain. Rejected runtime stays private; continuation uses the accepted foundation. See [CPU boundary decisions](cpu-boundary-final-decision-20261029.md). Generated execution06 and scheduler/device algorithms11/13 remain open.
 
 - [ ] **05. Remaining native CPU fallbacks.** Handle additional worthwhile instruction, status/control and exception cases without repeatedly leaving native execution. Some control operations helped MPH but reproducibly cost MKDS CPU time; that rejected MKDS package stays excluded.
 
@@ -602,3 +602,7 @@ code proofs, return/dispatch/publication boundaries and a distinct simulation
 profile. The normal implementation stays. This rejects this proposal, not wider
 asset-construction or CPU/device ownership. See [the decision](cache-range-final-decision-20261028.md).
 The broader area count remains2/28 resolved,26 open.
+
+### Independent area04 gate, 2026-10-29
+
+Validator `/root/validate_cpu_device_handoffs` passed the final rejection handoff: source, focused correctness, per-game costs, A-E table, clean documentation-only accepted continuation, canonical Markdown, Beads notes and completed central sync. Rejected runtime remains private; no implementation PR applies. Assessment: `loading-hitches/cpu-device-ownership/validator-assessment.json`, SHA256 `55f6d65423c0abb7773e222672463920615c33f43d8da68dde13197ab22463d8`. The validator explicitly instructed moving to05 (remaining native CPU fallbacks) with a fresh validator. **3/28 resolved,25 open.** Historical counts above describe their earlier milestones.

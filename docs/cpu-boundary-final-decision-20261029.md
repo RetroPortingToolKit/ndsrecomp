@@ -2,7 +2,7 @@
 
 Area 04; owning issue `beads-yjp.60`; campaign `beads-2wy8.1`.
 All identified proposals have final dispositions for selected Windows MKDS/MPH
-packages. Independent handoff verification is pending. Generated execution (06),
+packages. Independent handoff verification passed; see the retained validator assessment. Generated execution (06),
 scheduler algorithms (11), device transactions (13) and other memory/publication
 opportunities (08/09) remain open.
 
