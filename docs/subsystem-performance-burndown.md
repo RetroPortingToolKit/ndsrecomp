@@ -42,6 +42,19 @@ Player-speed-under-load remains separately deferred as instructed. Existing smal
 profiling budgets and gameplay limits still apply; this scope change authorizes
 no benchmark matrix.
 
+## Serial validation workflow (owner clarification, 2026-10-28)
+
+Work through the entire28-entry inventory one item at a time. Each active item
+has one independent validation subagent whose sole job is to inspect the source,
+contracts, focused checks and per-game evidence. The primary agent implements
+and resolves findings. On success it files a PR; a failed or finally rejected
+proposal is documented in central Beads. The validator verifies that handoff
+and explicitly instructs the primary agent to advance to the next named item.
+Do not start the next implementation before that instruction. No automatic
+merge or intermediate release/playtest is implied. Existing final dispositions
+are reused. Current validator: `/root/validate_cpu_device_handoffs`; active item04
+includes its coupled CPU/device handoff proposals, with the loading evidence reused.
+
 ## Current status
 
 - **Evaluation progress: 2/28 areas resolved; 26 remain open.** Areas02/03 now have final evidence-backed rejection of15 concrete BIOS service/control proposals for the selected packages. The exact global count of individual candidates inside the remaining areas is still unenumerated. See [the BIOS evaluation](bios-service-evaluation-20261028.md).
