@@ -44,6 +44,8 @@ no benchmark matrix.
 
 ## Current status
 
+- **Evaluation progress: 2/28 areas resolved; 26 remain open.** Areas02/03 now have final evidence-backed rejection of15 concrete BIOS service/control proposals for the selected packages. The exact global count of individual candidates inside the remaining areas is still unenumerated. See [the BIOS evaluation](bios-service-evaluation-20261028.md).
+
 - **Internal loading checkpoint:** combined v0.0.11 loading + canonical GPU snapshots + complete streaming LZ jobs + shared native RAM transactions is built and artifact-verified. Owner course-loading observation is **deferred**; preserve this candidate and Nextcloud v0.0.10.
 - **Measured improvement retained in the candidate:** the complete streaming LZ job (`beads-yjp.105`) is implemented and measured: **7.95% / 13.45% fewer emulation-thread CPU cycles** in two180-frame MKDS construction pairs, including one reverse-order repeat for actual background-load ambiguity. Paced frame times are neutral; no guaranteed worst-frame or general racing gain is claimed. Original ARM caller/memory/timing checks pass.
 - **Current serial result:** shared native physical RAM transactions (`beads-yjp.60`), coupling 04/05/08/09, are retained in the prepared v0.0.11 bundle. One same-binary pair observed **6.65% lower MKDS emulation-thread cycles** locally; one MPH pair on SERVER observed **32.12% lower process cycles / 26.32% lower uncapped wall time**, with matching guest counter deltas and scene fields. Different host/workload/counter types are labeled separately; ambient GPU/load differences limit attribution of the large MPH result. Cache-range jobs remain held, neutral/inconclusive; callback and clock experiments stay private. Next: select another complete measured job/ownership boundary using existing evidence, without retuning the held helpers.
@@ -55,9 +57,9 @@ unfinished or worth evaluating; it does **not** mean we have established a speed
 
 - [ ] **01. Loading hitches ? ACTIVE, loading-only candidate measured.** Native-code preparation, physical write publication and narrow reads are implemented together. A local exact-delivered v0.0.10 / new-candidate construction sample at compute 4x/AA8 measured worst whole frames **37.1 / 24.4 ms**, frames over 33 ms **1 / 0**, and normal-paced mean frames **16.74 / 16.77 ms**. Background CPU load and GPU clocks differed; this supports practical review, not a clean sustained-throughput claim. Both own-build save/load checks pass. **v0.0.11 source/runtime package and artifact checks pass. Remaining: resolve the loading candidates during the full campaign; practical review and delivery follow all candidate dispositions.** The GPU capture split stays off and the service-clock pilot stays excluded.
 
-- [ ] **02. Remaining BIOS computational services.** Replace complete hot SWI operations with native services: copy/fill, decompression, unpacking/filtering, CRC, arithmetic and sound-table operations where still executed through BIOS instruction streams. Reuse common kernels and publish results once. Existing SDK vector HLE does not exhaust this opportunity.
+- [x] **02. Remaining BIOS computational services ? evaluated/rejected for this campaign.** Replace complete hot SWI operations with native services: copy/fill, decompression, unpacking/filtering, CRC, arithmetic and sound-table operations where still executed through BIOS instruction streams. Reuse common kernels and publish results once. Nine computational service families were reviewed; selected MKDS loading and MPH active/construction profiles do not justify a separate BIOS semantic layer. Final dispositions and scope are in [the BIOS evaluation](bios-service-evaluation-20261028.md). Game-specific bulk jobs remain open under10.
 
-- [ ] **03. BIOS control and exception services.** Consolidate SWI entry/return, interrupt waits, halt/sleep and relevant reset/boot services around their actual caller/device contracts. Avoid rebuilding an instruction emulator inside each replacement. Wait and interrupt behavior still needs meaningful treatment.
+- [x] **03. BIOS control and exception services ? evaluated/rejected for this campaign.** Consolidate SWI entry/return, interrupt waits, halt/sleep and relevant reset/boot services around their actual caller/device contracts. Avoid rebuilding an instruction emulator inside each replacement. Source/runtime review confirms existing hardware-HALT/event fast-forward behavior. Six additional control-layer proposals are finally rejected for these packages; general CPU/device ownership remains open. See [the BIOS evaluation](bios-service-evaluation-20261028.md).
 
 - [ ] **04. Native CPU ↔ HLE ↔ reference execution boundaries.** Redesign the shared execution/service interface to reduce repeated register publication, context copies, dispatch lookups and re-entry work. Native CPUs already exist; the opportunity is the machinery surrounding them.
 
@@ -532,7 +534,7 @@ One current combined MKDS internal-checkpoint ZIP is prepared and verified:
 Matching source ZIP:
 `83bfdaddb4754fda793a5b03df2c0960d80a4b576b70543af605a8af45036e49`.
 The checkpoint selector and owner **Deferred** notes are preserved. Nextcloud remains
-v0.0.10. Full28-category completion remains0/28; selected decoder/RAM jobs and
+v0.0.10. At this earlier RAM-package milestone, full28-category completion was0/28; selected decoder/RAM jobs and
 the snapshot fix are real completed engineering slices, not exhausted systems.
 Raw per-game identities, conditions and retention needs:
 `loading-hitches/native-ram-transactions-evidence.json` under the task root.
