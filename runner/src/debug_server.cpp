@@ -562,13 +562,16 @@ std::string handle(const std::string& line) {
         std::snprintf(buf, sizeof(buf),
             "{\"tier3_entries9\":%llu,\"tier3_entries7\":%llu,"
             "\"tier3_insns9\":%llu,\"tier3_insns7\":%llu,"
-            "\"clean_ram_rejects9\":%llu,\"clean_ram_rejects7\":%llu}",
+            "\"clean_ram_rejects9\":%llu,\"clean_ram_rejects7\":%llu,"
+            "\"canonical_entries9\":%llu,\"canonical_entries7\":%llu}",
             (unsigned long long)s.entries[0],
             (unsigned long long)s.entries[1],
             (unsigned long long)s.instructions[0],
             (unsigned long long)s.instructions[1],
             (unsigned long long)s.clean_ram_rejects[0],
-            (unsigned long long)s.clean_ram_rejects[1]);
+            (unsigned long long)s.clean_ram_rejects[1],
+            (unsigned long long)s.canonical_entries[0],
+            (unsigned long long)s.canonical_entries[1]);
         return buf;
     }
     if (cmd == "force_tier3") {
@@ -1754,6 +1757,7 @@ std::string handle(const std::string& line) {
         return std::string("{\"lean_diagnostics\":") + (lean ? "true" : "false") +
             ",\"periodic_deadline_cache\":" + (periodic ? "true" : "false") +
             ",\"capture_view_reuse\":" + (capture_reuse ? "true" : "false") +
+            ",\"tier3_canonical_state\":" + (tier3_canonical_state_enabled() ? "true" : "false") +
             ",\"instruction_hook_armed\":" + std::to_string(g_insn_hook_armed) +
             ",\"deep_trace\":" + std::to_string(g_runtime_deep_trace) +
             ",\"pc_sampling\":" + (nds_pc_detail::g_enabled ? "true" : "false") +

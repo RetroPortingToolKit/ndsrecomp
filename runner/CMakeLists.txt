@@ -54,6 +54,8 @@ option(NDS_NATIVE_PUBLISHED_STORES
     "Candidate: generated ordinary RAM stores with complete physical publication" OFF)
 option(NDS_NATIVE_CONTROL
     "Experiment: native pure status/multiply and stateless ARM9 cache operations" OFF)
+option(NDS_TIER3_CANONICAL_STATE
+    "Candidate: share canonical registers/banks with faithful execution" OFF)
 set(NDS_MKDS_PERFORMANCE_BANK_DIR "" CACHE PATH
     "Generated mkds_perf_arm9 and mkds_perf_arm9_itcm banks")
 set(NDS_ARM9_DYNARMIC_ROOT "" CACHE PATH "Optional pinned Dynarmic source for experimental ARM9 native execution")
@@ -166,6 +168,9 @@ if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
 endif()
 if(NDS_MKDS_STREAM_IMPLEMENTATION STREQUAL "HLE")
     string(APPEND NDS_BUILD_VARIANT "-stream-lz-native-v1")
+endif()
+if(NDS_TIER3_CANONICAL_STATE)
+    string(APPEND NDS_BUILD_VARIANT "-canonical-tier3-v1")
 endif()
 foreach(_experiment NDS_CAPTURE_VIEW_REUSE NDS_LEAN_DIAGNOSTICS)
     if(${_experiment})
@@ -1099,6 +1104,9 @@ endif()
 if(NDS_LEAN_DIAGNOSTICS)
     target_compile_definitions(nds_runner PRIVATE NDS_LEAN_DIAGNOSTICS=1)
 endif()
+if(NDS_TIER3_CANONICAL_STATE)
+    target_compile_definitions(nds_runner PRIVATE NDS_TIER3_CANONICAL_STATE=1)
+endif()
 if(NDS_CAPTURE_VIEW_REUSE)
     target_compile_definitions(nds_runner PRIVATE NDS_CAPTURE_VIEW_REUSE=1)
 endif()
@@ -1320,6 +1328,22 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   add_test(NAME mem_timing_test COMMAND mem_timing_test)
   add_test(NAME native_ram_transactions_test COMMAND mem_timing_test --native-ram-only)
   add_test(NAME native_store_pages_test COMMAND mem_timing_test --native-store-pages-only)
+
+  # Same real runtime/bus/CP15/scheduler as the timing fixture; real Tier3 and
+  # controlled device events. The driver compares OFF/ON full transcripts.
+  get_target_property(_tier3_fixture_sources mem_timing_test SOURCES)
+  list(REMOVE_ITEM _tier3_fixture_sources tests/mem_timing_test.cpp)
+  add_executable(tier3_state_test tests/tier3_state_test.cpp src/tier3.cpp
+      ${_tier3_fixture_sources})
+  get_target_property(_tier3_fixture_includes mem_timing_test INCLUDE_DIRECTORIES)
+  target_include_directories(tier3_state_test PRIVATE ${_tier3_fixture_includes})
+  target_compile_definitions(tier3_state_test PRIVATE
+      NDS_BUILD_TIER3_STATE_TEST=1 NDS_TIER3_CANONICAL_STATE=1)
+  ndsrecomp_link_tomlpp(tier3_state_test)
+  target_link_libraries(tier3_state_test PRIVATE nds_armv4t nds_support)
+  add_test(NAME tier3_state_test COMMAND ${CMAKE_COMMAND}
+      -DTEST_EXE=$<TARGET_FILE:tier3_state_test>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compare_tier3_state.cmake)
 
   add_executable(savestate_slots_test
       tests/savestate_slots_test.cpp
