@@ -55,7 +55,7 @@ option(NDS_NATIVE_PUBLISHED_STORES
 option(NDS_NATIVE_CONTROL
     "Experiment: native pure status/multiply and stateless ARM9 cache operations" OFF)
 option(NDS_TIER3_CANONICAL_STATE
-    "Candidate: share canonical registers/banks with faithful execution" OFF)
+    "Share canonical registers/banks with faithful execution" ON)
 set(NDS_MKDS_PERFORMANCE_BANK_DIR "" CACHE PATH
     "Generated mkds_perf_arm9 and mkds_perf_arm9_itcm banks")
 set(NDS_ARM9_DYNARMIC_ROOT "" CACHE PATH "Optional pinned Dynarmic source for experimental ARM9 native execution")
