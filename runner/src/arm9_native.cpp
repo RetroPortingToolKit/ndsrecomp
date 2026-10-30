@@ -180,11 +180,8 @@ public:
         read_pages->fill(nullptr);
         const auto add=[&](uint64_t first,uint64_t limit) {
             for(uint64_t a=first&~uint64_t(4095);a<limit&&a<0x100000000ull;a+=4096) {
-                uint32_t lo=0,hi=0;
-                const auto* w=nds_busf_classify(uint32_t(a),&lo);
-                const auto* end=nds_busf_classify(uint32_t(a+4095),&hi);
-                if(w&&w==end&&w->data&&hi==lo+4095&&uint64_t(hi)<=w->mask)
-                    (*read_pages)[a>>12]=w->data+lo;
+                const auto page=NdsNativeRam::page(uint32_t(a));
+                if(page)(*read_pages)[a>>12]=page.window->data+page.offset;
             }
         };
         add(0x02000000u,0x04000000u);
