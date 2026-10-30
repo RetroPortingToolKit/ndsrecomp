@@ -145,9 +145,18 @@ Raw final per-game/package identities and analysis:
 ## Remaining handoff
 
 Per-game decisions and machine-readable statuses are recorded; rejected runtime
-is excluded. Final selected-source builds/checks pass. Create the focused
-page-correctness PR, complete central records
+is excluded. Final selected-source builds/checks pass. The focused dependent
+[PR32](https://github.com/RetroPortingToolKit/ndsrecomp/pull/32) is filed against
+published frozen853c059. Its runtime/test tree matches the tested integration;
+PR30/core7/PR31 and earlier accepted groundwork remain dependencies, and final
+combined main integration/owner acceptance remain outstanding. Complete central records
 and successful sync, and obtain the independent final gate. Area08 remains
 open until that handoff. The next named item is **area17**, coupled16/18/19/20,
 with16x first and the explicit32x/64x full-speed objective for both games.
 No merge, delivery or interim owner playtest is authorized by this document.
+
+Final cleanup verified all16 original unpacked transfer files before removing
+local and remote staging/recovery ZIPs and the unused remote DLL directory,
+recovering approximately391MB. Raw samples, images, source/PRs, final builds and
+the exact rejected binaries/current-build MPH states remain retained for the
+campaign; `cleanup-receipt.json` records paths and later cleanup needs.
