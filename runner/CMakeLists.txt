@@ -192,6 +192,35 @@ foreach(_experiment NDS_CAPTURE_VIEW_REUSE NDS_LEAN_DIAGNOSTICS)
         string(APPEND NDS_BUILD_VARIANT "-${_experiment}-v1")
     endif()
 endforeach()
+option(NDS_CORE_IPO
+    "GCC LTO for runner/core targets only; keep imported banks and SDK opaque"
+    OFF)
+if(NDS_CORE_IPO)
+    if(NOT CMAKE_C_COMPILER_ID STREQUAL "GNU" OR
+       NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
+       NOT CMAKE_C_COMPILER_VERSION VERSION_EQUAL CMAKE_CXX_COMPILER_VERSION)
+        message(FATAL_ERROR "NDS_CORE_IPO requires matching GCC C/C++ compilers")
+    endif()
+    if(CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+        message(FATAL_ERROR
+            "NDS_CORE_IPO is target-scoped; disable global IPO")
+    endif()
+    foreach(_nds_core_config IN ITEMS ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
+        string(TOUPPER "${_nds_core_config}" _nds_core_config)
+        if(CMAKE_INTERPROCEDURAL_OPTIMIZATION_${_nds_core_config})
+            message(FATAL_ERROR
+                "NDS_CORE_IPO is target-scoped; disable global configuration IPO")
+        endif()
+    endforeach()
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _nds_core_ipo_supported
+        OUTPUT _nds_core_ipo_error LANGUAGES C CXX)
+    if(NOT _nds_core_ipo_supported)
+        message(FATAL_ERROR "NDS_CORE_IPO unavailable: ${_nds_core_ipo_error}")
+    endif()
+    string(APPEND NDS_BUILD_VARIANT
+        "-core-ipo-gcc${CMAKE_CXX_COMPILER_VERSION}-v1")
+endif()
 set(NDS_PGO_MODE "OFF" CACHE STRING
     "Runner-only GCC PGO mode: OFF, GENERATE, or USE")
 set_property(CACHE NDS_PGO_MODE PROPERTY STRINGS OFF GENERATE USE)
@@ -764,6 +793,17 @@ endif()
 message(STATUS "MKDS implementation: ${NDS_MKDS_IMPLEMENTATION}")
 message(STATUS "MKDS card PIO implementation: ${NDS_MKDS_CARD_PIO_IMPLEMENTATION}")
 ndsrecomp_limit_link(nds_runner)
+if(NDS_CORE_IPO)
+    # Do not enable global IPO: imported banks, the native SDK and slirp keep
+    # their existing object/archive identities. Exported runtime ABI stays on.
+    foreach(_nds_core_target IN ITEMS nds_runner nds_armv4t nds_support)
+        set_property(TARGET ${_nds_core_target} PROPERTY
+            INTERPROCEDURAL_OPTIMIZATION TRUE)
+        # Override CMake's GCC -flto=auto with the declared two-worker budget.
+        target_compile_options(${_nds_core_target} PRIVATE -flto=2)
+    endforeach()
+    target_link_options(nds_runner PRIVATE -flto=2)
+endif()
 if(NOT NDS_PGO_MODE STREQUAL "OFF")
     if(MSVC)
         message(FATAL_ERROR "NDS_PGO_MODE currently supports GCC/MinGW only")
