@@ -1355,11 +1355,70 @@ bool spu_sections_roundtrip_replay_and_rollback() {
     return ok;
 }
 
+// Reuses the real snapshot/codec/atomic writer and existing controlled device
+// fixture. No GPU, game or timing harness is introduced here.
+bool async_capture_and_publication() {
+    const auto path = std::filesystem::temp_directory_path() /
+        "ndsrecomp-savestate-async-test.nss";
+    reset_test_machine();
+    scheduler_reset_cpu(0, 0xFFFF0100u, 0xD3u);
+    scheduler_reset_cpu(1, 0x00000100u, 0xD3u);
+    const NdsSavestateIdentity identity{
+        "build-for-async", "0123456789abcdef0123456789abcdef01234567"};
+    NdsBusMemorySnapshot captured{}, changed{}, restored{};
+    bool ok = expect(bus_savestate_export(&captured), "export async fixture memory");
+    fill_pattern(&captured.main_ram, 0x45u);
+    changed = captured;
+    fill_pattern(&changed.main_ram, 0x9Au);
+    ok &= expect(bus_savestate_import(captured, nullptr), "seed async capture");
+    std::string error;
+    ok &= expect(nds_savestate_save_core_async(path.string(), identity, &error),
+                 "accept coherent async capture");
+    ok &= expect(!nds_savestate_save_core_async(path.string(), identity, &error),
+                 "accepted/unconsumed request is not silently replaced");
+    ok &= expect(bus_savestate_import(changed, nullptr), "mutate live memory after capture");
+    // Loading immediately must wait for accepted publication, then restore the
+    // captured value rather than bytes later read from the live machine.
+    ok &= expect(nds_savestate_load_core(path.string(), identity, &error),
+                 "load drains accepted asynchronous publication");
+    ok &= expect(bus_savestate_export(&restored) && restored.main_ram == captured.main_ram,
+                 "async save owns its captured memory");
+    NdsSavestateAsyncSaveResult completion{};
+    ok &= expect(nds_savestate_poll_save_core(&completion) && completion.success &&
+                 completion.size_bytes > 0 && completion.error.empty(),
+                 "durable successful completion is retained until consumed");
+    ok &= expect(!nds_savestate_poll_save_core(&completion), "completion is consumed once");
+    // Synchronous/debug saves must publish after an earlier accepted async save.
+    ok &= expect(nds_savestate_save_core_async(path.string(), identity, &error),
+                 "accept second async capture");
+    ok &= expect(bus_savestate_import(changed, nullptr), "seed later synchronous save");
+    ok &= expect(nds_savestate_save_core(path.string(), identity, &error),
+                 "synchronous save drains earlier accepted publication");
+    ok &= expect(nds_savestate_poll_save_core(&completion) && completion.success,
+                 "earlier completion remains observable after synchronous save");
+    ok &= expect(nds_savestate_load_core(path.string(), identity, &error) &&
+                 bus_savestate_export(&restored) && restored.main_ram == changed.main_ram,
+                 "older async publication cannot overwrite newer synchronous save");
+    std::vector<uint8_t> previous, after;
+    ok &= expect(load_bytes(path, &previous), "retain good state before publication failure");
+    ok &= expect(nds_savestate_save_core_async((path / "blocked.nss").string(), identity, &error),
+                 "publication failure is asynchronous");
+    nds_savestate_wait_for_pending_save();
+    ok &= expect(nds_savestate_poll_save_core(&completion) && !completion.success &&
+                 !completion.error.empty(), "failed publication remains an explicit completion");
+    ok &= expect(load_bytes(path, &after) && after == previous,
+                 "failed publication preserves previous good file");
+    std::filesystem::remove(path);
+    runtime_shutdown();
+    return ok;
+}
+
 }  // namespace
 
 int main() {
     bool ok = true;
     ok &= core_roundtrip();
+    ok &= async_capture_and_publication();
     ok &= identity_rejects();
     ok &= corrupt_section_rejects();
     ok &= scheduler_cpu_byte_layout_is_stable();
