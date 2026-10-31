@@ -848,6 +848,9 @@ if(NOT NDS_PGO_MODE STREQUAL "OFF")
         target_compile_options(nds_runner PRIVATE
             -fprofile-generate -fprofile-update=atomic)
         target_link_options(nds_runner PRIVATE -fprofile-generate)
+        if(NDS_CORE_IPO)
+            target_link_options(nds_runner PRIVATE -fprofile-update=atomic)
+        endif()
     else()
         # -fprofile-use with no profile data present is not an error: gcc
         # warns under -Wmissing-profile and still exits 0, so an untrained
@@ -892,6 +895,14 @@ if(NOT NDS_PGO_MODE STREQUAL "OFF")
                 -fprofile-partial-training)
         endif()
         target_link_options(nds_runner PRIVATE -fprofile-use)
+        if(NDS_CORE_IPO)
+            # LTO performs optimization at link time too. Keep the selected
+            # PGO policy there, including normal treatment of untrained code.
+            target_link_options(nds_runner PRIVATE -fprofile-correction)
+            if(NDS_PGO_PARTIAL_TRAINING)
+                target_link_options(nds_runner PRIVATE -fprofile-partial-training)
+            endif()
+        endif()
     endif()
 endif()
 if(NDS_PROFILE_MEM_TIMING)
