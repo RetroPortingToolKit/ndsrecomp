@@ -10,6 +10,9 @@ namespace {
 enum class CoreMode { Ok, RefuseNetwork, WrongRom, WrongBuild, Corrupt, Io };
 CoreMode g_mode = CoreMode::Ok;
 unsigned g_resets = 0;
+bool g_async_pending = false, g_async_ready = false;
+std::string g_async_path;
+
 
 bool expect(bool condition, const char* message) {
     if (!condition) std::cerr << "FAIL: " << message << '\n';
@@ -116,6 +119,32 @@ bool execution(const std::filesystem::path& root) {
     return ok;
 }
 
+bool asynchronous_results(const std::filesystem::path& root) {
+    g_mode = CoreMode::Ok;
+    const NdsSavestateIdentity identity{"slots", "0123456789abcdef0123456789abcdef01234567"};
+    const NdsSavestateSlotCommand command{NdsSavestateSlotAction::Save, 3};
+    auto value = nds_savestate_slot_request_save(root.string(), identity, command);
+    bool ok = expect(value.success && value.pending && value.message == "Saving state slot 3",
+                     "accepted capture is pending, never reported Saved early");
+    ok &= expect(!nds_savestate_slot_poll_save(&value), "unfinished save has no completion");
+    value = nds_savestate_slot_request_save(root.string(), identity, command);
+    ok &= expect(!value.success && !value.pending, "busy request is visibly rejected");
+    nds_savestate_wait_for_pending_save();
+    ok &= expect(nds_savestate_slot_poll_save(&value) && value.success && !value.pending &&
+                 value.command.slot == 3 && value.message == "Saved state slot 3",
+                 "committed save reports original slot exactly once");
+    ok &= expect(!nds_savestate_slot_poll_save(&value), "slot completion is consumed once");
+    g_mode = CoreMode::Io;
+    value = nds_savestate_slot_request_save(root.string(), identity, command);
+    ok &= expect(value.success && value.pending, "accepted save may fail at publication");
+    nds_savestate_wait_for_pending_save();
+    ok &= expect(nds_savestate_slot_poll_save(&value) && !value.success && !value.pending &&
+                 value.message.find("Cannot save state slot 3:") == 0,
+                 "publication error is not reported as Saved");
+    g_mode = CoreMode::Ok;
+    return ok;
+}
+
 }  // namespace
 
 bool nds_savestate_save_core(const std::string& path,
@@ -132,6 +161,22 @@ bool nds_savestate_save_core(const std::string& path,
         return false;
     }
     return true;
+}
+
+// Controlled completion plumbing only; the real worker/owned snapshot is
+// exercised by the existing savestate_test target instead of this SDL-free stub.
+bool nds_savestate_save_core_async(const std::string& path,
+    const NdsSavestateIdentity&, std::string* error) {
+    if (g_async_pending) { if(error)*error="save pending"; return false; }
+    if (!nds_savestate_check_eligibility(error)) return false;
+    g_async_path=path;g_async_pending=true;g_async_ready=false;return true;
+}
+void nds_savestate_wait_for_pending_save() { if(g_async_pending)g_async_ready=true; }
+bool nds_savestate_poll_save_core(NdsSavestateAsyncSaveResult* result) {
+    if(!result || !g_async_pending || !g_async_ready)return false;
+    *result={};result->success=nds_savestate_save_core(g_async_path,{},&result->error);
+    result->size_bytes=result->success ? 5:0;
+    g_async_pending=g_async_ready=false;return true;
 }
 
 bool nds_savestate_load_core(const std::string&,
@@ -174,7 +219,7 @@ int main() {
         std::filesystem::temp_directory_path() / "ndsrecomp-slots-test";
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
-    const bool ok = shortcuts() && paths_and_metadata(root) && execution(root);
+    const bool ok = shortcuts() && paths_and_metadata(root) && execution(root) && asynchronous_results(root);
     std::filesystem::remove_all(root, ec);
     return ok ? 0 : 1;
 }

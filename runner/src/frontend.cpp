@@ -2876,7 +2876,23 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     std::string savestate_notice;
     uint64_t savestate_notice_until = 0;
 
+    auto show_savestate_result = [&](const NdsSavestateSlotResult& result) {
+        savestate_notice = result.message;
+        savestate_notice_until = SDL_GetPerformanceCounter() + frequency * 4u;
+        std::fprintf(stderr, "[savestate] %s\n", result.message.c_str());
+        // A queued capture is not reported as a successfully committed save.
+        if (!result.pending) nds_diagnostics_note_savestate(
+            result.command.action == NdsSavestateSlotAction::Save ? "save" : "load",
+            result.command.slot, result.success);
+    };
+    auto finish_pending_save = [&](bool wait) {
+        if (wait) nds_savestate_wait_for_pending_save();
+        NdsSavestateSlotResult completed{};
+        if (nds_savestate_slot_poll_save(&completed)) show_savestate_result(completed);
+    };
+
     while (running) {
+        finish_pending_save(false);
         const uint64_t latency_loop = latency_trace ? SDL_GetPerformanceCounter() : 0;
         const uint64_t latency_cycles_loop = latency_trace ? nds_frontend_latency::cycles() : 0;
         const uint32_t latency_queue_begin = latency_trace ? audio_queue_count(audio, audio_queue) : 0;
@@ -3163,26 +3179,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                     function_key, sdl_event_shift(event), false,
                     &state_command);
                 if (state_shortcut) {
+                    if (state_command.action == NdsSavestateSlotAction::Load)
+                        finish_pending_save(true);
                     const NdsSavestateSlotResult result =
+                        state_command.action == NdsSavestateSlotAction::Save ?
+                        nds_savestate_slot_request_save(
+                            options.savestate_directory,
+                            {options.savestate_build_id, options.savestate_rom_sha1},
+                            state_command) :
                         nds_savestate_slot_execute(
                             options.savestate_directory,
-                            {options.savestate_build_id,
-                             options.savestate_rom_sha1},
+                            {options.savestate_build_id, options.savestate_rom_sha1},
                             state_command);
-                    savestate_notice = result.message;
-                    savestate_notice_until = SDL_GetPerformanceCounter() +
-                        frequency * 4u;
-                    std::fprintf(stderr, "[savestate] %s\n",
-                                 result.message.c_str());
-                    // Same instant into the perf log. stderr is not in a field
-                    // bundle and carries no timestamp; a load re-primes every
-                    // diagnostic baseline, so a bundle that cannot see where
-                    // the loads were reads the re-priming as a performance
-                    // event.
-                    nds_diagnostics_note_savestate(
-                        state_command.action == NdsSavestateSlotAction::Save
-                            ? "save" : "load",
-                        state_command.slot, result.success);
+                    show_savestate_result(result);
                     if (result.success &&
                         state_command.action ==
                             NdsSavestateSlotAction::Load) {
@@ -4176,6 +4185,8 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         }
     }
 
+    if (audio) pause_audio(audio, true);
+    finish_pending_save(true);
     release_relative_mouse();
     nds_set_touch(0, 0, false);
     nds_set_key_mask(0x0FFFu);
