@@ -7,6 +7,7 @@
 #include "gpu3d.h"
 #include "host_profile.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
@@ -63,7 +64,7 @@ void latch_capture_reference() {
 melonDS::CommandBatch::Cache g_command_cache;
 #endif
 
-int g_log_budget = 64;
+std::atomic<int> g_log_budget{64};
 bool g_soft_threaded = false;
 
 // Last VRAM texture generation reflected into each flat view (0 = never
@@ -551,8 +552,14 @@ void Log(LogLevel level, const char* fmt, ...) {
          std::strstr(fmt, "OpenGL: Cannot") != nullptr))
         g_compute_shader_setup_failed = true;
 #endif
-    if (level == Debug && g_log_budget <= 0) return;
-    if (level == Debug) --g_log_budget;
+    if (level == Debug) {
+        int remaining = g_log_budget.load(std::memory_order_relaxed);
+        do {
+            if (remaining <= 0) return;
+        } while (!g_log_budget.compare_exchange_weak(
+            remaining, remaining - 1, std::memory_order_relaxed,
+            std::memory_order_relaxed));
+    }
     std::fprintf(stderr, "[gpu3d] ");
     va_list args;
     va_start(args, fmt);
