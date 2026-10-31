@@ -41,6 +41,9 @@
 #endif
 #if defined(NDS_MKDS_HLE)
 #include "hle_mkds.h"
+#if defined(NDS_MKDS_PIO_HLE)
+#include "hle_mkds_card_pio.h"
+#endif
 #if defined(NDS_MKDS_STREAM_HLE)
 #include "hle_mkds_stream.h"
 #endif
@@ -1477,6 +1480,11 @@ std::string handle(const std::string& line) {
             ",\"stream_batches\":" + std::to_string(mkds_stream::statistics().batches) +
             ",\"stream_bytes\":" + std::to_string(mkds_stream::statistics().bytes) +
             ",\"stream_declines\":" + std::to_string(mkds_stream::statistics().declines) +
+#endif
+#if defined(NDS_MKDS_PIO_HLE)
+            ",\"pio_calls\":" + std::to_string(mkds_card_pio::statistics().calls) +
+            ",\"pio_words\":" + std::to_string(mkds_card_pio::statistics().words) +
+            ",\"pio_declines\":" + std::to_string(mkds_card_pio::statistics().declines) +
 #endif
             "}";
 #else
