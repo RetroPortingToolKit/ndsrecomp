@@ -739,6 +739,7 @@ add_executable(nds_runner
     src/relative_mouse_touch.cpp
     "${NDS_RECOMP_UI_ROOT}/src/common/recomp_runtime_ui.c"
     src/frontend.cpp
+    src/cpu_render_handoff.cpp
     src/main.cpp
     src/runtime_exports.def
     "${TITLE_BANK_REGISTRY}"
@@ -758,6 +759,8 @@ add_executable(nds_runner
     vendor/melonds/net/PacketDispatcher.cpp
     vendor/melonds/net/Net_Slirp.cpp)
 set_target_properties(nds_runner PROPERTIES ENABLE_EXPORTS ON)
+find_package(Threads REQUIRED)
+target_link_libraries(nds_runner PRIVATE Threads::Threads)
 if(NDS_MPH_MATH_IMPLEMENTATION STREQUAL "HLE")
     target_sources(nds_runner PRIVATE src/hle_mph_math.cpp)
     target_compile_definitions(nds_runner PRIVATE NDS_MPH_MATH_HLE=1)
@@ -1188,6 +1191,11 @@ add_executable(physical_write_test tests/physical_write_test.cpp)
 target_include_directories(physical_write_test PRIVATE src
     ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
 add_test(NAME physical_write_test COMMAND physical_write_test)
+
+add_executable(cpu_render_handoff_test tests/cpu_render_handoff_test.cpp src/cpu_render_handoff.cpp)
+target_include_directories(cpu_render_handoff_test PRIVATE src)
+target_link_libraries(cpu_render_handoff_test PRIVATE Threads::Threads)
+add_test(NAME cpu_render_handoff_test COMMAND cpu_render_handoff_test)
 
   add_executable(frontend_config_test
       tests/frontend_config_test.cpp
