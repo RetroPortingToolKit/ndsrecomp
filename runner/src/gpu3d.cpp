@@ -6,6 +6,7 @@
 
 #include "gpu3d.h"
 #include "host_profile.h"
+#include "cpu_render_handoff.h"
 
 #include <atomic>
 #include <chrono>
@@ -306,6 +307,9 @@ void compute_readback_failed(const char* stage) {
 }
 
 void compute_submit_readback() {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { compute_submit_readback(); }); return;
+    }
     if (!g_compute_rendered_frame || g_compute_readback_pending) return;
     const auto start = profiling() ? ProfileClock::now()
                                    : ProfileClock::time_point{};
@@ -356,6 +360,9 @@ void compute_submit_readback() {
 }
 
 void compute_finish_readback() {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { compute_finish_readback(); }); return;
+    }
     if (!g_compute_readback_pending) return;
     // ALWAYS-ON: this stall is precisely the quantity governor stage 1 moves
     // off the frame's critical path, so it cannot live behind NDS_PROFILE_GPU.
@@ -1287,6 +1294,9 @@ const char* nds_gpu3d_command_batch_json() {
 }
 
 void nds_gpu3d_set_power(uint16_t powcnt1) {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([=] { nds_gpu3d_set_power(powcnt1); }); return;
+    }
     g_nds.GPU.GPU3D.SetEnabled((powcnt1 & (1u << 3)) != 0,
                                (powcnt1 & (1u << 2)) != 0);
 }
@@ -1340,6 +1350,9 @@ void nds_gpu3d_check_fifo_irq() {
 }
 
 void nds_gpu3d_vcount144() {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { nds_gpu3d_vcount144(); }); return;
+    }
     // 3D frame boundary reached from the display tick. EXACT: three calls a
     // frame, each potentially a full renderer barrier, so sampling them at
     // 1-in-N would be a lottery ticket on a ~1 ms cost.
@@ -1359,6 +1372,9 @@ void nds_gpu3d_vblank() {
 }
 
 void nds_gpu3d_vcount215() {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { nds_gpu3d_vcount215(); }); return;
+    }
     // See nds_gpu3d_vcount144. The compute submit/sync/map buckets in
     // NdsGpu3dProfile are a breakdown of this region, not an addend to it.
     NdsEmuScope emu_region(NDS_EMU_GPU3D_FRAME);
@@ -1550,6 +1566,16 @@ uint16_t nds_gpu3d_render_xpos() {
 }
 
 void nds_gpu3d_start_frame() {
+    // A no-op frame-start must not rendezvous before any CPU work can overlap
+    // Swap. Only the actual renderer/readback operations require the GL owner.
+    if (nds_cpu_render_on_worker() &&
+        (g_nds.GPU.GPU3D.AbortFrame
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+         || g_compute_readback_pending || g_compute_rendered_frame
+#endif
+        )) {
+        nds_cpu_render_main([] { nds_gpu3d_start_frame(); }); return;
+    }
     // See nds_gpu3d_vcount144. This is where the compute renderer pays its
     // readback stall (compute_finish_readback), the single largest per-call
     // cost anywhere in the emu phase.

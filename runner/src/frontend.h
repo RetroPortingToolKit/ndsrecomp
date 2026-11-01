@@ -417,6 +417,18 @@ struct NdsFrontendLiveStats {
     // requested and active, which makes it a direct harness assertion.
     uint64_t real_presents;
     uint64_t synthetic_presents;
+    // Optional CPU/main handoff. Prefix overlap is the wall intersection with
+    // presentation BEFORE the first blocking GL request, not measured CPU time.
+    // Worker cycle totals are their own thread domain; process CPU is primary.
+    uint8_t cpu_render_handoff;
+    uint64_t cpu_frames_produced;
+    uint64_t presented_job;
+    uint64_t presented_system_timestamp;
+    uint64_t cpu_worker_cycles;
+    uint64_t cpu_main_requests;
+    uint64_t cpu_overlap_ticks;
+    uint64_t cpu_overlap_frames;
+    uint64_t cpu_prefix_cycles;
     uint8_t perf_governor_stage;
     uint32_t perf_governor_over_frames;
     uint32_t perf_governor_under_frames;

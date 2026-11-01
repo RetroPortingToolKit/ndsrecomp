@@ -155,6 +155,9 @@ bool nds_gpu2d_hd_frame(NdsGpu2dHdFrame* out);
 // Same snapshot without the consumption counter bump, for observers (the
 // presented-frame digest ring) that must not look like a presenter.
 bool nds_gpu2d_hd_frame_peek(NdsGpu2dHdFrame* out);
+// Main presenter consumed an already owned snapshot. Does not inspect/drain
+// live compositor state; callers serialize profile queries at a CPU join.
+void nds_gpu2d_note_owned_hd_presented();
 // Must be called by the frontend once per presented frame, before deciding
 // whether to run the adaptive compositor at all. The adaptive path is skipped
 // entirely on direct-present frames, so without this the surfaces from the

@@ -1180,6 +1180,15 @@ std::string handle(const std::string& line) {
                ",\"real_presents\":" + std::to_string(s.real_presents) +
                ",\"synthetic_presents\":" +
                std::to_string(s.synthetic_presents) +
+               ",\"cpu_render_handoff\":" + std::to_string(s.cpu_render_handoff) +
+               ",\"cpu_frames_produced\":" + std::to_string(s.cpu_frames_produced) +
+               ",\"presented_job\":" + std::to_string(s.presented_job) +
+               ",\"presented_system_timestamp\":" + std::to_string(s.presented_system_timestamp) +
+               ",\"cpu_worker_cycles\":" + std::to_string(s.cpu_worker_cycles) +
+               ",\"cpu_main_requests\":" + std::to_string(s.cpu_main_requests) +
+               ",\"cpu_overlap_ticks\":" + std::to_string(s.cpu_overlap_ticks) +
+               ",\"cpu_overlap_frames\":" + std::to_string(s.cpu_overlap_frames) +
+               ",\"cpu_prefix_cycles\":" + std::to_string(s.cpu_prefix_cycles) +
                ",\"perf_governor_stage\":" +
                std::to_string(s.perf_governor_stage) +
                ",\"perf_governor_over_frames\":" +

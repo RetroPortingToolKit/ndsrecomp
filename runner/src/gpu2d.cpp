@@ -3132,6 +3132,7 @@ bool nds_gpu2d_hd_frame(NdsGpu2dHdFrame* out) {
     ++g_hd_presented;
     return true;
 }
+void nds_gpu2d_note_owned_hd_presented() { ++g_hd_presented; }
 void nds_gpu2d_profile(NdsGpu2dProfile* out) {
     drain_pool(NDS_GPU2D_FENCE_PRESENT);
     if (!out) return;

@@ -2,6 +2,7 @@
 #include "host_profile.h"
 #include "frontend_window_size.h"
 #include "arm9_native.h"
+#include "cpu_render_handoff.h"
 
 #include <algorithm>
 #include <array>
@@ -16,6 +17,8 @@
 #include <fstream>
 #include <initializer_list>
 #include <limits>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -45,16 +48,18 @@ NdsFrontendPacingStats g_pacing_stats{};
 uint64_t g_pacing_previous_counter = 0;
 
 void record_frontend_pacing(uint64_t counter, uint64_t emu_ticks,
-                            uint64_t present_ticks, uint64_t frequency) {
+                            uint64_t present_ticks, uint64_t frequency,
+                            uint64_t overlapped_work_ticks = 0) {
     if (!g_pacing_stats.armed) return;
     g_pacing_stats.frequency = frequency;
     g_pacing_stats.max_emu_ticks =
         std::max(g_pacing_stats.max_emu_ticks, emu_ticks);
     g_pacing_stats.max_present_ticks =
         std::max(g_pacing_stats.max_present_ticks, present_ticks);
-    if (emu_ticks + present_ticks > frequency / 60u)
+    const auto work_ticks=overlapped_work_ticks ? overlapped_work_ticks : emu_ticks+present_ticks;
+    if (work_ticks > frequency / 60u)
         ++g_pacing_stats.work_over_budget;
-    const uint64_t work_us = (emu_ticks + present_ticks) * 1000000u / frequency;
+    const uint64_t work_us = work_ticks * 1000000u / frequency;
     ++g_pacing_stats.work_histogram[std::min<uint64_t>(256u, work_us / 250u)];
     ++g_pacing_stats.work_samples;
     if (work_us <= 13300u) ++g_pacing_stats.work_at_most_13300us;
@@ -109,10 +114,13 @@ uint64_t digest_words(const uint32_t* words, size_t count, uint64_t seed) {
 
 void record_frame_digest(uint64_t frame, const uint32_t* top, uint32_t top_w,
                          const uint32_t* bottom, uint32_t bottom_w,
-                         bool direct_present) {
+                         bool direct_present,
+                         const NdsGpu2dHdFrame* owned_hd = nullptr,
+                         bool owned = false) {
     if (!frame_digest_enabled()) return;
     NdsGpu2dHdFrame hd{};
-    const bool have_hd = nds_gpu2d_hd_frame_peek(&hd);
+    const bool have_hd = owned ? (owned_hd ? (hd=*owned_hd,true) : false)
+                               : nds_gpu2d_hd_frame_peek(&hd);
     NdsFrontendFrameDigest entry{};
     entry.frame = frame;
     entry.top_width = top_w;
@@ -153,7 +161,8 @@ void record_frame_digest(uint64_t frame, const uint32_t* top, uint32_t top_w,
     g_frame_digest_count.store(index + 1, std::memory_order_release);
 }
 
-void observe_top_black_bands(const uint32_t* pixels, uint64_t frame) {
+void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
+                             uint64_t system_timestamp = UINT64_MAX) {
     if (!g_black_band.enabled || !pixels) return;
     ++g_black_band.scanned_frames;
 
@@ -186,7 +195,8 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame) {
     if (longest_rows <= g_black_band.worst_row_count) return;
     g_black_band.has_capture = 1;
     g_black_band.worst_frame = frame;
-    g_black_band.worst_system_timestamp = scheduler_system_timestamp();
+    g_black_band.worst_system_timestamp = system_timestamp == UINT64_MAX
+        ? scheduler_system_timestamp() : system_timestamp;
     g_black_band.worst_start_row = longest_start;
     g_black_band.worst_row_count = longest_rows;
     std::memcpy(g_black_band.top_pixels, pixels,
@@ -993,12 +1003,20 @@ uint32_t audio_queue_count(const NdsAudioDevice& device, AudioQueue& queue) {
 }
 
 uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
-                     bool throttle, uint32_t pace_floor, bool& queue_error) {
+                     bool throttle, uint32_t pace_floor, bool& queue_error,
+                     const std::vector<int16_t>* owned_pcm = nullptr) {
     if (!device) return 0;
     std::array<int16_t, 2048> samples{};
+    size_t pcm_offset=0;
     for (;;) {
-        const uint32_t frames = nds_spu_read_output(samples.data(), 1024);
+        const uint32_t frames = owned_pcm
+            ? static_cast<uint32_t>(std::min<size_t>(1024,(owned_pcm->size()-pcm_offset)/2u))
+            : nds_spu_read_output(samples.data(), 1024);
         if (!frames) break;
+        if (owned_pcm) {
+            std::copy_n(owned_pcm->data()+pcm_offset,frames*2u,samples.data());
+            pcm_offset+=frames*2u;
+        }
         bool pushed = false;
         while (!pushed) {
 #if defined(NDS_HAVE_SDL3)
@@ -1991,6 +2009,74 @@ void draw_virtual_stylus(SDL_Renderer* renderer, const SDL_Rect& destination,
     render_line(renderer, x, y + 2, x, y + 5);
 }
 
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+// Two native-sized slots. Only the producer writes the building slot; main
+// presents the prior completed slot, then joins before consuming/reusing either
+// slot or touching live simulation. No CPU images grow with internal scale.
+struct OwnedPresentationFrame {
+    std::vector<uint32_t> pixels[2], native_top, hd_top, hd_below, objects, raster;
+    std::vector<int16_t> pcm;
+    NdsComputePresentationFrame gl{};
+    uint16_t widths[2]{256,256};
+    uint64_t system_timestamp{}, audio_epoch{}, digest_epoch{}, job{}, adaptive_ticks{};
+    uint64_t emu_begin{}, emu_end{}, cycles_begin{}, cycles_end{};
+    bool direct{}, valid{}, powered_off{};
+
+    void Capture(const NdsFrontendOptions& options, bool gl_top) {
+        valid=false; gl={}; pcm.clear();
+        powered_off=nds_powered_off();
+        if (powered_off || nds_gpu3d_compute_runtime_failed()) return;
+        const auto* native=nds_gpu2d_framebuffer(0);
+        native_top.assign(native,native+256u*192u);
+        const uint32_t* top=native;
+        const uint32_t* bottom=nds_gpu2d_framebuffer(1);
+        widths[0]=widths[1]=256;
+        nds_gpu2d_invalidate_hd_frame();
+        direct=nds_gpu2d_direct_present_frame_active();
+        const auto start=SDL_GetPerformanceCounter();
+        const bool native_hd=gl_top && nds_gpu3d_internal_scale()>1u &&
+                             nds_gpu3d_output_width()==256u;
+        if (((options.adaptive_screens & NDS_ADAPTIVE_TOP) || native_hd) && !direct)
+            top=nds_gpu2d_adaptive_framebuffer(0,&widths[0]);
+        else if (direct) widths[0]=nds_gpu3d_output_width();
+        if (options.adaptive_screens & NDS_ADAPTIVE_BOTTOM)
+            bottom=nds_gpu2d_adaptive_framebuffer(1,&widths[1]);
+        adaptive_ticks=SDL_GetPerformanceCounter()-start;
+        pixels[0].assign(top,top+(direct ? 256u : widths[0])*192u);
+        pixels[1].assign(bottom,bottom+widths[1]*192u);
+        gl.has_direct=nds_gpu2d_direct_frame(&gl.direct);
+        if (gl.has_direct) {
+            objects.assign(gl.direct.object_pixels,
+                           gl.direct.object_pixels+gl.direct.width*192u);
+            gl.direct.object_pixels=objects.data();
+            if (gl.direct.raster_params) {
+                raster.assign(gl.direct.raster_params,gl.direct.raster_params+192u*4u);
+                gl.direct.raster_params=raster.data();
+            }
+        }
+        gl.has_hd=nds_gpu2d_hd_frame_peek(&gl.hd);
+        if (gl.has_hd) {
+            const size_t count=size_t(gl.hd.width)*192u*2u;
+            hd_top.assign(gl.hd.top_pixels,gl.hd.top_pixels+count);
+            hd_below.assign(gl.hd.below_pixels,gl.hd.below_pixels+count);
+            gl.hd.top_pixels=hd_top.data(); gl.hd.below_pixels=hd_below.data();
+        }
+        gl.native_texture=nds_gpu3d_compute_output_texture();
+        gl.hires_texture=nds_gpu3d_compute_output_texture_hires();
+        gl.scale=nds_gpu3d_internal_scale();
+        std::array<int16_t,2048> samples{};
+        for (uint32_t frames; (frames=nds_spu_read_output(samples.data(),1024));) {
+            if (pcm.size()+frames*2u>65536u)
+                throw std::runtime_error("CPU frame PCM exceeds bounded publication");
+            pcm.insert(pcm.end(),samples.begin(),samples.begin()+frames*2u);
+        }
+        system_timestamp=scheduler_system_timestamp();
+        audio_epoch=nds_spu_presentation_epoch();
+        valid=true;
+    }
+};
+#endif
+
 PresentationTicks present_screens(FrontendPresentation& presentation,
                                   const uint32_t* top_pixels,
                                   int top_width,
@@ -2000,21 +2086,26 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                   bool virtual_stylus_visible,
                                   float virtual_stylus_x,
                                   float virtual_stylus_y,
-                                  const char* savestate_notice) {
+                                  const char* savestate_notice
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+                                  ,const NdsComputePresentationFrame* owned = nullptr
+#endif
+                                  ) {
     PresentationTicks ticks{};
     if (presentation.gl_top) {
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
         NdsGpu2dDirectFrame direct_frame{};
         const bool latency = nds_frontend_latency::enabled.load(std::memory_order_relaxed);
         const auto pool_begin = latency ? SDL_GetPerformanceCounter() : 0;
-        const bool direct = nds_gpu2d_direct_frame(&direct_frame);
+        const bool direct = owned ? (direct_frame=owned->direct,owned->has_direct)
+                                  : nds_gpu2d_direct_frame(&direct_frame);
         if (latency) ticks.pool_wait = SDL_GetPerformanceCounter() - pool_begin;
         NdsComputePresentTicks gl_ticks{};
         gl_ticks.diagnostic = latency;
         if (!nds_compute_host_present_top(
                 top_pixels, static_cast<uint16_t>(top_width),
                 direct ? &direct_frame : nullptr, &gl_ticks,
-                presentation.antialiasing)) {
+                presentation.antialiasing,owned)) {
             std::fprintf(stderr, "[gpu3d] direct top presentation failed\n");
             ticks.ok = false;
             return ticks;
@@ -2921,6 +3012,37 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         if (nds_savestate_slot_poll_save(&completed)) show_savestate_result(completed);
     };
 
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    // Captured producer data must outlive the handoff's exception-path drain.
+    std::array<OwnedPresentationFrame,2> owned_frames;
+    bool producer_priority_initialized=false;
+#endif
+    std::unique_ptr<NdsCpuRenderHandoff> cpu_handoff;
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    int completed_slot=-1;
+    uint64_t produced_jobs=0;
+    const char* handoff_setting=std::getenv("NDS_CPU_RENDER_HANDOFF");
+    const bool handoff_requested=handoff_setting && std::strcmp(handoff_setting,"1")==0;
+    bool handoff_title_supported=false;
+#if defined(NDS_MKDS_PERFORMANCE)
+    handoff_title_supported=options.savestate_rom_sha1=="691e00d9a5dd80b04f80cc7559503e8b06848785";
+#endif
+    const std::string backend=nds_gpu3d_compiled_accelerated_backend();
+    if (handoff_requested && handoff_title_supported && presentation.gl_top && backend=="compute" &&
+        !interpolation_active && options.perf_governor_mode==NdsPerfGovernorMode::Off &&
+        !selftest_menu && !selftest_relative_mouse &&
+        !std::getenv("NDS_GUEST_JOB_PROFILE_OUTPUT")) {
+        nds_hostprof_unregister_current_thread();
+        nds_hostprof_register_current_thread(NDS_HOSTPROF_ROLE_RENDER);
+        cpu_handoff=std::make_unique<NdsCpuRenderHandoff>(SDL_GetPerformanceCounter,[] {
+            if (!nds_compute_host_make_current())
+                throw std::runtime_error("main GL context unavailable during native borrow");
+        });
+        std::fprintf(stderr,"[sdl] CPU/render handoff: elective MKDS profile; worker simulation+PCM, main SDL/GL; one completed-frame presentation/PCM latency\n");
+    } else if (handoff_requested) {
+        std::fprintf(stderr,"[sdl] CPU/render handoff unavailable for selected title/renderer/features; serial fallback\n");
+    }
+#endif
     while (running) {
         finish_pending_save(false);
         const uint64_t latency_loop = latency_trace ? SDL_GetPerformanceCounter() : 0;
@@ -3891,20 +4013,84 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         }
         publish_input_debug();
 
+        // Quit/control requests are resolved while the producer is joined.
+        // Never start another guest transaction after SDL_QUIT/window close.
+        if (!running) break;
         const uint64_t phase0 = SDL_GetPerformanceCounter();
-        const uint64_t latency_cycles_emu = latency_trace ? nds_frontend_latency::cycles() : 0;
-        const uint64_t now = scheduler_system_timestamp();
-        const uint64_t next_frame =
-            (now / kSystemCyclesPerFrame + 1u) * kSystemCyclesPerFrame;
-        while (running && scheduler_system_timestamp() < next_frame &&
-               !(scheduler_cpu_terminal_halted(0) &&
-                 scheduler_cpu_terminal_halted(1))) {
-            scheduler_run_round();
+        uint64_t latency_cycles_emu = latency_trace ? nds_frontend_latency::cycles() : 0;
+        uint64_t worker_emu_begin=phase0, worker_emu_end=phase0;
+        uint64_t frame_work_ticks=0;
+        bool producer_pending=false;
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+        OwnedPresentationFrame* presented=nullptr;
+        int building_slot=-1;
+        if (cpu_handoff) {
+            if (completed_slot>=0 &&
+                (owned_frames[completed_slot].audio_epoch!=nds_spu_presentation_epoch() ||
+                 owned_frames[completed_slot].digest_epoch!=g_frame_digest_epoch ||
+                 owned_frames[completed_slot].gl.scale!=nds_gpu3d_internal_scale()))
+                completed_slot=-1;
+            building_slot=completed_slot<0 ? 0 : 1-completed_slot;
+            auto& packet=owned_frames[building_slot];
+            packet.job=++produced_jobs; packet.digest_epoch=g_frame_digest_epoch;
+            cpu_handoff->Start([&,building_slot] {
+                // SDL changes the CALLING thread's priority. Do not assume the
+                // main thread's existing HIGH setting is inherited by pthreads.
+                if (!producer_priority_initialized) {
+                    if (!sdl_set_thread_priority_high())
+                        std::fprintf(stderr,"[sdl] CPU producer priority unchanged: %s\n",SDL_GetError());
+                    producer_priority_initialized=true;
+                }
+                auto& output=owned_frames[building_slot];
+                output.emu_begin=SDL_GetPerformanceCounter();
+                output.cycles_begin=latency_trace ? nds_frontend_latency::cycles() : 0;
+                const uint64_t now=scheduler_system_timestamp();
+                const uint64_t end=(now/kSystemCyclesPerFrame+1u)*kSystemCyclesPerFrame;
+                while (scheduler_system_timestamp()<end &&
+                       !(scheduler_cpu_terminal_halted(0) && scheduler_cpu_terminal_halted(1)))
+                    scheduler_run_round();
+                output.cycles_end=latency_trace ? nds_frontend_latency::cycles() : 0;
+                output.emu_end=SDL_GetPerformanceCounter();
+                output.Capture(options,presentation.gl_top);
+            });
+            producer_pending=true;
+            if (completed_slot<0) {
+                try { cpu_handoff->Join(); }
+                catch (const std::exception& e) {
+                    std::fprintf(stderr,"[sdl] CPU producer failed: %s\n",e.what());
+                    compute_failed=true; running=false; break;
+                }
+                producer_pending=false; completed_slot=building_slot;
+                // Prime one completed packet without displaying it twice. The
+                // next loop samples controls for the next CPU frame, then
+                // presents this completed job while that producer runs.
+                if (!packet.valid) {
+                    compute_failed=!packet.powered_off; running=false; break;
+                }
+                if (mouse_down || touch_release_pending) ++touch_frames_held;
+                if (touch_release_pending && touch_frames_held>=2) {
+                    nds_set_touch(0,0,false); touch_release_pending=false;
+                }
+                continue;
+            }
+            presented=&owned_frames[completed_slot];
+            if (!presented->valid) {
+                compute_failed=!presented->powered_off; running=false; break;
+            }
+        } else
+#endif
+        {
+            const uint64_t now = scheduler_system_timestamp();
+            const uint64_t next_frame =
+                (now / kSystemCyclesPerFrame + 1u) * kSystemCyclesPerFrame;
+            while (running && scheduler_system_timestamp() < next_frame &&
+                   !(scheduler_cpu_terminal_halted(0) && scheduler_cpu_terminal_halted(1)))
+                scheduler_run_round();
         }
         // A real DS power-off is an application lifecycle request, not a
         // debuggable terminal halt. Leave before presenting the powered-down
         // black framebuffer; main() performs durable state flushes.
-        if (nds_powered_off()) {
+        if (!cpu_handoff && nds_powered_off()) {
             std::fprintf(stderr,
                          "[sdl] guest requested power-off; closing\n");
             running = false;
@@ -3912,7 +4098,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         }
         uint64_t frame_emu_ticks = 0;
         {
-            frame_emu_ticks = SDL_GetPerformanceCounter() - phase0;
+            frame_emu_ticks = cpu_handoff ? 0 : SDL_GetPerformanceCounter() - phase0;
             phase_emu_ticks += frame_emu_ticks;
             if (frame_emu_ticks > max_emu_ticks) {
                 max_emu_ticks = frame_emu_ticks;
@@ -3922,7 +4108,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 ++slow_frames_32ms;
         }
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
-        if (nds_gpu3d_compute_runtime_failed()) {
+        if (!cpu_handoff && nds_gpu3d_compute_runtime_failed()) {
             compute_failed = true;
             running = false;
             break;
@@ -3940,39 +4126,44 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
 
         if (mouse_down || touch_release_pending)
             ++touch_frames_held;
-        if (touch_release_pending && touch_frames_held >= 2) {
+        if (!cpu_handoff && touch_release_pending && touch_frames_held >= 2) {
             nds_set_touch(0, 0, false);
             touch_release_pending = false;
         }
 
         const uint64_t phase1 = SDL_GetPerformanceCounter();
-        const uint64_t latency_cycles_present = latency_trace ? nds_frontend_latency::cycles() : 0;
-        const uint32_t* const native_top = nds_gpu2d_framebuffer(0);
-        const uint32_t* top_pixels = native_top;
-        const uint32_t* bottom_pixels = nds_gpu2d_framebuffer(1);
-        uint16_t top_width = 256;
-        uint16_t bottom_width = 256;
-        const uint64_t adaptive_start = SDL_GetPerformanceCounter();
-        // Direct-present frames skip the adaptive compositor, so the HD
-        // surfaces must be invalidated here rather than inside it.
-        nds_gpu2d_invalidate_hd_frame();
-        // HD needs the 2D layer descriptors even at native aspect. Without
-        // this, MPH renders an HD raster but presents its native composite.
-        const bool native_hd = presentation.gl_top &&
-            nds_gpu3d_internal_scale() > 1u &&
-            nds_gpu3d_output_width() == 256u;
-        if (((options.adaptive_screens & NDS_ADAPTIVE_TOP) || native_hd) &&
-            !nds_gpu2d_direct_present_frame_active())
-            top_pixels =
-                nds_gpu2d_adaptive_framebuffer(0, &top_width);
-        else if (nds_gpu2d_direct_present_frame_active())
-            top_width = nds_gpu3d_output_width();
-        if (options.adaptive_screens & NDS_ADAPTIVE_BOTTOM)
-            bottom_pixels =
-                nds_gpu2d_adaptive_framebuffer(1, &bottom_width);
-        phase_adaptive_ticks +=
-            SDL_GetPerformanceCounter() - adaptive_start;
-        observe_top_black_bands(native_top, shown_frames);
+        uint64_t latency_cycles_present = latency_trace ? nds_frontend_latency::cycles() : 0;
+        const uint32_t* native_top=nullptr;
+        const uint32_t* top_pixels=nullptr;
+        const uint32_t* bottom_pixels=nullptr;
+        uint16_t top_width=256,bottom_width=256;
+        const uint64_t adaptive_start=SDL_GetPerformanceCounter();
+        bool direct_present=false;
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+        if (cpu_handoff) {
+            native_top=presented->native_top.data();
+            top_pixels=presented->pixels[0].data(); bottom_pixels=presented->pixels[1].data();
+            top_width=presented->widths[0]; bottom_width=presented->widths[1];
+            direct_present=presented->direct;
+            phase_adaptive_ticks+=presented->adaptive_ticks;
+            observe_top_black_bands(native_top,shown_frames,presented->system_timestamp);
+        } else
+#endif
+        {
+            native_top=nds_gpu2d_framebuffer(0);
+            top_pixels=native_top; bottom_pixels=nds_gpu2d_framebuffer(1);
+            nds_gpu2d_invalidate_hd_frame();
+            const bool native_hd=presentation.gl_top && nds_gpu3d_internal_scale()>1u &&
+                                 nds_gpu3d_output_width()==256u;
+            direct_present=nds_gpu2d_direct_present_frame_active();
+            if (((options.adaptive_screens & NDS_ADAPTIVE_TOP) || native_hd) && !direct_present)
+                top_pixels=nds_gpu2d_adaptive_framebuffer(0,&top_width);
+            else if (direct_present) top_width=nds_gpu3d_output_width();
+            if (options.adaptive_screens & NDS_ADAPTIVE_BOTTOM)
+                bottom_pixels=nds_gpu2d_adaptive_framebuffer(1,&bottom_width);
+            phase_adaptive_ticks+=SDL_GetPerformanceCounter()-adaptive_start;
+            observe_top_black_bands(native_top,shown_frames);
+        }
         // At most ONE synthetic frame, presented ahead of the real one, so
         // the visible order stays real(N-1), blend(N-1,N), real(N). No
         // scheduler round, no input sampling, no audio production happens
@@ -3980,7 +4171,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         // presenter is excluded above; direct-present frames are excluded
         // again per frame because their top surface lives on the GPU.
         if (interpolation_active && blend_cache.valid && !turbo_active &&
-            !nds_gpu2d_direct_present_frame_active() &&
+            !direct_present &&
             blend_cache.widths[0] == top_width &&
             blend_cache.widths[1] == bottom_width && audio_started &&
             audio_queue_count(audio, audio_queue) >
@@ -4021,7 +4212,55 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
             runtime_ui,
             mph_prime_virtual_stylus || generic_virtual_stylus,
             mph_virtual_x, mph_virtual_y,
-            savestate_notice.empty() ? nullptr : savestate_notice.c_str());
+            savestate_notice.empty() ? nullptr : savestate_notice.c_str()
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+            ,cpu_handoff ? &presented->gl : nullptr
+#endif
+            );
+        const uint64_t presentation_end=SDL_GetPerformanceCounter();
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+        if (cpu_handoff) {
+            if (producer_pending) {
+                try { cpu_handoff->Join(); }
+                catch (const std::exception& e) {
+                    std::fprintf(stderr,"[sdl] CPU producer failed: %s\n",e.what());
+                    compute_failed=true; running=false; break;
+                }
+                producer_pending=false; completed_slot=building_slot;
+            }
+            const auto& produced=owned_frames[building_slot];
+            const auto& handoff_timing=cpu_handoff->LastTiming();
+            frame_work_ticks=std::max(presentation_end,handoff_timing.end)-phase0;
+            const auto overlap_begin=std::max(phase1,handoff_timing.begin);
+            const auto prefix_end=handoff_timing.first_request
+                ? handoff_timing.first_request : handoff_timing.end;
+            const auto overlap_end=std::min(presentation_end,prefix_end);
+            const auto overlap=overlap_end>overlap_begin ? overlap_end-overlap_begin : 0;
+            g_live_stats.cpu_render_handoff=1;
+            g_live_stats.cpu_frames_produced=produced.job;
+            g_live_stats.presented_job=presented->job;
+            g_live_stats.presented_system_timestamp=presented->system_timestamp;
+            g_live_stats.cpu_worker_cycles+=handoff_timing.cycles_end-handoff_timing.cycles_begin;
+            g_live_stats.cpu_main_requests+=handoff_timing.main_requests;
+            g_live_stats.cpu_overlap_ticks+=overlap;
+            if (overlap) ++g_live_stats.cpu_overlap_frames;
+            g_live_stats.cpu_prefix_cycles+=(handoff_timing.first_request
+                ? handoff_timing.cycles_first_request : handoff_timing.cycles_end)
+                -handoff_timing.cycles_begin;
+            worker_emu_begin=produced.emu_begin; worker_emu_end=produced.emu_end;
+            latency_cycles_emu=produced.cycles_begin; latency_cycles_present=produced.cycles_end;
+            frame_emu_ticks=worker_emu_end-worker_emu_begin;
+            phase_emu_ticks+=frame_emu_ticks;
+            if (frame_emu_ticks>max_emu_ticks) { max_emu_ticks=frame_emu_ticks; max_emu_frame=shown_frames; }
+            if (frame_emu_ticks*1000u>frequency*32u) ++slow_frames_32ms;
+            if (!produced.valid || nds_gpu3d_compute_runtime_failed()) {
+                compute_failed=!produced.powered_off; running=false; break;
+            }
+            if (touch_release_pending && touch_frames_held>=2) {
+                nds_set_touch(0,0,false); touch_release_pending=false;
+            }
+        }
+#endif
         if (!presentation_ticks.ok) {
             compute_failed = true;
             running = false;
@@ -4034,16 +4273,21 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         // present so the hash cost is never inside a measured present phase.
         record_frame_digest(shown_frames, top_pixels, top_width,
                             bottom_pixels, bottom_width,
-                            nds_gpu2d_direct_present_frame_active());
+                            direct_present
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+                            ,cpu_handoff && presented->gl.has_hd ? &presented->gl.hd : nullptr,
+                            bool(cpu_handoff)
+#endif
+                            );
         if (interpolation_active &&
-            !nds_gpu2d_direct_present_frame_active()) {
+            !direct_present) {
             cache_presented_frame(blend_cache, 0, top_pixels, top_width);
             cache_presented_frame(blend_cache, 1, bottom_pixels, bottom_width);
             blend_cache.valid = true;
         } else {
             blend_cache.valid = false;
         }
-        phase_present_ticks += SDL_GetPerformanceCounter() - phase1;
+        phase_present_ticks += presentation_end - phase1;
         if (audio && audio_started) {
             const uint32_t queued = audio_queue_count(audio, audio_queue);
             audio_min_queue = std::min(audio_min_queue, queued);
@@ -4062,11 +4306,15 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         uint32_t queued = audio_queue_count(audio, audio_queue);
         const uint32_t latency_queue_before_drain = queued;
         if (turbo_active) {
-            discard_spu_output();
+            if (!cpu_handoff) discard_spu_output();
         } else {
             queued = drain_audio(
                 audio, audio_queue, audio_started, audio_pace_floor,
-                audio_queue_error);
+                audio_queue_error
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+                ,cpu_handoff ? &presented->pcm : nullptr
+#endif
+                );
         }
         const uint64_t frame_drain_ticks =
             SDL_GetPerformanceCounter() - phase2;
@@ -4175,8 +4423,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
             nds_perf_governor_history_total();
         const uint64_t counter = SDL_GetPerformanceCounter();
         if (latency_trace)
-            nds_frontend_latency::frame({shown_frames, latency_loop, phase0,
-                phase0 + frame_emu_ticks, phase1, phase2,
+            nds_frontend_latency::frame({shown_frames, latency_loop,
+                cpu_handoff ? worker_emu_begin : phase0,
+                cpu_handoff ? worker_emu_end : phase0 + frame_emu_ticks, phase1, presentation_end,
                 phase2 + frame_drain_ticks, counter, latency_cycles_loop,
                 latency_cycles_emu, latency_cycles_present, latency_cycles_drain,
                 nds_frontend_latency::cycles(), latency_queue_begin,
@@ -4188,9 +4437,12 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 presentation_ticks.gl_setup, presentation_ticks.gl_error,
                 presentation_ticks.overlay, adaptive_start - phase1,
                 keyboard_pressed, g_input_debug.published_key_mask,
-                scheduler_system_timestamp()});
-        record_frontend_pacing(counter, frame_emu_ticks, phase2 - phase1,
-                               frequency);
+                scheduler_system_timestamp(),g_live_stats.cpu_render_handoff,
+                g_live_stats.cpu_frames_produced,g_live_stats.presented_job,
+                g_live_stats.presented_system_timestamp,g_live_stats.cpu_overlap_ticks,
+                g_live_stats.cpu_worker_cycles});
+        record_frontend_pacing(counter, frame_emu_ticks, presentation_end - phase1,
+                               frequency,frame_work_ticks);
         if (!savestate_notice.empty() && counter >= savestate_notice_until)
             savestate_notice.clear();
         g_live_stats.now_ticks = counter;
@@ -4243,6 +4495,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         }
     }
 
+    if (cpu_handoff) {
+        cpu_handoff.reset(); // drain/pump before SDL/GL teardown or durable flush
+        nds_hostprof_unregister_current_thread();
+        nds_hostprof_register_current_thread(NDS_HOSTPROF_ROLE_EMU);
+    }
     if (audio) pause_audio(audio, true);
     finish_pending_save(true);
     release_relative_mouse();
