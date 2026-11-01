@@ -2,7 +2,7 @@
 
 > ℹ️ **Note from mstan:** This repo and I are now part of [RetroPortingToolkit](https://retroportingtoolkit.com/). I remain a primary maintainer of ndsrecomp alongside the team. [More info](https://1379.tech/forming-a-collective-retro-porting-toolkit/).
 
-> ## Status: very early pre-alpha (v0.6.10)
+> ## Status: very early pre-alpha (v0.6.11)
 >
 > This is an experimental developer snapshot, not a ready-to-use emulator or
 > a stable framework. It has demonstrated one specific, hash-verified Nintendo
@@ -32,7 +32,7 @@ matching and experimental same-machine local wireless multiplayer. Metroid
 Prime Hunters has early gameplay footage and title-specific 21:9 display
 bring-up. These are narrow bring-up results, not broad compatibility claims.
 
-Current source release: **[v0.6.10](https://github.com/mstan/ndsrecomp/releases/tag/v0.6.10)**.
+Current source release: **[v0.6.11](https://github.com/mstan/ndsrecomp/releases/tag/v0.6.11)**.
 
 ## Showcase
 
