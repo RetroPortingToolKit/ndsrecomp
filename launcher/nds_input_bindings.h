@@ -6,8 +6,10 @@
 #include <string>
 
 // Launcher NDS button order: Up, Down, Left, Right, A, B, X, Y, L, R,
-// Start, Select. SDL2 and SDL3 share these scancode/gamepad numeric values.
+// Start, Select. Shared SDL2/SDL3 scancodes and common gamepad encodings are retained.
 using NdsButtonBindings = std::array<int, 12>;
+// Button+1 encoding includes SDL3 MISC6 (hardware index25).
+inline constexpr int kNdsMaxPadButtonCode = 26;
 inline constexpr std::array<const char*, 12> kNdsButtonNames = {
     "Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R", "Start", "Select"};
 inline constexpr NdsButtonBindings kNdsDefaultKeys = {
@@ -20,7 +22,7 @@ inline constexpr std::array<uint16_t, 12> kNdsButtonMasks = {
 
 inline bool nds_valid_binding(int value, bool gamepad) {
     // Standard gamepad buttons (encoded as button+1) and six signed axes.
-    return gamepad ? (value >= 0 && (value <= 21 ||
+    return gamepad ? (value >= 0 && (value <= kNdsMaxPadButtonCode ||
                                       (value >= 100 && value <= 111)))
                    : value >= 0 && value < 512;
 }

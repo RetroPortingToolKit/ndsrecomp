@@ -32,6 +32,18 @@ int main() {
             "signed gamepad axes supported");
     require(!nds_parse_bindings("12,13,14,15,112,2,3,4,10,11,7,5", true, &loaded),
             "nonexistent axis rejected");
+    auto pad = kNdsDefaultPad;
+    pad[5] = 0;  // Explicitly unbound B stays unbound beside SDL3 additions.
+    for (int button = 22; button <= 26; ++button) {
+        pad[4] = button;  // SDL3 MISC2..MISC6, encoded as hardware button + 1.
+        require(nds_parse_bindings(nds_format_bindings(pad), true, &loaded) && loaded == pad,
+                "captured SDL3 auxiliary button survives transport");
+        require(nds_binding_mask(loaded, button) == 1 && nds_binding_mask(loaded, 0) == 0,
+                "SDL3 auxiliary button maps A and preserves explicit unbind");
+    }
+    before = loaded;
+    require(!nds_parse_bindings("12,13,14,15,27,0,3,4,10,11,7,5", true, &loaded) && loaded == before,
+            "button beyond SDL3 public range cannot partially overwrite map");
     const auto small = nds_initial_window_size(448, 256, true, 3, 1, 1024, 768);
     require(small.top_width + small.bottom_width + 32 <= 1024 && small.height <= 688,
             "both windows fit a small desktop");
