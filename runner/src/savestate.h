@@ -382,6 +382,23 @@ bool nds_savestate_check_eligibility(std::string* error);
 bool nds_savestate_save_core(const std::string& path,
                              const NdsSavestateIdentity& identity,
                              std::string* error);
+// Frontend asynchronous saves retain one owned validated snapshot. Capture
+// still requires the scheduler owner between rounds. Only encoding/CRC and
+// durable file publication run on the worker; no live device/GL access does.
+struct NdsSavestateAsyncSaveResult {
+    bool success = false;
+    uint64_t size_bytes = 0;
+    int64_t modified_unix_seconds = 0;
+    std::string error;
+};
+bool nds_savestate_save_core_async(const std::string& path,
+                                   const NdsSavestateIdentity& identity,
+                                   std::string* error);
+// One caller owns completion polling. A pending/unconsumed save rejects another
+// async request visibly. Sync save/load and frontend exit drain accepted work.
+bool nds_savestate_poll_save_core(NdsSavestateAsyncSaveResult* result);
+void nds_savestate_wait_for_pending_save();
+
 bool nds_savestate_load_core(const std::string& path,
                              const NdsSavestateIdentity& expected_identity,
                              std::string* error);
