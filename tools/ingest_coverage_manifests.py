@@ -23,9 +23,10 @@ number of people, across any number of sessions -- into:
   * a ranked report of the interpreted spans that carry the most execution, so
     "what should be recompiled next" is answered by the data, not guessed.
 
-Merging is monotonic: run it again with more manifests and the corpus only
-grows. Nothing is silently dropped -- every address this tool refuses to
-promote is counted and reported by reason.
+Merge the complete desired corpus into a fresh output directory. Existing
+nonempty output is rejected so stale seed files cannot survive a new ingest.
+Generation-qualified seeds live in seeds/ and images/; entry_points.toml and
+interpreted-ranges.json retain address-only legacy diagnostics.
 
 Manifests arrive from other people's machines, so everything in them is
 verified before use: each page's SHA-1 is recomputed from its own bytes, and
@@ -90,13 +91,18 @@ def root_addresses(record, base):
     range report sums them and the overlay seeder only annotates with them.
     """
     blocks = record.get("root_hits") or []
+    if (blocks and (len(blocks) != 16 or any(type(h) is not int or h < 0
+                                           for h in blocks))):
+        raise ValueError("root_hits: expected 16 nonnegative counters")
     per_block = len(blocks)
     found: list[tuple[int, str]] = []
     for key, stride in (("root_arm", 4), ("root_thumb", 2)):
         blob = record.get(key)
         if not blob:
             continue
-        raw = base64.b64decode(blob)
+        raw = base64.b64decode(blob, validate=True)
+        if len(raw) != 4096 // stride // 8:
+            raise ValueError(f"{key}: wrong bitmap length")
         mode = "arm" if stride == 4 else "thumb"
         for byte_index, byte in enumerate(raw):
             if not byte:
@@ -185,6 +191,12 @@ def _reject_reason(header: dict, rom_sha1: str | None) -> str | None:
     return None
 
 
+def valid_pc(pc, mode, base=None, size=4096):
+    return (mode in MODE_STRIDE and 0 <= pc <= 0xffffffff
+            and pc % MODE_STRIDE[mode] == 0
+            and (base is None or base <= pc < base + size))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -238,11 +250,15 @@ def main() -> int:
                         help="the same, for the ARM7 banks")
     parser.set_defaults(promote_ranges=True, promote_callers=True)
     args = parser.parse_args()
+    if args.out.exists() and (not args.out.is_dir() or any(args.out.iterdir())):
+        parser.error("--out must be a fresh or empty directory; use a new output "
+                     "path to avoid retaining stale generation seeds")
 
     problems: list[str] = []
     rom_sha1 = args.rom_sha1.lower() if args.rom_sha1 else None
 
     entries: dict[tuple[int, int, str], dict] = {}
+    legacy_entries: dict[tuple[int, int, str], dict] = {}
     # (cpu, addr, sha1) -> {"bytes", "entries": {(pc, mode): slot},
     #                       "roots": {(pc, mode): hits}, "executions"}
     versions: dict[tuple[int, int, str], dict] = {}
@@ -280,7 +296,15 @@ def main() -> int:
         for record in manifest_roots:
             cpu = int(record["cpu"])
             base = int(record["addr"], 16)
-            for addr, mode, hits in root_addresses(record, base):
+            if cpu not in roots or base % 4096 or not 0 <= base <= 0xfffff000:
+                rejected["root map: invalid CPU/page"] += 1
+                continue
+            try:
+                observed_roots = list(root_addresses(record, base))
+            except ValueError:
+                rejected["root map: invalid bitmap"] += 1
+                continue
+            for addr, mode, hits in observed_roots:
                 key = (addr, mode)
                 roots[cpu][key] = roots[cpu].get(key, 0) + hits
 
@@ -297,9 +321,16 @@ def main() -> int:
                 continue
             cpu = int(page["cpu"])
             addr = int(page["addr"], 16)
+            if (page_size != 4096 or cpu not in roots or addr % page_size
+                    or not 0 <= addr <= 0xfffff000):
+                rejected["page: invalid CPU/page size/address"] += 1
+                continue
             slot = versions.setdefault(
                 (cpu, addr, actual),
-                {"bytes": raw, "entries": {}, "roots": {}, "executions": 0})
+                {"bytes": raw, "entries": {}, "roots": {}, "executions": 0,
+                 "legacy": False, "modern": False})
+            slot["legacy"] |= header["schema"] == 2
+            slot["modern"] |= header["schema"] >= 3
             slot["executions"] += int(page.get("executions", 0))
             # Schema 4 repeats the root bitmap per captured page version, which
             # is the only GENERATION-BOUND root attribution in the manifest --
@@ -309,7 +340,12 @@ def main() -> int:
             # Nothing read this before, so a bank could only ever be seeded
             # with call targets even when the manifest knew exactly which of
             # its own instructions the interpreter had been entered at.
-            for root_pc, root_mode, root_hits in root_addresses(page, addr):
+            try:
+                page_roots = list(root_addresses(page, addr))
+            except ValueError:
+                rejected["page roots: invalid bitmap"] += 1
+                page_roots = []
+            for root_pc, root_mode, root_hits in page_roots:
                 root_key = (root_pc, root_mode)
                 slot["roots"][root_key] = (
                     slot["roots"].get(root_key, 0) + root_hits)
@@ -322,6 +358,9 @@ def main() -> int:
                 pc = int(entry["addr"], 16)
                 hits = int(entry.get("hits", 0))
                 mode = entry["mode"]
+                if not valid_pc(pc, mode, addr, page_size):
+                    rejected["page entry: invalid coordinate/ISA"] += 1
+                    continue
                 if kind == "root":
                     root_key = (pc, mode)
                     roots[cpu][root_key] = roots[cpu].get(root_key, 0) + hits
@@ -342,6 +381,9 @@ def main() -> int:
             kind = entry.get("kind")
             pc = int(entry["addr"], 16)
             hits = int(entry.get("hits", 0))
+            if not valid_pc(pc, entry["mode"]):
+                rejected["entry: invalid coordinate/ISA"] += 1
+                continue
             if kind == "root":
                 # Schema 2/3 carried roots one JSON record per address here;
                 # schema 4 moved them to root_map. Either way they now feed the
@@ -356,6 +398,11 @@ def main() -> int:
                 (cpu, pc, entry["mode"]), {"hits": 0, "kinds": set()})
             slot["hits"] += hits
             slot["kinds"].add(kind)
+            if header["schema"] == 2:
+                legacy = legacy_entries.setdefault((cpu, pc, entry["mode"]),
+                    {"hits": 0, "kinds": set()})
+                legacy["hits"] += hits
+                legacy["kinds"].add(kind)
             note_caller(callers, cpu, entry, hits)
 
     if not accepted:
@@ -389,12 +436,15 @@ def main() -> int:
     owned = {9: read_dispatch_rows(args.owned_rows_arm9),
              7: read_dispatch_rows(args.owned_rows_arm7)}
     already_owned = 0
+    bound_pages = {(cpu, base) for (cpu, base, _), slot in versions.items()
+                   if slot["modern"]}
     for cpu, rows in owned.items():
         if not rows:
             continue
         for key in list(interpreted[cpu]):
             addr, mode = key
-            if (addr, 1 if mode == "thumb" else 0) in rows:
+            if ((cpu, addr & ~0xfff) not in bound_pages
+                    and (addr, 1 if mode == "thumb" else 0) in rows):
                 del interpreted[cpu][key]
                 already_owned += 1
 
@@ -407,25 +457,12 @@ def main() -> int:
                                   {"hits": 0, "kinds": set()})
         slot["hits"] += hits
         slot["kinds"].add("span")
-    # A span start on a page whose bytes exist nowhere in the ROM is a seed for
-    # the assembled bank rather than for a module, and the manifest says which
-    # page GENERATION it was interpreted under -- so attribute it there instead
-    # of letting the run fall back to address containment.
-    for (cpu, _page_addr, _sha), slot in versions.items():
-        for (pc, mode), hits in slot["roots"].items():
-            if (cpu, pc, mode) not in promoted:
-                continue
-            held = slot["entries"].setdefault(
-                (pc, mode), {"hits": 0, "kinds": set()})
-            held["hits"] += hits
-            held["kinds"].add("span")
-
     args.out.mkdir(parents=True, exist_ok=True)
 
     # ---- ROM-alias resolution --------------------------------------------
     alias_findings: list[dict] = []
     aliased_pages = 0
-    page_target: dict[tuple[int, int], tuple[str, int]] = {}
+    images = None
     if args.images:
         images = RomImages(args.images)
         aliases, unresolved = resolve(
@@ -433,31 +470,32 @@ def main() -> int:
              for (cpu, addr, _sha), slot in versions.items()), images)
         aliased_pages = sum(len(v["addrs"]) for v in aliases.values())
         alias_findings = undeclared(aliases, images)
-        for (cpu, module, base), slot in aliases.items():
-            for addr in slot["addrs"]:
-                page_target[(cpu, addr)] = (module, base)
-        unresolved_keys = [
-            key for key, slot in versions.items()
-            if images.locate(slot["bytes"]) is None]
     else:
         problems.append(
             "--images was not supplied, so no ROM-alias resolution ran; on the "
             "first real submission that would have hidden 93.5% of the finding")
-        unresolved_keys = list(versions)
+
+    groups, generation_report = generation_seed_groups(versions, legacy_entries, images,
+        promote=args.promote_ranges, min_hits=args.min_hits,
+        min_span_hits=args.min_span_hits, max_span_seeds=args.max_span_seeds,
+        bank_prefix=args.bank_prefix)
 
     # ---- banks for genuinely runtime-materialized code --------------------
     images_dir = args.out / "images"
     banks_written = 0
     entries_in_banks = 0
-    runs = assemble_runs(versions, unresolved_keys, entries)
-    if runs:
+    banks = [group for group in groups if group["blob"] is not None]
+    if banks:
         images_dir.mkdir(parents=True, exist_ok=True)
-    for cpu, start, blob, run_entries in runs:
+    for group in banks:
+        cpu, start, blob = group["cpu"], group["base"], group["blob"]
+        run_entries = sorted((pc, mode, held)
+            for (pc, mode), held in group["entries"].items())
         if not run_entries:
             continue
         entries_in_banks += len(run_entries)
         identity = hashlib.sha1(blob).hexdigest()
-        stem = f"{args.bank_prefix}_arm{cpu}_{start:08x}_{identity[:8]}"
+        stem = group["name"]
         (images_dir / f"{stem}.bin").write_bytes(blob)
         write_bank_toml(images_dir / f"{stem}.toml", stem, cpu,
                         args.isa9 if cpu == 9 else args.isa7,
@@ -468,23 +506,18 @@ def main() -> int:
                      sorted(entries.items()), rom_sha1, accepted,
                      sorted(build_ids))
 
-    # A flat seed list is not actionable on its own: an address is only a seed
-    # for the bank whose image holds those bytes at that address. Split the
-    # merged list by the module and base each seed's page resolved to, so each
-    # file drops straight into the matching bank config.
+    # Only generation-qualified observations feed module/bank seed files.
+    # The old flat list above remains an address-only diagnostic/legacy output.
     seeds_dir = args.out / "seeds"
     by_target: dict[str, list] = collections.defaultdict(list)
-    for key, slot in sorted(entries.items()):
-        cpu, addr, _mode = key
-        target = page_target.get((cpu, addr & ~0xFFF))
-        name = (f"arm{cpu}_{Path(target[0]).stem}_{target[1]:08x}"
-                if target else f"arm{cpu}_unresolved")
-        by_target[name].append((key, slot))
+    for group in groups:
+        for (addr, mode), held in sorted(group["entries"].items()):
+            by_target[group["name"]].append(((group["cpu"], addr, mode), held))
     if by_target:
         seeds_dir.mkdir(parents=True, exist_ok=True)
     for name, items in sorted(by_target.items()):
         write_entry_toml(seeds_dir / f"{name}.toml", items, rom_sha1,
-                         accepted, sorted(build_ids))
+                         accepted, sorted(build_ids), qualified=True)
 
     (args.out / "interpreted-ranges.json").write_text(
         json.dumps(hot, indent=2), encoding="utf-8", newline="\n")
@@ -498,7 +531,7 @@ def main() -> int:
         "rom_alias_findings": [describe_alias(f) for f in alias_findings],
         "pages_resolved_to_rom": aliased_pages,
         "page_versions_total": len(versions),
-        "page_versions_not_in_rom": len(unresolved_keys),
+        **generation_report,
         "entry_points_merged": len(entries),
         "entry_points_dropped_below_min_hits": dropped_low_hits,
         "entry_points_placed_in_banks": entries_in_banks,
@@ -548,7 +581,121 @@ def describe_alias(finding: dict) -> dict:
     }
 
 
-def assemble_runs(versions, unresolved_keys, session_entries=None):
+def merge_observations(target, source):
+    for key, held in source.items():
+        merged = target.setdefault(key, {"hits": 0, "kinds": set()})
+        merged["hits"] += held["hits"]
+        merged["kinds"] |= held["kinds"]
+
+
+def generation_seed_groups(versions, session_entries, images, *, promote,
+                           min_hits, min_span_hits, max_span_seeds, bank_prefix):
+    """Resolve and promote each body before discarding generation identity.
+
+    Modern page-scoped observations are authoritative. An address-only session
+    record (including a caller with unknown source ISA) cannot authorize a seed
+    in a modern body. Schema2 retains its historical address-containment fallback
+    only where the captured corpus has one version of the page.
+    """
+    counts = collections.Counter((cpu, base) for cpu, base, _ in versions)
+    qualified = {}
+    targets = {}
+    missing = ambiguous = invalid_placement = legacy_seeds = 0
+    for key, slot in sorted(versions.items()):
+        cpu, base, _sha = key
+        held = {"bytes": slot["bytes"], "entries": {}, "roots": {}}
+        merge_observations(held["entries"], slot["entries"])
+        if slot.get("modern"):
+            held["roots"] = dict(slot["roots"])
+        if slot.get("legacy") and counts[(cpu, base)] == 1:
+            for (ecpu, pc, mode), observation in session_entries.items():
+                if ecpu == cpu and valid_pc(pc, mode, base, len(slot["bytes"])):
+                    # A page-scoped record, if present, already includes this
+                    # observation. Never double its count from the session map.
+                    if (pc, mode) not in held["entries"]:
+                        held["entries"][(pc, mode)] = {
+                            "hits": observation["hits"],
+                            "kinds": set(observation["kinds"]) | {"legacy"}}
+                        legacy_seeds += 1
+        qualified[key] = held
+        matches = images.locate_all(slot["bytes"]) if images else []
+        if len(matches) == 1:
+            module, offset = matches[0]
+            if images.valid_placement(module, base - offset):
+                targets[key] = (module, base - offset)
+            else:
+                invalid_placement += 1
+        elif matches:
+            ambiguous += 1
+        else:
+            missing += 1
+
+    modules = {}
+    for key, (module, base) in sorted(targets.items()):
+        cpu = key[0]
+        group = modules.setdefault((cpu, module, base), {
+            "cpu": cpu, "module": module, "base": base, "blob": None,
+            "name": f"arm{cpu}_{Path(module).stem}_{base:08x}",
+            "entries": {}, "roots": {}})
+        merge_observations(group["entries"], qualified[key]["entries"])
+        for root, hits in qualified[key]["roots"].items():
+            group["roots"][root] = group["roots"].get(root, 0) + hits
+    groups = list(modules.values())
+    # Unique ROM pages can share a whole-image identity across page boundaries.
+    # Captured banks retain the existing conservative run assembly: never join
+    # neighboring pages across an ambiguous generation.
+    unresolved = [key for key in qualified if key not in targets]
+    for cpu, base, blob, entries, roots in assemble_runs(
+            qualified, unresolved, include_roots=True):
+        identity = hashlib.sha1(blob).hexdigest()
+        groups.append({"cpu": cpu, "module": None, "base": base, "blob": blob,
+            "name": f"{bank_prefix}_arm{cpu}_{base:08x}_{identity[:8]}",
+            "entries": {(pc, mode): held for pc, mode, held in entries},
+            "roots": roots})
+
+    # Keep existing readable filenames where unique; collision handling must
+    # not depend on input order or a case-sensitive developer filesystem.
+    names = collections.Counter(g["name"].casefold() for g in groups)
+    for group in groups:
+        if names[group["name"].casefold()] > 1:
+            identity = (group["module"] or hashlib.sha1(group["blob"]).hexdigest())
+            group["name"] += "_" + hashlib.sha1(identity.encode()).hexdigest()
+        group["entries"] = {key: held for key, held in group["entries"].items()
+                            if held["hits"] >= min_hits}
+
+    # Rank qualified spans across ALL bodies for each CPU. A per-body limit
+    # would silently multiply the requested budget by the number of overlays.
+    candidates = collections.defaultdict(list)
+    for group in groups:
+        hot = hot_ranges({group["cpu"]: group["roots"]})
+        for span in hot[f"arm{group['cpu']}"]:
+            if span["entries"] >= min_span_hits:
+                candidates[group["cpu"]].append((group, span))
+    promoted = collections.Counter()
+    for cpu, spans in candidates.items():
+        spans.sort(key=lambda item: (-item[1]["entries"], item[0]["name"],
+                                    item[1]["start"], item[1]["mode"]))
+        chosen = spans[:max_span_seeds] if max_span_seeds > 0 else spans
+        if not promote:
+            continue
+        for group, span in chosen:
+            key = (int(span["start"], 16), span["mode"])
+            merge_observations(group["entries"], {
+                key: {"hits": span["entries"], "kinds": {"span"}}})
+            promoted[cpu] += 1
+    return sorted(groups, key=lambda g: g["name"]), {
+        "page_versions_not_in_rom": missing,
+        "page_versions_ambiguous_rom": ambiguous,
+        "page_versions_invalid_rom_placement": invalid_placement,
+        "page_versions_needing_captured_banks": len(unresolved),
+        "legacy_unique_page_seeds": legacy_seeds,
+        "generation_span_seeds": {f"arm{cpu}": promoted[cpu] for cpu in (9, 7)},
+        "module_seed_policy": "generation-bound; schema2 unique-page fallback only",
+        "flat_entry_points_policy": "address-only diagnostic/legacy; not module ownership",
+    }
+
+
+def assemble_runs(versions, unresolved_keys, *, include_roots=False):
     """Group unresolved page versions into contiguous, unambiguous runs.
 
     A run may only be extended across a page boundary when the next address has
@@ -560,11 +707,8 @@ def assemble_runs(versions, unresolved_keys, session_entries=None):
     function against live bytes, but it silently wastes the coverage. Stopping
     at the ambiguity costs a shorter run and loses nothing.
 
-    A schema-2 manifest has no page-scoped entries at all, so a run assembled
-    from one would carry no seeds and be dropped. For those, fall back to the
-    session-wide entries that fall inside the run's address range -- which is
-    all schema 2 ever supported, and the only reason the old assembler had to
-    attribute by address in the first place.
+    Legacy fallback is resolved per page before assembly. Never propagate an
+    address-only session observation across a modern or ambiguous page here.
     """
     version_count: collections.Counter = collections.Counter()
     for cpu, addr, _sha in versions:
@@ -585,6 +729,7 @@ def assemble_runs(versions, unresolved_keys, session_entries=None):
             chunks = [slot["bytes"]]
             run_entries = {key: dict(held, kinds=set(held["kinds"]))
                            for key, held in slot["entries"].items()}
+            run_roots = dict(slot.get("roots", {}))
             start = addr
             previous = addr
             index += 1
@@ -598,6 +743,8 @@ def assemble_runs(versions, unresolved_keys, session_entries=None):
                 if version_count[(cpu, next_addr)] != 1:
                     break
                 chunks.append(next_slot["bytes"])
+                for key, hits in next_slot.get("roots", {}).items():
+                    run_roots[key] = run_roots.get(key, 0) + hits
                 for key, held in next_slot["entries"].items():
                     merged = run_entries.setdefault(
                         key, {"hits": 0, "kinds": set()})
@@ -606,15 +753,11 @@ def assemble_runs(versions, unresolved_keys, session_entries=None):
                 previous = next_addr
                 index += 1
             blob = b"".join(chunks)
-            if not run_entries and session_entries:
-                run_entries = {
-                    (pc, mode): held
-                    for (ecpu, pc, mode), held in session_entries.items()
-                    if ecpu == cpu and start <= pc < start + len(blob)}
             ordered = sorted(
                 (pc, mode, held) for (pc, mode), held in run_entries.items()
                 if start <= pc < start + len(blob))
-            runs.append((cpu, start, blob, ordered))
+            run = (cpu, start, blob, ordered)
+            runs.append((*run, run_roots) if include_roots else run)
     return runs
 
 
@@ -655,10 +798,9 @@ def note_caller(callers, cpu: int, entry: dict, hits: int) -> None:
     concrete instruction the manifest watched retire instead of a bitmap bit.
     Every promoter in both repos read the target and dropped this field.
 
-    The mode recorded on the record is the TARGET's. That is the caller's mode
-    too for a plain BL, and can differ for BLX/BX; a seed carrying the wrong
-    mode is inert rather than wrong, because dispatch keys on (pc, thumb) and
-    such a row is simply never looked up, and the bytes are still validated.
+    The mode recorded is the TARGET's and can differ for BLX/BX. This historic
+    estimate is used only in address-only diagnostics, never in authoritative
+    body-qualified seeds: neither caller ISA nor source generation is known.
     """
     raw = entry.get("caller")
     if raw is None:
@@ -771,8 +913,8 @@ def write_bank_toml(path: Path, bank_id: str, cpu: int, isa: str,
         "# Assembled from player-submitted Tier-3 coverage manifests; every",
         "# page was SHA-1 verified against its own bytes before assembly, and",
         "# the bank is content-validated against live guest bytes at dispatch.",
-        "# These bytes exist nowhere in the ROM -- code that does is reported",
-        "# as a load-base finding instead, which needs no dumped bytes.",
+        "# No unique ROM module/offset matches these bytes. Missing or ambiguous",
+        "# matches retain this captured body rather than guessing ownership.",
         "",
         "[program]",
         f'name         = "coverage bank arm{cpu} @ 0x{load_address:08X}"',
@@ -803,19 +945,21 @@ def write_bank_toml(path: Path, bank_id: str, cpu: int, isa: str,
 
 
 def write_entry_toml(path: Path, addressed, rom_sha1, manifest_count,
-                     build_ids) -> None:
+                     build_ids, *, qualified=False) -> None:
     lines = [
         "# AUTO-GENERATED by tools/ingest_coverage_manifests.py.",
         f"# Merged from {manifest_count} player coverage manifest(s).",
         f"# ROM SHA-1: {rom_sha1}",
         f"# Runner build(s): {', '.join(build_ids) if build_ids else 'unknown'}",
         "#",
-        "# Every Tier-3 call and indirect-branch target observed, plus the",
-        "# START of every contiguous interpreted span (seen as `span`), which",
-        "# is the only seed that reaches code the finder never discovered. An",
-        "# address here is a seed only for the bank whose image actually holds",
-        "# bytes at this address; see ingest-report.json for which module and",
-        "# load base each captured page resolved to.",
+        *( ["# Generation-qualified seeds for this module/load-base or captured body.",
+            "# Targets and span starts retain exact observed page provenance;",
+            "# schema2 legacy targets are allowed only at single-version pages."]
+           if qualified else
+           ["# ADDRESS-ONLY DIAGNOSTIC / LEGACY OUTPUT. This merges generations.",
+            "# Caller ISA is estimated from target ISA and can be wrong.",
+            "# Do not apply this file to an overlay or bank as ownership proof.",
+            "# Use generation-qualified seeds/ and images/ outputs instead."] ),
         "",
     ]
     for (cpu, addr, mode), slot in addressed:

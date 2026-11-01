@@ -5,6 +5,7 @@
 
 #include "cartridge_config.h"
 #include "perf_governor.h"
+#include "../../launcher/nds_input_bindings.h"
 
 // Run the native, human-facing firmware preview. The emulation remains on the
 // same scheduler/device path used by the deterministic debug verifier; SDL is
@@ -194,6 +195,12 @@ struct NdsFrontendOptions {
     std::string expected_rom_sha1;
     NdsScreenLayout screen_layout = NdsScreenLayout::Stacked;
     NdsFullscreenMode fullscreen = NdsFullscreenMode::Off;
+    // Zero preserves the standalone runner's historical 2x sizing. Title
+    // launchers can request 1..8x with display-DPI-aware desktop fitting.
+    uint8_t window_scale = 0;
+    NdsButtonBindings keyboard_bindings = kNdsDefaultKeys;
+    NdsButtonBindings gamepad_bindings = kNdsDefaultPad;
+    bool custom_gamepad_bindings = false;
     NdsStartupMode startup_mode = NdsStartupMode::Preserve;
     NdsBootMode boot_mode = NdsBootMode::Lle;
     // Opt-in synthesized firmware image (no firmware dump). Forces direct
@@ -410,6 +417,18 @@ struct NdsFrontendLiveStats {
     // requested and active, which makes it a direct harness assertion.
     uint64_t real_presents;
     uint64_t synthetic_presents;
+    // Optional CPU/main handoff. Prefix overlap is the wall intersection with
+    // presentation BEFORE the first blocking GL request, not measured CPU time.
+    // Worker cycle totals are their own thread domain; process CPU is primary.
+    uint8_t cpu_render_handoff;
+    uint64_t cpu_frames_produced;
+    uint64_t presented_job;
+    uint64_t presented_system_timestamp;
+    uint64_t cpu_worker_cycles;
+    uint64_t cpu_main_requests;
+    uint64_t cpu_overlap_ticks;
+    uint64_t cpu_overlap_frames;
+    uint64_t cpu_prefix_cycles;
     uint8_t perf_governor_stage;
     uint32_t perf_governor_over_frames;
     uint32_t perf_governor_under_frames;

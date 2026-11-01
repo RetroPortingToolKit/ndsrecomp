@@ -3,6 +3,8 @@
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
+#include <optional>
+#include <utility>
 #include <sstream>
 #include <system_error>
 
@@ -19,6 +21,12 @@
 #include "tier3.h"
 
 namespace {
+
+struct PendingSaveSlot {
+    NdsSavestateSlotCommand command;
+};
+// Frontend/scheduler-owner only; the worker has no reference to this state.
+std::optional<PendingSaveSlot> g_pending_save_slot;
 
 std::string slot_name(unsigned slot) {
     std::ostringstream out;
@@ -94,6 +102,46 @@ NdsSavestateSlotMetadata nds_savestate_slot_metadata(
                 system_time.time_since_epoch()).count();
     }
     return out;
+}
+
+NdsSavestateSlotResult nds_savestate_slot_request_save(
+    const std::string& directory, const NdsSavestateIdentity& identity,
+    const NdsSavestateSlotCommand& command) {
+    NdsSavestateSlotResult result{};
+    result.command = command;
+    std::string error;
+    const std::string path = nds_savestate_slot_path(directory, command.slot, &error);
+    if (command.action != NdsSavestateSlotAction::Save) error = "not a save request";
+    if (g_pending_save_slot) error = "a save is already pending; try again after it finishes";
+    if (!error.empty()) {
+        result.message = "Cannot save state slot " + std::to_string(command.slot) + ": " + error;
+        return result;
+    }
+    PendingSaveSlot pending{command};
+    result.message = "Saving state slot " + std::to_string(command.slot);
+    if (!nds_savestate_save_core_async(path, identity, &error)) {
+        result.message = "Cannot save state slot " + std::to_string(command.slot) + ": " + error;
+        return result;
+    }
+    g_pending_save_slot = std::move(pending);
+    result.success = result.pending = true;
+    return result;
+}
+
+bool nds_savestate_slot_poll_save(NdsSavestateSlotResult* result) {
+    if (!result || !g_pending_save_slot) return false;
+    NdsSavestateAsyncSaveResult completed{};
+    if (!nds_savestate_poll_save_core(&completed)) return false;
+    NdsSavestateSlotResult value{};
+    value.command = g_pending_save_slot->command;
+    value.success = completed.success;
+    value.metadata = {completed.success, completed.size_bytes,
+                      completed.modified_unix_seconds};
+    value.message = completed.success ? result_prefix(value.command.action, value.command.slot) :
+        "Cannot save state slot " + std::to_string(value.command.slot) + ": " + completed.error;
+    g_pending_save_slot.reset();
+    *result = std::move(value);
+    return true;
 }
 
 NdsSavestateSlotResult nds_savestate_slot_execute(

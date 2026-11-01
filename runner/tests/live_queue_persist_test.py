@@ -376,28 +376,36 @@ def test_prune_keeps_what_resume_needs(cache: Path) -> None:
     args = make_args(cache)
     snapshots = cache / "snapshots"
     snapshots.mkdir(parents=True, exist_ok=True)
+    args.manifest = snapshots / "manifest-0000dead-000003.json"
     current = args.manifest
     referenced = snapshots / "manifest-0000dead-000001.json"
     orphan_a = snapshots / "manifest-0000dead-000002.json"
     orphan_b = snapshots / "manifest-0000beef-000001.json"
-    for path in (current, referenced, orphan_a, orphan_b):
+    custom = snapshots / "manifest-0000dead-owner-notes.json"
+    for path in (current, referenced, orphan_a, orphan_b, custom):
         path.write_text(json.dumps(manifest([])), encoding="utf-8")
 
     pending = [{"cpu": 9, "addr": 0x0200A000, "page_sha1": "a" * 40,
                 "executions": 1, "hits": 1, "manifest": str(referenced)}]
     removed = tool.prune_snapshots(args, pending)
-    check(removed == 2, f"both orphans should be pruned, removed={removed}")
+    check(removed == 1, f"only this runner's orphan should be pruned, removed={removed}")
     check(current.is_file(), "the current manifest must survive pruning")
     check(referenced.is_file(),
           "a manifest a pending candidate names must survive pruning")
-    check(not orphan_a.is_file() and not orphan_b.is_file(),
-          "unreferenced snapshots should be gone")
+    check(not orphan_a.is_file() and orphan_b.is_file(),
+          "another runner's waiting input must survive even if not in our queue")
+    check(custom.is_file(), "non-runner filenames are never cleanup ownership proof")
 
-    # An empty backlog still keeps the current manifest, and only that.
+    # An empty backlog keeps current and other runners' unconsumed inputs.
     orphan_a.write_text(json.dumps(manifest([])), encoding="utf-8")
     tool.prune_snapshots(args, [])
     check(current.is_file() and not referenced.is_file(),
-          "with nothing pending only the current manifest is kept")
+          "with nothing pending only this runner's current manifest is kept")
+    check(orphan_b.is_file(), "another runner's snapshot still survives")
+
+    args.manifest = snapshots / "custom-input.json"
+    check(tool.prune_snapshots(args, []) == 0 and orphan_b.is_file(),
+          "custom input cannot claim another runner's snapshot namespace")
 
     # --merge-cache-snapshots deliberately mines the whole history; pruning
     # must stand down completely.

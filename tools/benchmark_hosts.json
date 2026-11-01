@@ -1,0 +1,7 @@
+{
+  "hosts": [
+    {"id":"local", "os":"windows", "transport":"local", "storage":"G:/", "root":"G:/Temp/Codex/performance-reservations"},
+    {"id":"server", "os":"windows", "transport":"ssh", "aliases":["server"], "python":"C:/Python311/python.exe", "storage":"G:/", "root":"G:/Temp/Codex/performance-reservations"},
+    {"id":"steamdeck", "os":"linux", "transport":"ssh", "aliases":["steamdeck-mph-wifi","steamdeck-mph"], "python":"python3", "storage":"~", "root":"~/.local/state/codex/performance-reservations"}
+  ]
+}

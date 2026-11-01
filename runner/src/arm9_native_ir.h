@@ -8,9 +8,10 @@
 #include <cstdlib>
 
 inline void nds_arm9_finish_memory(Dynarmic::A32::IREmitter& ir,NdsArm9ReadKind kind=NdsArm9ReadKind::Word) {
-    // The pinned frontend produces one read16 + extension for a halfword load.
-    // Route that operation through the wide ARM9 callback, preserving both odd
-    // address behavior and exact device read width. No frontend/dependency fork.
+    // Keep the actual read width available to the SDK's physical page map.
+    // Unsigned odd halfwords rotate the zero-extended 16-bit result in 32 bits.
+    // Signed odd accesses fail its alignment guard and read one signed byte in
+    // MemoryRead16; aligned signed reads use the ordinary 16-bit memory path.
     for(auto at=ir.block.begin();at!=ir.block.end();++at) {
         using Op=Dynarmic::IR::Opcode;
         if(at->GetOpcode()!=Op::A32ReadMemory16)continue;
@@ -22,12 +23,16 @@ inline void nds_arm9_finish_memory(Dynarmic::A32::IREmitter& ir,NdsArm9ReadKind 
         if(!extension||at->UseCount()!=1) {
             std::fputs("[arm9-native] unsupported halfword IR shape for pinned frontend\n",stderr);std::abort();
         }
-        kind=extension->GetOpcode()==Op::SignExtendHalfToWord?NdsArm9ReadKind::HalfSigned:NdsArm9ReadKind::HalfUnsigned;
-        const auto saved=ir.current_location;
-        ir.current_location=Dynarmic::A32::LocationDescriptor{Dynarmic::IR::LocationDescriptor{at->GetArg(0).GetU64()}};
+        const bool sign=extension->GetOpcode()==Op::SignExtendHalfToWord;
+        kind=sign?NdsArm9ReadKind::HalfSigned:NdsArm9ReadKind::HalfUnsigned;
+        if(sign)continue;
+        const Dynarmic::IR::U32 address{at->GetArg(1)};
         ir.SetInsertionPointBefore(at);
-        const auto wide=ir.ReadMemory32(Dynarmic::IR::U32{at->GetArg(1)},at->GetArg(2).GetAccType());
-        extension->ReplaceUsesWith(wide);at->Invalidate();ir.current_location=saved;
+        at->SetArg(1,ir.And(address,ir.Imm32(~1u)));
+        ir.SetInsertionPointBefore(extension);
+        const auto value=ir.ZeroExtendHalfToWord(Dynarmic::IR::U16{Dynarmic::IR::Value{&*at}});
+        const auto amount=ir.LeastSignificantByte(ir.LogicalShiftLeft(ir.And(address,ir.Imm32(1)),ir.Imm8(3),ir.Imm1(false)).result);
+        extension->ReplaceUsesWith(ir.RotateRight(value,amount,ir.Imm1(false)).result);
     }
     // Insert AFTER translation has established ARM predication. Emitting a PC
     // store in PreCodeTranslationHook makes a first conditional instruction look

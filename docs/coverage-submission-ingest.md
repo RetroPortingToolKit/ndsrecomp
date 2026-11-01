@@ -3,6 +3,44 @@
 beads-yjp.28. What a player-submitted Tier-3 coverage manifest actually
 contains, what it is worth, and how to process one.
 
+## Current generation contract (2026-10-29, beads-yjp.91)
+
+Use `seeds/` and `images/` for regeneration. They preserve `(CPU, page,
+SHA-1, PC, ISA)` through exact ROM matching and per-body span promotion. Two
+overlays at one address never inherit each other's targets or span starts.
+Adjacent pages coalesce only within a uniquely matched whole ROM module or
+an unambiguous captured run. Span budgets rank all bodies together per CPU.
+
+Only a unique exact module/offset match with a valid 32-bit whole-module load
+range establishes ROM ownership. Missing, duplicate or invalid-placement
+matches retain captured-byte banks with the existing runtime byte guards.
+The report distinguishes those cases. A SHA validates bytes; entries must
+also have valid CPU, ISA, alignment and coordinates inside that page. Root
+bitmap sizes and hit counters are checked before promotion.
+
+Modern schemas use page-bound targets/roots only. Session-only roots and callers
+have no source-generation proof; a transfer record's ISA belongs to its target,
+not necessarily its caller. `entry_points.toml` and `interpreted-ranges.json`
+remain address-only diagnostics for older workflows. They are not ownership
+proof and must not be pasted into overlay/bank configs. Caller estimates occur
+only there. Schema2 may use its own session call/indirect targets only where the
+captured corpus has one version of that CPU/page; modern observations cannot
+borrow schema2 eligibility. This deliberately does not guess missing roots.
+
+Address-only `--owned-rows-*` cannot establish which body is already covered.
+It affects legacy diagnostics only and does not prune modern qualified seeds.
+Use the generated body identity and runtime guards when integrating results;
+row counts alone no longer claim convergence or complete coverage.
+
+`--out` must be fresh or empty. Merge all desired manifests into a new output
+directory, inspect the report, then replace the previous generated corpus
+through the title's normal regeneration process. Reusing nonempty output fails
+before writing anything, preventing obsolete seeds/banks from silently surviving
+while preserving existing and user-authored files. No automatic cleanup occurs.
+
+The measured submission statistics below are historical diagnostics, not new
+performance results or expected output counts for the stricter current policy.
+
 The numbers below are all measured from the first real submission:
 `Metroid Prime - Hunters (USA)-coverage-20260821-205124-part00.json`, a story
 playthrough captured on runner build `e9b530a`, 202,172,022 bytes of JSON
@@ -179,20 +217,18 @@ structural rather than a preference for fewer seeds:
 Runs are cut per **mode** and at instruction stride, because a span start is
 compiled as one or the other and a run merged across modes has no single answer.
 
-The `caller` field of every call/indirect record is folded into the same map
-before the runs are cut: the interpreter was executing at that address, so it
-is interpreted code by construction, and it is better attributed than a root —
-it names a concrete instruction the manifest watched retire. On the four
-2026-08-28 MPH parts, 186 of 316 distinct callers appear in no root bitmap at
-all, so this is real coverage rather than a restatement.
+Historically callers were folded into the address-only map. On the four
+2026-08-28 MPH parts, 186 of 316 distinct callers appeared in no root bitmap.
+They identify useful investigation sites, but not their source ISA/generation.
+Current authoritative module/bank seeds therefore exclude caller estimates.
 
-**Pass the last build's dispatch tables and the pipeline converges.**
+**Legacy diagnostic filtering, not generation ownership:**
 `--owned-rows-arm9 generated/recomp` (and `--owned-rows-arm7`) removes every
 interpreted address the build already owns a row for *before* the runs are cut.
-Two things follow, and both matter:
+For that address-only historical view:
 
 * a span start is never re-declared once it is covered, so a re-ingest cannot
-  split the body that now owns it;
+  split the body that now owns it in an unambiguous single-body workflow;
 * a run the finder only walked *halfway* into is cut at the stop, and its
   uncovered tail becomes a seed of its own.
 
@@ -202,7 +238,9 @@ instructions and then the finder stopped, leaving `0x0208ADCC` — reached only
 by a computed branch — as uncovered as before. One seed per span is the right
 *first* answer; the owned-row remainder is what closes the rest, and
 `interpreted_addresses_already_owned` in the report is how you read the
-convergence between two consecutive ingests.
+address-only reduction between two consecutive ingests. This cannot prove
+that another overlay generation at the same address is covered, so modern
+qualified output deliberately ignores this filter.
 
 Knobs: `--no-promote-ranges` reproduces the pre-yjp.55 policy exactly,
 `--no-promote-callers` drops just the caller fold-in, `--min-span-hits` and
@@ -226,18 +264,17 @@ Outputs:
 
 * `ingest-report.json` — `rom_alias_findings` first; read that before anything
   else. Also counts every address refused and why.
-* `entry_points.toml` — merged call/indirect seeds plus one seed per
-  interpreted span, each tagged with what it was `seen as`.
-* `images/` — one content-validated bank per run of genuinely new code. Span
+* `entry_points.toml` — address-only legacy diagnostics across generations;
+  never use it to establish a module's seeds.
+* `images/` — one content-validated bank per unresolved captured run. Span
   seeds land in the bank for the page *generation* they were interpreted
   under, which schema 4's per-page root bitmap is the only source of.
 * `interpreted-ranges.json` — interpreted spans, hottest first, each with the
   mode it was recorded in. `span_promotion` in the report says how many became
   seeds and what they cost.
 
-* `seeds/` — the merged seeds split by the module and load base their page
-  resolved to. An address is only a seed for the bank whose image holds those
-  bytes at that address, so this is the file you actually paste from.
+* `seeds/` — generation-qualified targets and span starts split by unique
+  module/load-base or captured-body identity. This is the regeneration input.
 
 Read the report before using the seeds. `manifests_incomplete: true` means the
 runner hit its page-store cap and the submission is a partial view.
@@ -259,9 +296,8 @@ overlay_008 @ 0x0212C600    19      unresolved                 79
 Reading that table is how MPH overlay 13 was found to have no bank config at
 all despite being executed (beads-lqa.10).
 
-Schema 2 manifests still ingest. They carry no per-page entry association, so
-banks assembled from one are seeded by address containment — which is all
-schema 2 ever supported.
+Schema2 manifests retain the restricted single-version fallback described
+above; ambiguous overlay generations receive no invented target association.
 
 ## Why none of this is behind a verbose flag
 
@@ -332,6 +368,5 @@ than scrubbed. Beyond that:
   next address has exactly one captured version. With several versions there is
   nothing in the manifest that says which was resident alongside, and guessing
   concatenates unrelated overlay generations.
-* Roots are recorded per instruction rather than as ranges, so they still cost
-  ~100 bytes each in the manifest. A run-length or bitmap encoding would remove
-  most of the remaining size.
+* Session-only observations cannot recover a discarded page generation or
+  source ISA. Keep all manifest parts; ingestion cannot manufacture provenance.

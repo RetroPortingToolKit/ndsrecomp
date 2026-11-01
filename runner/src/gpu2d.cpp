@@ -2571,6 +2571,9 @@ struct AdaptiveCtx {
     size_t hud_bg_count = 0;
     bool snapshot_matches = false;
     bool emit_hd = false;
+    // Native-aspect HD returns the canonical scanline framebuffer, so only
+    // the survivor layers are consumed; the adaptive RGB image is discarded.
+    bool metadata_only = false;
     uint32_t front = 0;
 };
 
@@ -2607,7 +2610,7 @@ void composite_adaptive_line(const AdaptiveCtx& c, int y,
     for (size_t i = 0; i < hud_bg_count; ++i)
         decode_bg_line(u, 0, hud_bgs[i], y, palette, *vram,
                        hud_bg_lines[i]);
-    const uint32_t* const line3d = snapshot_matches
+    const uint32_t* const line3d = c.metadata_only ? nullptr : snapshot_matches
         ? g_wide_3d_frame[c.front].data() +
               static_cast<size_t>(y) * output_width
         : nds_gpu3d_wide_line(y);
@@ -2748,6 +2751,10 @@ void composite_adaptive_line(const AdaptiveCtx& c, int y,
             g_hd_below_pixels[o] = below.color;
             g_hd_below_pixels[o + 1] = hd_meta(below, window_mask);
         }
+        // The native-width caller returns its separate canonical framebuffer
+        // even if enhanced presentation rejects this frame. Do not complete an
+        // adaptive RGB image that neither success nor fallback will consume.
+        if (c.metadata_only) continue;
         const uint32_t c3 = composited_3d[x];
         const uint8_t a3 =
             static_cast<uint8_t>((c3 >> 24) & 0x1Fu);
@@ -2951,9 +2958,12 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
 
     AdaptiveFrame& adaptive = g_adaptive_frame[screen & 1];
     if (width) *width = static_cast<uint16_t>(output_width);
-    std::fill_n(adaptive.data(),
-                static_cast<size_t>(output_width) * 192u,
-                0xFF000000u);
+    // At native width every fallback copies or returns the complete native
+    // framebuffer, while HD needs only the separate survivor-layer surfaces.
+    if (output_width != 256)
+        std::fill_n(adaptive.data(),
+                    static_cast<size_t>(output_width) * 192u,
+                    0xFF000000u);
     const int extra = (output_width - 256) / 2;
     // Native-width composite centred in the adaptive window. Every reason is
     // counted so a pillarboxed title can be diagnosed from the live counters
@@ -3074,6 +3084,7 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
     ctx.hud_bg_count = hud_bg_count;
     ctx.snapshot_matches = snapshot_matches;
     ctx.emit_hd = emit_hd;
+    ctx.metadata_only = emit_hd && output_width == 256;
     ctx.front = g_front;
     composite_adaptive_frame(ctx);
     if (emit_hd) {
@@ -3121,6 +3132,7 @@ bool nds_gpu2d_hd_frame(NdsGpu2dHdFrame* out) {
     ++g_hd_presented;
     return true;
 }
+void nds_gpu2d_note_owned_hd_presented() { ++g_hd_presented; }
 void nds_gpu2d_profile(NdsGpu2dProfile* out) {
     drain_pool(NDS_GPU2D_FENCE_PRESENT);
     if (!out) return;

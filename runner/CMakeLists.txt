@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(nds_runner VERSION 0.6.10 LANGUAGES C CXX)
+project(nds_runner VERSION 0.6.11 LANGUAGES C CXX)
 
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/NdsCompilerCache.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/NdsJobPools.cmake")
@@ -50,8 +50,12 @@ option(NDS_ARM7_NATIVE
     "Experiment: translate ARM7 ARMv4T with modeled devices in native performance builds" OFF)
 option(NDS_NATIVE_PRECISE_WRITES
     "Use physical-page native store notifications instead of rescanning unrelated code" ON)
+option(NDS_NATIVE_PUBLISHED_STORES
+    "Candidate: generated ordinary RAM stores with complete physical publication" OFF)
 option(NDS_NATIVE_CONTROL
     "Experiment: native pure status/multiply and stateless ARM9 cache operations" OFF)
+option(NDS_TIER3_CANONICAL_STATE
+    "Share canonical registers/banks with faithful execution" ON)
 set(NDS_MKDS_PERFORMANCE_BANK_DIR "" CACHE PATH
     "Generated mkds_perf_arm9 and mkds_perf_arm9_itcm banks")
 set(NDS_ARM9_DYNARMIC_ROOT "" CACHE PATH "Optional pinned Dynarmic source for experimental ARM9 native execution")
@@ -64,6 +68,20 @@ if(NDS_ARM9_DYNARMIC_ROOT)
         file(READ "${NDS_ARM9_DYNARMIC_ROOT}/src/dynarmic/interface/A32/config.h" _nds_dynarmic_config)
         if(NOT _nds_dynarmic_config MATCHES "NDS_READONLY_PAGE_TABLE_V1")
             message(FATAL_ERROR "Pinned Dynarmic needs runner/cmake/dynarmic-readonly-pages.patch; see docs/mkds-boundary-consolidation.md")
+        endif()
+        if(NDS_NATIVE_PUBLISHED_STORES)
+            if(NOT NDS_NATIVE_PRECISE_WRITES OR NOT _nds_dynarmic_config MATCHES "NDS_PUBLISHED_STORES_V1")
+                message(FATAL_ERROR "Published native stores need physical-page watches and the published-store SDK patch")
+            endif()
+            set_property(SOURCE src/arm9_native.cpp APPEND PROPERTY COMPILE_DEFINITIONS NDS_NATIVE_PUBLISHED_STORES=1)
+        endif()
+        file(READ "${NDS_ARM9_DYNARMIC_ROOT}/src/dynarmic/backend/x64/reg_alloc.h" _nds_dynarmic_allocator)
+        if(NOT _nds_dynarmic_allocator MATCHES "NDS_COLD_REGISTER_ALLOCATION_V1")
+            message(FATAL_ERROR "Pinned Dynarmic needs runner/cmake/dynarmic-cold-register-allocation.patch; see docs/loading-hitches-20261027.md")
+        endif()
+        file(READ "${NDS_ARM9_DYNARMIC_ROOT}/src/dynarmic/interface/A32/a32.h" _nds_dynarmic_preparation)
+        if(NOT _nds_dynarmic_preparation MATCHES "NDS_PREPARED_BLOCKS_V1")
+            message(FATAL_ERROR "Pinned Dynarmic needs runner/cmake/dynarmic-prepared-blocks.patch; see docs/loading-hitches-20261027.md")
         endif()
         set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
         set(DYNARMIC_FRONTENDS A32 CACHE STRING "" FORCE)
@@ -111,6 +129,30 @@ if(NOT NDS_MKDS_HLE_GROUPS STREQUAL "VECTOR")
     message(FATAL_ERROR "Only VECTOR HLE is integrated; MATH and SUBMIT remain draft work")
 endif()
 set(NDS_MKDS_HLE_GROUP_MASK 1)
+set(NDS_MKDS_STREAM_IMPLEMENTATION "LLE" CACHE STRING
+    "Build choice for the complete MKDS streaming LZ job: LLE or HLE")
+set_property(CACHE NDS_MKDS_STREAM_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
+if(NOT NDS_MKDS_STREAM_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
+    message(FATAL_ERROR "NDS_MKDS_STREAM_IMPLEMENTATION must be LLE or HLE")
+endif()
+if(NDS_MKDS_STREAM_IMPLEMENTATION STREQUAL "HLE")
+    if(NOT NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
+        message(FATAL_ERROR "Streaming LZ HLE requires MKDS HLE bindings")
+    endif()
+    set(NDS_MKDS_HLE_GROUP_MASK 9)
+endif()
+set(NDS_MKDS_CARD_PIO_IMPLEMENTATION "LLE" CACHE STRING
+    "Build choice for the complete MKDS CPU card PIO reader: LLE or HLE")
+set_property(CACHE NDS_MKDS_CARD_PIO_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
+if(NOT NDS_MKDS_CARD_PIO_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
+    message(FATAL_ERROR "NDS_MKDS_CARD_PIO_IMPLEMENTATION must be LLE or HLE")
+endif()
+if(NDS_MKDS_CARD_PIO_IMPLEMENTATION STREQUAL "HLE")
+    if(NOT NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
+        message(FATAL_ERROR "Card PIO HLE requires MKDS HLE bindings")
+    endif()
+    math(EXPR NDS_MKDS_HLE_GROUP_MASK "${NDS_MKDS_HLE_GROUP_MASK} | 16")
+endif()
 if(NOT NDS_MKDS_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
     message(FATAL_ERROR "NDS_MKDS_IMPLEMENTATION must be LLE or HLE")
 endif()
@@ -136,11 +178,49 @@ if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
         string(APPEND NDS_BUILD_VARIANT "-groups${NDS_MKDS_HLE_GROUP_MASK}")
     endif()
 endif()
+if(NDS_MKDS_STREAM_IMPLEMENTATION STREQUAL "HLE")
+    string(APPEND NDS_BUILD_VARIANT "-stream-lz-native-v1")
+endif()
+if(NDS_MKDS_CARD_PIO_IMPLEMENTATION STREQUAL "HLE")
+    string(APPEND NDS_BUILD_VARIANT "-card-pio-native-v1")
+endif()
+if(NDS_TIER3_CANONICAL_STATE)
+    string(APPEND NDS_BUILD_VARIANT "-canonical-tier3-v1")
+endif()
 foreach(_experiment NDS_CAPTURE_VIEW_REUSE NDS_LEAN_DIAGNOSTICS)
     if(${_experiment})
         string(APPEND NDS_BUILD_VARIANT "-${_experiment}-v1")
     endif()
 endforeach()
+option(NDS_CORE_IPO
+    "GCC LTO for runner/core targets only; keep imported banks and SDK opaque"
+    OFF)
+if(NDS_CORE_IPO)
+    if(NOT CMAKE_C_COMPILER_ID STREQUAL "GNU" OR
+       NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
+       NOT CMAKE_C_COMPILER_VERSION VERSION_EQUAL CMAKE_CXX_COMPILER_VERSION)
+        message(FATAL_ERROR "NDS_CORE_IPO requires matching GCC C/C++ compilers")
+    endif()
+    if(CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+        message(FATAL_ERROR
+            "NDS_CORE_IPO is target-scoped; disable global IPO")
+    endif()
+    foreach(_nds_core_config IN ITEMS ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
+        string(TOUPPER "${_nds_core_config}" _nds_core_config)
+        if(CMAKE_INTERPROCEDURAL_OPTIMIZATION_${_nds_core_config})
+            message(FATAL_ERROR
+                "NDS_CORE_IPO is target-scoped; disable global configuration IPO")
+        endif()
+    endforeach()
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _nds_core_ipo_supported
+        OUTPUT _nds_core_ipo_error LANGUAGES C CXX)
+    if(NOT _nds_core_ipo_supported)
+        message(FATAL_ERROR "NDS_CORE_IPO unavailable: ${_nds_core_ipo_error}")
+    endif()
+    string(APPEND NDS_BUILD_VARIANT
+        "-core-ipo-gcc${CMAKE_CXX_COMPILER_VERSION}-v1")
+endif()
 set(NDS_PGO_MODE "OFF" CACHE STRING
     "Runner-only GCC PGO mode: OFF, GENERATE, or USE")
 set_property(CACHE NDS_PGO_MODE PROPERTY STRINGS OFF GENERATE USE)
@@ -440,9 +520,9 @@ if(NDS_MKDS_PERFORMANCE AND NOT NDS_ARM9_DYNARMIC_ENABLED)
 endif()
 
 if(NDS_ARM9_DYNARMIC_ENABLED)
-    string(APPEND NDS_BUILD_VARIANT "-arm9-native-v2-timing2-dynarmica41c380")
+    string(APPEND NDS_BUILD_VARIANT "-arm9-native-v2-timing2-dynarmica41c380-narrow-reads-v1")
     if(NDS_NATIVE_PRECISE_WRITES)
-        string(APPEND NDS_BUILD_VARIANT "-precise-code-writes-v2")
+        string(APPEND NDS_BUILD_VARIANT "-physical-write-publication-v1")
     endif()
     if(NDS_NATIVE_CONTROL)
         string(APPEND NDS_BUILD_VARIANT "-native-control-v1")
@@ -456,6 +536,22 @@ if(NDS_ARM9_DYNARMIC_ENABLED)
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-readonly-pages.patch" _nds_read_patch_sha)
     string(SUBSTRING "${_nds_read_patch_sha}" 0 12 _nds_read_patch_short)
     string(APPEND NDS_BUILD_VARIANT "-pages${_nds_read_patch_short}")
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-cold-register-allocation.patch" _nds_alloc_patch_sha)
+    string(SUBSTRING "${_nds_alloc_patch_sha}" 0 12 _nds_alloc_patch_short)
+    string(APPEND NDS_BUILD_VARIANT "-alloc${_nds_alloc_patch_short}")
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-prepared-blocks.patch" _nds_prepare_patch_sha)
+    string(SUBSTRING "${_nds_prepare_patch_sha}" 0 12 _nds_prepare_patch_short)
+    string(APPEND NDS_BUILD_VARIANT "-prepare${_nds_prepare_patch_short}")
+    if(NDS_NATIVE_PUBLISHED_STORES)
+        file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-published-stores.patch" _nds_store_patch_sha)
+        string(SUBSTRING "${_nds_store_patch_sha}" 0 12 _nds_store_patch_short)
+        string(APPEND NDS_BUILD_VARIANT "-published-stores${_nds_store_patch_short}")
+    endif()
+    if(NDS_MKDS_PERFORMANCE)
+        file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/mkds_native_preparation.inc" _nds_prepare_seed_sha)
+        string(SUBSTRING "${_nds_prepare_seed_sha}" 0 12 _nds_prepare_seed_short)
+        string(APPEND NDS_BUILD_VARIANT "-seed${_nds_prepare_seed_short}")
+    endif()
 endif()
 
 # Build one registry translation unit from the configured dispatch filenames.
@@ -643,6 +739,7 @@ add_executable(nds_runner
     src/relative_mouse_touch.cpp
     "${NDS_RECOMP_UI_ROOT}/src/common/recomp_runtime_ui.c"
     src/frontend.cpp
+    src/cpu_render_handoff.cpp
     src/main.cpp
     src/runtime_exports.def
     "${TITLE_BANK_REGISTRY}"
@@ -662,6 +759,8 @@ add_executable(nds_runner
     vendor/melonds/net/PacketDispatcher.cpp
     vendor/melonds/net/Net_Slirp.cpp)
 set_target_properties(nds_runner PROPERTIES ENABLE_EXPORTS ON)
+find_package(Threads REQUIRED)
+target_link_libraries(nds_runner PRIVATE Threads::Threads)
 if(NDS_MPH_MATH_IMPLEMENTATION STREQUAL "HLE")
     target_sources(nds_runner PRIVATE src/hle_mph_math.cpp)
     target_compile_definitions(nds_runner PRIVATE NDS_MPH_MATH_HLE=1)
@@ -685,9 +784,29 @@ if(NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
     target_sources(nds_runner PRIVATE src/hle_mkds.cpp)
     target_compile_definitions(nds_runner PRIVATE NDS_MKDS_HLE=1
         NDS_MKDS_HLE_GROUP_MASK=${NDS_MKDS_HLE_GROUP_MASK})
+    if(NDS_MKDS_STREAM_IMPLEMENTATION STREQUAL "HLE")
+        target_sources(nds_runner PRIVATE src/hle_mkds_stream.cpp)
+        target_compile_definitions(nds_runner PRIVATE NDS_MKDS_STREAM_HLE=1)
+    endif()
+    if(NDS_MKDS_CARD_PIO_IMPLEMENTATION STREQUAL "HLE")
+        target_sources(nds_runner PRIVATE src/hle_mkds_card_pio.cpp)
+        target_compile_definitions(nds_runner PRIVATE NDS_MKDS_PIO_HLE=1)
+    endif()
 endif()
 message(STATUS "MKDS implementation: ${NDS_MKDS_IMPLEMENTATION}")
+message(STATUS "MKDS card PIO implementation: ${NDS_MKDS_CARD_PIO_IMPLEMENTATION}")
 ndsrecomp_limit_link(nds_runner)
+if(NDS_CORE_IPO)
+    # Do not enable global IPO: imported banks, the native SDK and slirp keep
+    # their existing object/archive identities. Exported runtime ABI stays on.
+    foreach(_nds_core_target IN ITEMS nds_runner nds_armv4t nds_support)
+        set_property(TARGET ${_nds_core_target} PROPERTY
+            INTERPROCEDURAL_OPTIMIZATION TRUE)
+        # Override CMake's GCC -flto=auto with the declared two-worker budget.
+        target_compile_options(${_nds_core_target} PRIVATE -flto=2)
+    endforeach()
+    target_link_options(nds_runner PRIVATE -flto=2)
+endif()
 if(NOT NDS_PGO_MODE STREQUAL "OFF")
     if(MSVC)
         message(FATAL_ERROR "NDS_PGO_MODE currently supports GCC/MinGW only")
@@ -732,6 +851,9 @@ if(NOT NDS_PGO_MODE STREQUAL "OFF")
         target_compile_options(nds_runner PRIVATE
             -fprofile-generate -fprofile-update=atomic)
         target_link_options(nds_runner PRIVATE -fprofile-generate)
+        if(NDS_CORE_IPO)
+            target_link_options(nds_runner PRIVATE -fprofile-update=atomic)
+        endif()
     else()
         # -fprofile-use with no profile data present is not an error: gcc
         # warns under -Wmissing-profile and still exits 0, so an untrained
@@ -776,6 +898,14 @@ if(NOT NDS_PGO_MODE STREQUAL "OFF")
                 -fprofile-partial-training)
         endif()
         target_link_options(nds_runner PRIVATE -fprofile-use)
+        if(NDS_CORE_IPO)
+            # LTO performs optimization at link time too. Keep the selected
+            # PGO policy there, including normal treatment of untrained code.
+            target_link_options(nds_runner PRIVATE -fprofile-correction)
+            if(NDS_PGO_PARTIAL_TRAINING)
+                target_link_options(nds_runner PRIVATE -fprofile-partial-training)
+            endif()
+        endif()
     endif()
 endif()
 if(NDS_PROFILE_MEM_TIMING)
@@ -950,6 +1080,14 @@ if(NDS_ARM9_DYNARMIC_ENABLED)
     endif()
     target_include_directories(arm9_native_probe PRIVATE ${NDS_ARM_RECOMP_INCLUDE_DIRS} ${Boost_INCLUDE_DIR} ${Boost_INCLUDE_DIRS})
     target_link_libraries(arm9_native_probe PRIVATE dynarmic merry::mcl nds_armv4t)
+    if(NDS_NATIVE_PUBLISHED_STORES)
+        add_executable(native_published_store_probe tests/native_published_store_probe.cpp)
+        target_include_directories(native_published_store_probe PRIVATE
+            ${NDS_ARM_RECOMP_INCLUDE_DIRS} ${Boost_INCLUDE_DIR} ${Boost_INCLUDE_DIRS})
+        target_link_libraries(native_published_store_probe PRIVATE dynarmic merry::mcl nds_armv4t)
+        add_test(NAME native_published_store_probe COMMAND native_published_store_probe)
+        set_tests_properties(native_published_store_probe PROPERTIES TIMEOUT 30)
+    endif()
     add_test(NAME arm9_native_probe COMMAND arm9_native_probe)
     set_tests_properties(arm9_native_probe PROPERTIES TIMEOUT 30)
     if(NDS_ARM7_NATIVE)
@@ -1040,11 +1178,24 @@ endif()
 if(NDS_LEAN_DIAGNOSTICS)
     target_compile_definitions(nds_runner PRIVATE NDS_LEAN_DIAGNOSTICS=1)
 endif()
+if(NDS_TIER3_CANONICAL_STATE)
+    target_compile_definitions(nds_runner PRIVATE NDS_TIER3_CANONICAL_STATE=1)
+endif()
 if(NDS_CAPTURE_VIEW_REUSE)
     target_compile_definitions(nds_runner PRIVATE NDS_CAPTURE_VIEW_REUSE=1)
 endif()
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
+
+add_executable(physical_write_test tests/physical_write_test.cpp)
+target_include_directories(physical_write_test PRIVATE src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+add_test(NAME physical_write_test COMMAND physical_write_test)
+
+add_executable(cpu_render_handoff_test tests/cpu_render_handoff_test.cpp src/cpu_render_handoff.cpp)
+target_include_directories(cpu_render_handoff_test PRIVATE src)
+target_link_libraries(cpu_render_handoff_test PRIVATE Threads::Threads)
+add_test(NAME cpu_render_handoff_test COMMAND cpu_render_handoff_test)
 
   add_executable(frontend_config_test
       tests/frontend_config_test.cpp
@@ -1121,6 +1272,19 @@ ndsrecomp_link_tomlpp(frontend_config_test)
     target_link_libraries(native_gl_test PRIVATE SDL3::SDL3)
     add_test(NAME native_gl_test COMMAND native_gl_test)
     set_tests_properties(native_gl_test PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(compute_capture_first_test tests/compute_capture_first_test.cpp
+        src/melonds_compute/GPU_OpenGL.cpp src/melonds_compute/PlatformCompute.cpp
+        src/melonds_compute/TextureUpscaleStub.cpp vendor/melonds/GPU3D.cpp
+        vendor/melonds/GPU3D_Soft.cpp vendor/melonds/Savestate.cpp
+        vendor/melonds/GPU3D_Compute.cpp vendor/melonds/GPU3D_Texcache.cpp
+        vendor/melonds/GPU3D_TexcacheOpenGL.cpp vendor/melonds/OpenGLSupport.cpp
+        vendor/melonds/glad/glad.c vendor/melonds/xxhash/xxhash.c)
+    target_include_directories(compute_capture_first_test PRIVATE vendor/melonds src/melonds_compute)
+    target_compile_definitions(compute_capture_first_test PRIVATE MELONDS_GL_HEADER="glad/glad.h")
+    target_link_libraries(compute_capture_first_test PRIVATE SDL3::SDL3)
+    add_test(NAME compute_capture_first_test COMMAND compute_capture_first_test)
+    set_tests_properties(compute_capture_first_test PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 
   add_executable(hle_mkds_test tests/hle_mkds_test.cpp src/hle_mkds.cpp)
@@ -1130,11 +1294,23 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_link_libraries(hle_mkds_test PRIVATE nds_support)
   add_test(NAME hle_mkds_test COMMAND hle_mkds_test)
 
+  add_executable(hle_mkds_stream_test tests/hle_mkds_stream_test.cpp src/hle_mkds_stream.cpp
+      src/hle_mkds_card_pio.cpp)
+  target_compile_definitions(hle_mkds_stream_test PRIVATE NDS_RUNTIME_ABI_SHIMS=1)
+  target_include_directories(hle_mkds_stream_test PRIVATE src
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  target_link_libraries(hle_mkds_stream_test PRIVATE nds_support nds_armv4t)
+  add_test(NAME hle_mkds_stream_test COMMAND hle_mkds_stream_test)
+
   add_executable(perf_governor_test
       tests/perf_governor_test.cpp
       src/perf_governor.cpp)
   target_include_directories(perf_governor_test PRIVATE src)
   add_test(NAME perf_governor_test COMMAND perf_governor_test)
+
+  add_executable(frontend_bindings_test tests/frontend_bindings_test.cpp)
+  target_include_directories(frontend_bindings_test PRIVATE src)
+  add_test(NAME frontend_bindings_test COMMAND frontend_bindings_test)
 
   # Always-on host CPU sampler (host_profile.h). Three things are gated here:
   # the sample ring's residency/eviction/tear rules, the leaf histogram, and --
@@ -1230,6 +1406,24 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   ndsrecomp_link_tomlpp(mem_timing_test)
   target_link_libraries(mem_timing_test PRIVATE nds_armv4t nds_support)
   add_test(NAME mem_timing_test COMMAND mem_timing_test)
+  add_test(NAME native_ram_transactions_test COMMAND mem_timing_test --native-ram-only)
+  add_test(NAME native_store_pages_test COMMAND mem_timing_test --native-store-pages-only)
+
+  # Same real runtime/bus/CP15/scheduler as the timing fixture; real Tier3 and
+  # controlled device events. The driver compares OFF/ON full transcripts.
+  get_target_property(_tier3_fixture_sources mem_timing_test SOURCES)
+  list(REMOVE_ITEM _tier3_fixture_sources tests/mem_timing_test.cpp)
+  add_executable(tier3_state_test tests/tier3_state_test.cpp src/tier3.cpp
+      ${_tier3_fixture_sources})
+  get_target_property(_tier3_fixture_includes mem_timing_test INCLUDE_DIRECTORIES)
+  target_include_directories(tier3_state_test PRIVATE ${_tier3_fixture_includes})
+  target_compile_definitions(tier3_state_test PRIVATE
+      NDS_BUILD_TIER3_STATE_TEST=1 NDS_TIER3_CANONICAL_STATE=1)
+  ndsrecomp_link_tomlpp(tier3_state_test)
+  target_link_libraries(tier3_state_test PRIVATE nds_armv4t nds_support)
+  add_test(NAME tier3_state_test COMMAND ${CMAKE_COMMAND}
+      -DTEST_EXE=$<TARGET_FILE:tier3_state_test>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compare_tier3_state.cmake)
 
   add_executable(savestate_slots_test
       tests/savestate_slots_test.cpp
@@ -1433,6 +1627,14 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   endif()
 
   if(Python3_Interpreter_FOUND)
+    if(NDS_ARM9_DYNARMIC_ENABLED)
+      add_test(NAME dynarmic_register_selection_test
+          COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dynarmic_register_allocation.py"
+              --sdk "${NDS_ARM9_DYNARMIC_ROOT}" --cxx "${CMAKE_CXX_COMPILER}"
+              --compiler-id "${CMAKE_CXX_COMPILER_ID}"
+              --out "${CMAKE_CURRENT_BINARY_DIR}/register-selection-test")
+    endif()
     # The deadline-bounded per-instruction machinery has no value anyone can
     # assert; its correctness is a set of structural properties (fast path
     # present and slice-bounded, every re-arm site zeroing it, faithful path
@@ -1528,4 +1730,12 @@ ndsrecomp_link_tomlpp(frontend_config_test)
         NAME coverage_span_promotion_test
         COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_coverage_span_promotion.py")
+    add_test(
+        NAME coverage_generation_identity_test
+        COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_coverage_generation_identity.py")
+    add_test(
+        NAME live_compile_owner_test
+        COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/live_compile_owner_test.py")
   endif()

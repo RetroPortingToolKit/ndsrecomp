@@ -5,6 +5,7 @@
 #include "GPU3D_CommandBatch.h"
 #include "NDS.h"
 #include "Platform.h"
+#include "Savestate.h"
 
 #include <cstdio>
 #include <stdexcept>
@@ -59,6 +60,46 @@ void replay(GPU3D& gpu, uint32_t value, const Word& decoded) {
 void write(std::vector<uint8_t>& data, uint32_t index, uint32_t value) {
     for (unsigned i = 0; i < 4; ++i) data[index * 4 + i] = static_cast<uint8_t>(value >> (8 * i));
 }
+std::vector<u8> gpu_snapshot(GPU3D& gpu) {
+    Savestate saved;
+    require(!saved.Error, "snapshot allocation");
+    gpu.DoSavestate(&saved);saved.Finish();
+    require(!saved.Error, "GPU snapshot serialization");
+    const auto* bytes=static_cast<const u8*>(saved.Buffer());
+    return {bytes,bytes+saved.Length()};
+}
+void fifo_snapshot_tests() {
+    auto left=std::make_unique<NDS>();auto right=std::make_unique<NDS>();
+    left->GPU.GPU3D.Reset();right->GPU.GPU3D.Reset();
+    const auto seed=[](GPU3D& gpu,u8 poison) {
+        auto entry=gpu.CmdFIFO.Peek();
+        static_assert(sizeof(entry)==8, "FIFO wire footprint");
+        std::memset(&entry,poison,sizeof(entry));
+        entry.Param=0x12345678;entry.Command=0x10;gpu.CmdFIFO.Write(entry);
+        std::memset(&entry,poison,sizeof(entry));
+        entry.Param=0x89abcdef;entry.Command=0x20;gpu.CmdPIPE.Write(entry);
+    };
+    seed(left->GPU.GPU3D,0xa5);seed(right->GPU.GPU3D,0x5a);
+    const auto saved=gpu_snapshot(left->GPU.GPU3D);
+    require(saved==gpu_snapshot(right->GPU.GPU3D),
+            "identical FIFO commands must not snapshot prior host stack bytes");
+    auto restored=std::make_unique<NDS>();restored->GPU.GPU3D.Reset();
+    Savestate load(const_cast<u8*>(saved.data()),static_cast<u32>(saved.size()),false);
+    restored->GPU.GPU3D.DoSavestate(&load);
+    require(!load.Error&&gpu_snapshot(restored->GPU.GPU3D)==saved,
+            "canonical current-build GPU snapshot roundtrip");
+    // The first command follows the MELN header, GP3D section header and
+    // three FIFO counters. Its high bits are reserved, never guest commands.
+    auto invalid=saved;constexpr size_t command_high=16+16+12+4+1;
+    require(invalid.size()>command_high&&!std::memcmp(invalid.data()+16,"GP3D",4),"FIFO snapshot envelope");
+    for(size_t offset:{command_high,command_high+256*8+12}) {
+        invalid=saved;invalid[offset]=1;
+        Savestate bad(invalid.data(),static_cast<u32>(invalid.size()),false);
+        restored->GPU.GPU3D.DoSavestate(&bad);
+        require(bad.Error,"out-of-range stored FIFO/PIPE command must be rejected");
+    }
+}
+
 void adaptive_box_tests() {
     auto nds = std::make_unique<NDS>();
     auto& gpu = nds->GPU.GPU3D;
@@ -198,6 +239,6 @@ void tests() {
 }
 }
 int main() {
-    try { tests(); std::puts("[gx_command_batch_test] PASS: real FIFO/parser/geometry, cache, mutation, reset and stalls"); }
+    try { fifo_snapshot_tests(); tests(); std::puts("[gx_command_batch_test] PASS: real FIFO/parser/geometry, cache, mutation, reset and stalls"); }
     catch (const std::exception& error) { std::fprintf(stderr, "FAIL: %s\n", error.what()); return 1; }
 }

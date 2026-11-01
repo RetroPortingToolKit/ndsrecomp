@@ -3,6 +3,7 @@
 #pragma once
 #include <cstdint>
 #include <vector>
+#include "../gpu2d.h"
 
 struct SDL_Window;
 struct NdsGpu2dDirectFrame;
@@ -14,6 +15,18 @@ struct NdsComputePresentTicks {
     bool diagnostic = false;
     unsigned long long setup = 0;
     unsigned long long error = 0;
+};
+
+// Borrowed pointers refer to an OWNED frontend packet, not reusable device
+// surfaces. Texture objects belong to the main GL owner and cannot be replaced
+// by another producer request until this presentation has finished.
+struct NdsComputePresentationFrame {
+    NdsGpu2dDirectFrame direct{};
+    NdsGpu2dHdFrame hd{};
+    uint32_t hires_texture{};
+    uint32_t native_texture{};
+    uint8_t scale{1};
+    bool has_direct{}, has_hd{};
 };
 
 bool nds_compute_host_start(SDL_Window* presentation_window = nullptr);
@@ -28,7 +41,8 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
                                   unsigned short fallback_width,
                                   const NdsGpu2dDirectFrame* direct_frame,
                                   NdsComputePresentTicks* ticks,
-                                  unsigned antialiasing = 0);
+                                  unsigned antialiasing = 0,
+                                  const NdsComputePresentationFrame* owned = nullptr);
 void nds_compute_host_stop();
 bool nds_compute_host_active();
 

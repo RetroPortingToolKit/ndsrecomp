@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "state.h"
+#include "arm9_native.h"
 #include "scheduler.h"
 #include "direct_boot.h"
 #include "generated_firmware.h"
@@ -536,6 +537,23 @@ int main(int argc, char** argv) {
             config_explicit = true;
         } else if (a == "--screen-layout" && i + 1 < argc) {
             cli_screen_layout = argv[++i];
+        } else if (a == "--window-scale" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            if (value.size() != 1 || value[0] < '1' || value[0] > '8') {
+                std::fprintf(stderr, "invalid --window-scale (expected 1..8)\n");
+                return 2;
+            }
+            frontend_options.window_scale = value[0] - '0';
+        } else if ((a == "--keyboard-bindings" || a == "--gamepad-bindings") &&
+                   i + 1 < argc) {
+            const bool pad = a == "--gamepad-bindings";
+            if (!nds_parse_bindings(argv[++i], pad, pad
+                    ? &frontend_options.gamepad_bindings
+                    : &frontend_options.keyboard_bindings)) {
+                std::fprintf(stderr, "invalid %s (expected 12 NDS bindings)\n", a.c_str());
+                return 2;
+            }
+            if (pad) frontend_options.custom_gamepad_bindings = true;
         } else if (a == "--fullscreen" && i + 1 < argc) {
             cli_fullscreen = argv[++i];
         } else if (a == "--adaptive-widescreen" && i + 1 < argc) {
@@ -697,6 +715,9 @@ int main(int argc, char** argv) {
                 "[--widescreen-width even:256..448] "
                 "[--supersampling 1|2|3|4] "
                 "[--internal-resolution 1|2|3|4] "
+                "[--window-scale 1..8] "
+                "[--keyboard-bindings <12 comma-separated SDL scancodes>] "
+                "[--gamepad-bindings <12 comma-separated encoded controls>] "
                 "[--texture-upscale 1|2|4] "
                 "[--antialiasing 0|2|4|8] "
                 "[--frame-interpolation off|blend] "
@@ -1763,6 +1784,7 @@ int main(int argc, char** argv) {
     nds_diagnostics_set_identity(rom_sha1.c_str(), rom_name.c_str(),
                                  execution_build_id.c_str());
     debug_set_savestate_identity(execution_build_id, rom_sha1);
+    nds_arm9_native_prepare_initialize(rom_sha1);
 #if defined(NDS_MPH_SUBMIT_HLE)
     if (mph_submit::initialize(rom_sha1.c_str()))
         std::fprintf(stderr, "[hle] MPH submission selected at build time (mph-submit-hle-v3)\n");
@@ -1774,7 +1796,11 @@ int main(int argc, char** argv) {
 #endif
 #if defined(NDS_MKDS_HLE)
     if (mkds_hle::initialize(rom_sha1.c_str())) {
+#if defined(NDS_MKDS_STREAM_HLE)
+        std::fprintf(stderr, "[hle] MKDS native vector math and streaming LZ jobs selected at build time\n");
+#else
         std::fprintf(stderr, "[hle] MKDS native vector math selected at build time\n");
+#endif
     }
 #endif
     if (!cli_savestate_dir.empty() && !rom_sha1.empty()) {

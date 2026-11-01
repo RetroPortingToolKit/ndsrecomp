@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -27,6 +29,7 @@
 #include "emu_profile.h"
 
 using armv4t::CPUState;
+using armv4t::PackedCpuStateView;
 using armv4t::Interpreter;
 using armv4t::Instr;
 
@@ -72,7 +75,8 @@ void coverage_note(uint32_t pc, bool thumb, uint8_t kind, uint32_t caller) {
                           static_cast<uint8_t>(thumb ? 1u : 0u), kind});
 }
 
-uint32_t pack_cpsr(const CPUState& c) {
+template<class State>
+uint32_t pack_cpsr(const State& c) {
     return (uint32_t(c.cpsr.n) << 31) | (uint32_t(c.cpsr.z) << 30) |
            (uint32_t(c.cpsr.c) << 29) | (uint32_t(c.cpsr.v) << 28) |
            (uint32_t(c.cpsr.q) << 27) |
@@ -93,7 +97,8 @@ bool static_bios_pc(uint32_t pc) {
         : (pc < 0x00004000u);
 }
 
-void trace_push(const CPUState& c, uint8_t phase, uint32_t pc,
+template<class State>
+void trace_push(const State& c, uint8_t phase, uint32_t pc,
                 uint32_t raw, uint32_t next_pc, uint8_t result) {
     Tier3TraceEvent& e = g_trace[g_trace_w];
     e.seq = ++g_trace_seq;
@@ -229,8 +234,21 @@ void sync_out(const CPUState& c) {
     }
 }
 
+void sync_out(const PackedCpuStateView& c) { c.publish_control(); }
+
+template<class State> State initial_state() {
+    if constexpr (std::is_same_v<State, PackedCpuStateView>) {
+        return PackedCpuStateView(g_cpu);
+    } else {
+        CPUState c;
+        sync_in(c);
+        return c;
+    }
+}
+
 }  // namespace
 
+template<class State>
 static void tier3_run_impl(uint32_t /*entry*/, bool single_step) {
     const uint32_t cpu_index = g_nds_active == NDS_ARM7 ? 1u : 0u;
     // TIER-3 INTERPRETER, carved exclusively out of NDS_EMU_EXEC_*. Before
@@ -282,8 +300,9 @@ static void tier3_run_impl(uint32_t /*entry*/, bool single_step) {
             TIER3_COVERAGE_ROOT, g_cpu.R[14]);
     }
     ++g_stats.entries[cpu_index];
-    CPUState ic;
-    sync_in(ic);
+    if constexpr (std::is_same_v<State, PackedCpuStateView>)
+        ++g_stats.canonical_entries[cpu_index];
+    auto ic = initial_state<State>();
     const bool trace_this_entry =
         g_runtime_deep_trace &&
         ((g_nds_active == NDS_ARM9) || trace_pc(ic.R[15]));
@@ -637,8 +656,30 @@ static void tier3_run_impl(uint32_t /*entry*/, bool single_step) {
     sync_out(ic);
 }
 
-void tier3_run(uint32_t pc) { tier3_run_impl(pc, false); }
-void tier3_step_one(uint32_t pc) { tier3_run_impl(pc, true); }
+bool tier3_canonical_state_enabled() {
+#ifdef NDS_TIER3_CANONICAL_STATE
+    // Fixed for the process: selection never changes halfway through a slice.
+    static const bool enabled = [] {
+        const char* value = std::getenv("NDS_TIER3_CANONICAL_STATE");
+        return !value || value[0] != '0';
+    }();
+    return enabled;
+#else
+    return false;
+#endif
+}
+
+static void tier3_selected(uint32_t pc, bool single_step) {
+#ifdef NDS_TIER3_CANONICAL_STATE
+    if (tier3_canonical_state_enabled()) {
+        tier3_run_impl<PackedCpuStateView>(pc, single_step);
+        return;
+    }
+#endif
+    tier3_run_impl<CPUState>(pc, single_step);
+}
+void tier3_run(uint32_t pc) { tier3_selected(pc, false); }
+void tier3_step_one(uint32_t pc) { tier3_selected(pc, true); }
 
 uint32_t tier3_debug_trace_copy(Tier3TraceEvent* out, uint32_t max_entries) {
     if (!out || max_entries == 0) return 0;

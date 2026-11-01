@@ -40,6 +40,11 @@
 
 #include "runtime_arm.h"
 #include "state.h"
+#include "native_ram.h"
+#include "native_store_pages.h"
+#include <unordered_set>
+#include "savestate.h"
+extern uint8_t g_test_wramcnt;
 
 extern "C" uint32_t runtime_mem_cycles_slow(uint32_t addr, uint32_t width,
                                             uint32_t sequential);
@@ -361,7 +366,261 @@ void check_tcm_mirrors(const char* when) {
 
 }  // namespace
 
-int main() {
+namespace {
+constexpr uint32_t guard_root_pc=0x02004000u,guard_child_pc=0x02006000u;
+constexpr uint8_t guard_expected[]={0x00,0x00,0xa0,0xe1};
+const NdsStaticValidation guard_root_validation{guard_root_pc,4,guard_expected};
+const NdsStaticValidation guard_child_validation{guard_child_pc,4,guard_expected};
+unsigned guard_case=0,guard_root_calls=0,guard_child_calls=0;
+bool guard_root_yield=false,guard_child_yield=false,guard_native=false;
+template<class T> void guard_store(uint32_t address,T value) {
+    if(guard_native) {
+        auto view=NdsNativeRam::map<T>(address);
+        if(!view){fail("guard fixture expected ordinary RAM");return;}
+        view.write(address,value);
+    } else {
+        if constexpr(sizeof(T)==1)bus_write_u8(address,value);
+        else bus_write_u32(address,value);
+    }
+}
+void guard_child_body() {
+    ++g_checks;
+    if(runtime_native_store_window())fail("active nested guard allowed direct publication");
+    ++guard_child_calls;
+    guard_store<uint8_t>(guard_root_pc+0x00400000u,1);
+    guard_child_yield=runtime_should_yield();
+}
+void guard_root_body() {
+    ++g_checks;
+    if(runtime_native_store_window())fail("active guard allowed direct publication");
+    ++guard_root_calls;
+    switch(guard_case) {
+    case 0: guard_store<uint32_t>(0x02008000u,37);break;
+    case 1: guard_store<uint32_t>(guard_root_pc+128,41);break;
+    case 2: guard_store<uint8_t>(guard_root_pc+0x00400000u,1);break;
+    case 3:
+        runtime_dispatch(guard_child_pc);
+        g_cpu.R[15]=guard_root_pc+4;
+        break;
+    case 4: {
+        // An older compiled bank bumps the physical generation but publishes
+        // through the legacy addressless ABI rather than the new page API.
+        const uint32_t offset=guard_root_pc&g_busf_main.mask;
+        g_busf_main.data[offset]=1;
+        auto& generation=g_busf_main.gen[offset>>12];
+        if(++generation==0)generation=1;
+        runtime_note_code_write();
+        break;
+    }
+    }
+    guard_root_yield=runtime_should_yield();
+}
+const DispatchEntry guard_rows[]={
+    {guard_root_pc,0,guard_root_body,&guard_root_validation},
+    {guard_child_pc,0,guard_child_body,&guard_child_validation},
+};
+void check_physical_write_guards() {
+    g_nds_active=NDS_ARM9;
+    g_cpu.cpsr=0x1fu;
+    nds_register_dispatch(0,guard_rows,2,0xffff0000u);
+    for(unsigned slow=0;slow<3;++slow) {
+        guard_native=slow==2;
+        runtime_set_deep_trace(slow==1);
+        for(guard_case=0;guard_case<5;++guard_case) {
+            bus_write_u32(guard_root_pc,0xe1a00000u);
+            bus_write_u32(guard_child_pc,0xe1a00000u);
+            guard_root_calls=guard_child_calls=0;
+            guard_root_yield=guard_child_yield=false;
+            nds_slice_begin(g_runtime_cycles+1000000000ull);
+            runtime_dispatch(guard_root_pc);
+            ++g_checks;
+            if(guard_root_calls!=1||guard_child_calls!=(guard_case==3))
+                fail("physical guard fixture did not execute its registered bodies");
+            if(guard_root_yield!=(guard_case>=2)||guard_child_yield)
+                fail("physical guard lost data/content/alias/nested/legacy write contract");
+        }
+    }
+    runtime_set_deep_trace(0);
+    nds_unregister_dispatch(0,guard_rows,2);
+    std::puts("PHYSICAL_GUARDS passed: real fast/slow bus, unrelated data, same-page data, code alias, nested caller and legacy ABI");
+}
+}
+
+namespace {
+template<class T> void native_ram_case(uint32_t address) {
+    const NdsNativeRam view=NdsNativeRam::map<T>(address);
+    ++g_checks;
+    if(!view) {
+        // Unaligned/device/unmapped accesses have deliberately no direct view.
+        return;
+    }
+    ++g_checks;
+    if(view.has_provenance<T>()!=bus_range_has_write_provenance(address,sizeof(T)))
+        fail("native code provenance differs from real bus");
+    const auto slow_read=[&]() -> T {
+        if constexpr(sizeof(T)==1)return bus_read_u8_slow(address);
+        if constexpr(sizeof(T)==2)return bus_read_u16_slow(address);
+        if constexpr(sizeof(T)==4)return bus_read_u32_slow(address);
+    };
+    ++g_checks;
+    if(view.read<T>()!=slow_read())fail("native RAM mapping differs from real bus");
+    auto* bytes=view.window->data+view.offset;
+    auto* written=view.window->written+view.offset;
+    auto* generation=view.window->gen+(view.offset>>12);
+    uint8_t old_data[sizeof(T)],old_written[sizeof(T)];
+    std::memcpy(old_data,bytes,sizeof(T));
+    std::memcpy(old_written,written,sizeof(T));
+    const auto old_generation=*generation;
+    // Original provenance means nonzero, including noncanonical imported flags.
+    for(unsigned i=0;i<sizeof(T);++i)written[i]=uint8_t(2u<<i);
+    ++g_checks;
+    if(!view.has_provenance<T>()||!bus_range_has_write_provenance(address,sizeof(T)))
+        fail("native provenance narrowed valid nonzero flags");
+    for(unsigned i=0;i<sizeof(T);++i) {
+        const auto old=written[i];written[i]=0;
+        ++g_checks;
+        if(view.has_provenance<T>()||bus_range_has_write_provenance(address,sizeof(T)))
+            fail("native code admission overlooked one unwritten byte");
+        written[i]=old;
+    }
+    const T value=static_cast<T>(0x9173a5c9u);
+    *generation=UINT32_MAX;
+    view.write(address,value);
+    uint8_t candidate_data[sizeof(T)],candidate_written[sizeof(T)];
+    std::memcpy(candidate_data,bytes,sizeof(T));
+    std::memcpy(candidate_written,written,sizeof(T));
+    const auto candidate_generation=*generation;
+    std::memcpy(bytes,old_data,sizeof(T));
+    std::memcpy(written,old_written,sizeof(T));
+    *generation=UINT32_MAX;
+    if constexpr(sizeof(T)==1)bus_write_u8_slow(address,value);
+    if constexpr(sizeof(T)==2)bus_write_u16_slow(address,value);
+    if constexpr(sizeof(T)==4)bus_write_u32_slow(address,value);
+    ++g_checks;
+    if(candidate_generation!=1 || *generation!=candidate_generation ||
+       std::memcmp(candidate_data,bytes,sizeof(T)) ||
+       std::memcmp(candidate_written,written,sizeof(T)))
+        fail("native store bytes/provenance/generation differ from real bus");
+    std::memcpy(bytes,old_data,sizeof(T));
+    std::memcpy(written,old_written,sizeof(T));
+    *generation=old_generation;
+}
+void check_native_ram_transactions() {
+    bus_init();cp15_reset();runtime_set_deep_trace(0);
+    for(unsigned config=0;config<4;++config) {
+        if(config==0)cfg_bare();
+        if(config==1)cfg_typical();
+        if(config==2)cfg_tcm_moved();
+        if(config==3) {
+            cfg_typical();cp15_itcm(0);cp15_dtcm(0x02001000u,0);
+        }
+        for(g_test_wramcnt=0;g_test_wramcnt<4;++g_test_wramcnt) {
+            bus_fast_refresh();
+            for(NdsCpu cpu:{NDS_ARM9,NDS_ARM7}) {
+                g_nds_active=cpu;
+                ++g_checks;
+                if(!NdsNativeRam::map<uint32_t>(0x02008000u) ||
+                   NdsNativeRam::map<uint32_t>(0x04000130u) ||
+                   NdsNativeRam::map<uint32_t>(0x02008002u))
+                    fail("native RAM expected coverage/device/unaligned admission");
+                auto addresses=probe_addresses();
+                for(auto edge:{0x00000200u,0x02001200u})
+                    for(int d=-4;d<=4;++d)addresses.push_back(edge+d);
+                for(uint32_t address:addresses) {
+                    native_ram_case<uint8_t>(address);
+                    native_ram_case<uint16_t>(address);
+                    native_ram_case<uint32_t>(address);
+                }
+            }
+        }
+    }
+    g_test_wramcnt=0;bus_fast_refresh();
+    g_nds_active=NDS_ARM9;cfg_typical();
+    NdsCp15SaveState snapshot{};cp15_savestate_export(&snapshot);
+    cfg_tcm_moved();cp15_savestate_import(snapshot,nullptr);
+    native_ram_case<uint32_t>(0x027c0000u);
+    native_ram_case<uint32_t>(0x02400000u);
+    // Imported CP15 state is accepted verbatim. A subpage DTCM window can
+    // leave both page endpoints in MainRAM while changing its interior.
+    cp15_savestate_export(&snapshot);
+    snapshot.visible.dtcm_base=0x02008100u;snapshot.visible.dtcm_size=512;
+    cp15_savestate_import(snapshot,nullptr);g_nds_active=NDS_ARM9;
+    uint32_t lo=0,hi=0;
+    const auto* first=nds_busf_classify(0x02008000u,&lo);
+    const auto* last=nds_busf_classify(0x02008fffu,&hi);
+    ++g_checks;
+    if(first!=last||!first||hi!=lo+4095u||NdsNativeRam::page(0x02008000u)||
+       NdsNativeRam::map<uint32_t>(0x02008100u).window!=&g_busf_dtcm)
+        fail("shared page qualification missed an interior imported TCM window");
+    g_nds_active=NDS_ARM7;++g_checks;
+    if(!NdsNativeRam::page(0x02008000u))fail("ARM9 TCM incorrectly changed ARM7 page mapping");
+    cp15_reset();
+    check_physical_write_guards();
+    std::printf("native_ram_transactions: %lld checks, %d failure(s)\n",g_checks,g_failures);
+}
+void check_native_store_pages() {
+    struct Page {uint8_t* data;uint8_t* written;uint32_t* generation;};
+    NdsNativeStorePages<Page> tables[2];
+    std::unordered_set<const uint32_t*> protected_pages;
+    bus_init();cp15_reset();runtime_set_deep_trace(0);
+    for(unsigned config=0;config<4;++config) {
+        if(config==0)cfg_bare();
+        if(config==1)cfg_typical();
+        if(config==2)cfg_tcm_moved();
+        if(config==3){cfg_typical();cp15_itcm(0);cp15_dtcm(0x02001000u,0);}
+        for(g_test_wramcnt=0;g_test_wramcnt<4;++g_test_wramcnt) {
+            bus_fast_refresh();
+            for(NdsCpu cpu:{NDS_ARM9,NDS_ARM7}) {
+                g_nds_active=cpu;protected_pages.clear();
+                auto& table=tables[cpu];table.refresh(protected_pages);
+                ++g_checks;
+                if(!table.at(0x02008000u)||table.at(0x04000130u)||table.at(0x027e0010u))
+                    fail("store plan lost ordinary/device/observer admission");
+                for(uint32_t address:probe_addresses()) {
+                    if(auto* page=table.at(address)) {
+                        const auto view=NdsNativeRam::map<uint8_t>(address);
+                        ++g_checks;
+                        if(!view||page->data+(address&4095u)!=view.window->data+view.offset||
+                           page->written+(address&4095u)!=view.window->written+view.offset||
+                           page->generation!=view.generation())
+                            fail("store plan bytes/provenance/generation disagree with real mapping");
+                    }
+                }
+                const auto view=NdsNativeRam::map<uint32_t>(0x02008000u);
+                protected_pages.insert(view.generation());
+                table.protect(view.generation());
+                ++g_checks;
+                if(table.at(0x02008000u)||table.at(0x02408000u))
+                    fail("store plan failed to exclude a code page through its alias");
+                table.refresh(protected_pages);
+                ++g_checks;
+                if(table.at(0x02008000u)||table.at(0x02408000u))
+                    fail("store plan mapping refresh forgot protected physical identity");
+            }
+            // Both CPU plans retain their own map while sharing protection.
+            const auto* generation=NdsNativeRam::map<uint32_t>(0x02009000u).generation();
+            for(auto& table:tables)table.protect(generation);
+            ++g_checks;
+            if(tables[0].at(0x02009000u)||tables[1].at(0x02409000u))
+                fail("store plan protection did not reach both CPU aliases");
+        }
+    }
+    runtime_set_deep_trace(1);++g_checks;
+    if(runtime_native_store_window())fail("tracing allowed direct publication");
+    runtime_set_deep_trace(0);++g_checks;
+    if(!runtime_native_store_window())fail("unobserved store window unavailable");
+    cp15_reset();check_physical_write_guards();
+    std::printf("native_store_pages: %lld checks, %d failure(s)\n",g_checks,g_failures);
+}
+}
+int main(int argc,char** argv) {
+    if(argc==2 && std::strcmp(argv[1],"--native-store-pages-only")==0) {
+        check_native_store_pages();return g_failures?1:0;
+    }
+    if(argc==2 && std::strcmp(argv[1],"--native-ram-only")==0) {
+        check_native_ram_transactions();return g_failures?1:0;
+    }
+
     // No nds_io_reset(): io.cpp is stubbed in this link (see
     // savestate_test_stubs.cpp). The GBA-slot / Wi-Fi timings that read live
     // I/O registers therefore see the stubs' constant values -- which is
@@ -392,6 +651,8 @@ int main() {
     // And bus_init (which republishes the mirrors) must agree too.
     bus_init();
     check_tcm_mirrors("after bus_init");
+
+    check_physical_write_guards();
 
     std::printf("mem_timing_test: %lld checks, %d failure(s)\n",
                 g_checks, g_failures);

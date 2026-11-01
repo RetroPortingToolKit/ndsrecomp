@@ -8,6 +8,7 @@
 // always-on trace ring, the cooperative yield/halt, and lifecycle.
 
 #include "runtime_arm.h"
+#include "physical_write.h"
 #if defined(NDS_ARM9_DYNARMIC)
 #include "arm9_native.h"
 #endif
@@ -597,7 +598,9 @@ const CachedStaticLookup* lookup_static_cached_impl(const CpuCtx& c,
     }
 #endif
 #if defined(NDS_MKDS_HLE)
-    if (hit) {
+    // A complete service proof also owns its resumable guest PCs. They need
+    // not coincide with an older generated bank's split points.
+    if (hit || mkds_hle::is_entry(g_nds_active, pc, thumb)) {
         const auto replacement = mkds_hle::resolve(g_nds_active, pc, thumb);
         // A rejected operation must also observe its full range. Otherwise a
         // later repair on a page outside the native prefix leaves a cached
@@ -623,7 +626,7 @@ const CachedStaticLookup* lookup_static_cached_impl(const CpuCtx& c,
         }
     }
 #endif
-    return hit ? &slot : nullptr;
+    return slot.fn ? &slot : nullptr;
 }
 
 // Single dispatch chokepoint. Both consumers -- runtime_dispatch (native
@@ -714,6 +717,13 @@ bool guard_generation_changed(const StaticExecutionGuard& guard) {
         if (live_generation != guard.generation[i])
             return true;
     }
+    return false;
+}
+
+bool write_may_change_guard(const StaticExecutionGuard& guard,
+                            const uint32_t* first,uint32_t count) {
+    for(uint32_t page=0;page<guard.page_count;++page)
+        if(nds_physical_write_may_touch(first,count,guard.generation_ptr[page]))return true;
     return false;
 }
 
@@ -999,9 +1009,9 @@ extern "C" void runtime_request_yield_poll(void) { request_yield_poll(); }
 // instruction boundary, and the fast tick path does not look at it).
 extern "C" void runtime_clear_fast_limit(void) { g_nds_fast_limit = 0u; }
 
-extern "C" void runtime_note_code_write(void) {
+static void publish_code_write(const uint32_t* first,uint32_t count) {
 #if defined(NDS_ARM9_DYNARMIC)
-    nds_arm9_native_note_write();
+    nds_arm9_native_note_write_pages(first,count);
 #endif
     // beads-yjp.28: every guest RAM write funnels through here -- the slow bus
     // path (bus.cpp note_ram_write) and the generated-bank inline fast path
@@ -1010,12 +1020,29 @@ extern "C" void runtime_note_code_write(void) {
     // paying a generation lookup per interpreted instruction.
     ++g_coverage_write_epoch;
     if (g_static_guard && !g_static_guard->invalidated &&
+        write_may_change_guard(*g_static_guard,first,count) &&
         guard_generation_changed(*g_static_guard)) {
         if (!refresh_guard_after_generation_change(*g_static_guard)) {
             g_static_guard->invalidated = true;
             request_yield_poll();
         }
     }
+}
+
+extern "C" void runtime_note_code_write_pages(const uint32_t* first,uint32_t count) {
+    publish_code_write(first,count);
+}
+extern "C" void runtime_note_code_write(void) {
+    publish_code_write(nullptr,0);
+}
+
+extern "C" uint64_t* runtime_native_store_epoch(void) {
+    return &g_coverage_write_epoch;
+}
+extern "C" uint32_t runtime_native_store_window(void) {
+    // Nested callers are revalidated by StaticGuardScope on unwind. An active
+    // current guard and all traced execution keep immediate callback handling.
+    return !g_runtime_deep_trace && !g_static_guard;
 }
 
 extern "C" void runtime_note_live_write(uint32_t addr, uint32_t width,

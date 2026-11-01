@@ -408,7 +408,8 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
                                   unsigned short fallback_width,
                                   const NdsGpu2dDirectFrame* direct_frame,
                                   NdsComputePresentTicks* ticks,
-                                  unsigned antialiasing)
+                                  unsigned antialiasing,
+                                  const NdsComputePresentationFrame* owned)
 {
     if (!g_active || !g_visible || !g_present_program || !ticks)
         return false;
@@ -439,10 +440,13 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
     // did not emit surfaces for this frame (native width, engine B on top,
     // unsupported scene, or skybox repair).
     NdsGpu2dHdFrame hd{};
-    const unsigned int hires_texture = nds_gpu3d_compute_output_texture_hires();
+    const auto hires_texture=owned ? owned->hires_texture : nds_gpu3d_compute_output_texture_hires();
+    const auto native_texture=owned ? owned->native_texture : nds_gpu3d_compute_output_texture();
+    const auto scale=hires_texture ? (owned ? owned->scale : nds_gpu3d_internal_scale()) : 1u;
     const bool hd_active =
-        hires_texture != 0u && nds_gpu2d_hd_frame(&hd) &&
+        hires_texture != 0u && (owned ? (hd=owned->hd,owned->has_hd) : nds_gpu2d_hd_frame(&hd)) &&
         hd.width == width && hd.top_pixels && hd.below_pixels;
+    if (owned && hd_active) nds_gpu2d_note_owned_hd_presented();
 
     unsigned long long start = SDL_GetPerformanceCounter();
     if (ticks->diagnostic) ticks->setup = start - diagnostic_begin;
@@ -503,7 +507,7 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
         glBindTexture(GL_TEXTURE_2D, g_hd_top_texture[buffer]);
         glActiveTexture(GL_TEXTURE5);
         glBindTexture(GL_TEXTURE_2D, g_hd_below_texture[buffer]);
-        glUniform1ui(10, nds_gpu3d_internal_scale());
+        glUniform1ui(10, scale);
         glUniform1ui(12, hd.order_3d);
         glUniform1ui(2, hd.render_xpos);
         glUniform1ui(4, hd.bldcnt);
@@ -517,13 +521,10 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
         // Sample the high-resolution surface only when one actually exists;
         // the accessor returns zero at scale 1 or under the soft renderer, in
         // which case the presenter stays on the native integer path.
-        const unsigned int hires = nds_gpu3d_compute_output_texture_hires();
-        const unsigned scale =
-            hires ? nds_gpu3d_internal_scale() : 1u;
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, nds_gpu3d_compute_output_texture());
+        glBindTexture(GL_TEXTURE_2D, native_texture);
         glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, hires);
+        glBindTexture(GL_TEXTURE_2D, hires_texture);
         glUniform1ui(10, static_cast<GLuint>(scale));
         glUniform1ui(2, direct_frame->render_xpos);
         glUniform3ui(3,

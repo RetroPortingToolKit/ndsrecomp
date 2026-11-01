@@ -339,6 +339,31 @@ const uint ResultAttrStart = ResultDepthStart+ScreenWidth*ScreenHeight*2;
 
 const char* Common = R"(
 
+#ifdef NDS_CAPTURE_FIRST
+layout (location = 2) uniform uint CapturePhase;
+#if defined(Rasterise) || defined(DepthBlend)
+layout (location = 3) uniform bool CaptureHalo;
+
+// LowResFB samples the original scaled raster at multiples of RenderScale.
+// Edge marking also reads the four adjacent depth/attribute values. No other
+// raster/resolve operation has cross-pixel dependencies.
+bool NativeCaptureSample(ivec2 position)
+{
+    ivec2 rest = position % RenderScale;
+    return all(equal(rest, ivec2(0))) || (CaptureHalo &&
+        ((rest.x == 0 && (rest.y == 1 || rest.y == RenderScale - 1)) ||
+         (rest.y == 0 && (rest.x == 1 || rest.x == RenderScale - 1))));
+}
+
+bool SkipCapturePhase(ivec2 position)
+{
+    if (CapturePhase == 0U) return false;
+    bool native = NativeCaptureSample(position);
+    return CapturePhase == 1U ? !native : native;
+}
+#endif
+#endif
+
 #define TileSize 8
 const int CoarseTileCountX = 8;
 const int CoarseTileCountY = 4;
@@ -1072,6 +1097,9 @@ void main()
     uvec2 workDesc = WorkDescs[WorkDescsSortedStart + SortedWorkOffset[CurVariant] + gl_WorkGroupID.z];
     Polygon polygon = Polygons[bitfieldExtract(workDesc.y, 0, 11)];
     ivec2 position = ivec2(bitfieldExtract(workDesc.x, 0, 16), bitfieldExtract(workDesc.x, 16, 16)) + ivec2(gl_LocalInvocationID.xy);
+#ifdef NDS_CAPTURE_FIRST
+    if (SkipCapturePhase(position)) return;
+#endif
     int tileOffset = int(bitfieldExtract(workDesc.y, 11, 21)) * TileSize * TileSize + TileSize * int(gl_LocalInvocationID.y) + int(gl_LocalInvocationID.x);
 
     uint color = 0U;
@@ -1451,6 +1479,9 @@ void ProcessCoarseMask(int linearTile, uint coarseMask, uint coarseOffset,
 void main()
 {
     int linearTile = int(gl_WorkGroupID.x + (gl_WorkGroupID.y * TilesPerLine));
+#ifdef NDS_CAPTURE_FIRST
+    if (SkipCapturePhase(ivec2(gl_GlobalInvocationID.xy))) return;
+#endif
 
     uint coarseMaskLo = BinningMaskAndOffset[BinningCoarseMaskStart + linearTile*CoarseBinStride + 0];
     uint coarseMaskHi = BinningMaskAndOffset[BinningCoarseMaskStart + linearTile*CoarseBinStride + 1];
@@ -1529,6 +1560,13 @@ uint BlendFog(uint color, uint depth)
 void main()
 {
     int srcX = int(gl_GlobalInvocationID.x);
+#ifdef NDS_CAPTURE_FIRST
+    // Phase one only publishes the exact native samples. Phase two resolves
+    // the complete enhanced display after all remaining neighbours exist.
+    if (CapturePhase == 1U &&
+        any(notEqual(ivec2(gl_GlobalInvocationID.xy) % RenderScale, ivec2(0))))
+        return;
+#endif
     int resultOffset = int(srcX) + int(gl_GlobalInvocationID.y) * ScreenWidth;
 
     uvec2 color = uvec2(ResultValue[resultOffset+ResultColorStart], ResultValue[resultOffset+FramebufferStride+ResultColorStart]);
@@ -1645,7 +1683,11 @@ void main()
     const int scale = RenderScale;
     ivec2 lowresCoordinate = ivec2(gl_GlobalInvocationID.xy) / scale;
     ivec2 lowresCoordinateRest = ivec2(gl_GlobalInvocationID.xy) % scale;
-    if (lowresCoordinateRest == ivec2(0, 0))
+    if (lowresCoordinateRest == ivec2(0, 0)
+#ifdef NDS_CAPTURE_FIRST
+        && CapturePhase != 2U // the immutable native pack already owns these
+#endif
+        )
     {
         uvec4 color8;
         color8.x = bitfieldExtract(color.x, 0, 8);

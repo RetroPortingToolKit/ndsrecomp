@@ -197,7 +197,8 @@ void note_ram_write(uint8_t* ptr, uint32_t width) {
         uint32_t& generation = (*generations)[page];
         if (++generation == 0u) generation = 1u;
     }
-    runtime_note_code_write();
+    runtime_note_code_write_pages(generations->data() + first,
+        std::min<uint32_t>(last + 1u, generations->size()) - first);
     uint32_t written_offset = 0u;
     if (std::vector<uint8_t>* written =
             written_for_ptr(ptr, &written_offset)) {

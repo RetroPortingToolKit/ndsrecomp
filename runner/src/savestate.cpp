@@ -10,6 +10,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <memory>
+#include <utility>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -1345,11 +1348,10 @@ bool transaction_allowed(std::string* error) {
     return true;
 }
 
-}  // namespace
-
-bool nds_savestate_save_core(const std::string& path,
-                             const NdsSavestateIdentity& identity,
-                             std::string* error) {
+// Only the scheduler-owner capture touches emulation state. The worker below
+// owns every vector/field it encodes and never calls an exporter or validator.
+bool capture_core(const NdsSavestateIdentity& identity, CoreState* core,
+                  std::string* error) {
     TransactionGuard transaction;
     if (!transaction.locked) {
         set_error(error, "savestate requires the scheduler owner between rounds");
@@ -1365,10 +1367,14 @@ bool nds_savestate_save_core(const std::string& path,
         return false;
     }
 
-    CoreState core{};
-    if (!export_core_state(&core, error)) return false;
-    if (!validate_core_state(core, error)) return false;
+    if (!export_core_state(core, error)) return false;
+    if (!validate_core_state(*core, error)) return false;
 
+    return true;
+}
+
+bool publish_core(const std::string& path, const NdsSavestateIdentity& identity,
+                  const CoreState& core, std::string* error) {
     std::vector<Section> sections;
     if (!append_section(sections, kSectionIden, encode_identity(identity), error) ||
         !append_section(sections, kSectionSchd,
@@ -1393,9 +1399,111 @@ bool nds_savestate_save_core(const std::string& path,
     return atomic_write_file(path, build_file(sections), error);
 }
 
+// One accepted save, including its unconsumed completion. No request is
+// silently replaced. The worker never takes this mutex or accesses live state.
+std::mutex g_async_save_mutex;
+std::future<NdsSavestateAsyncSaveResult> g_async_save;
+bool g_async_capture_active = false;
+
+}  // namespace
+
+void nds_savestate_wait_for_pending_save() {
+    std::lock_guard<std::mutex> lock(g_async_save_mutex);
+    if (g_async_save.valid()) g_async_save.wait();
+}
+
+bool nds_savestate_save_core(const std::string& path,
+                             const NdsSavestateIdentity& identity,
+                             std::string* error) {
+    // Preserve accepted-save ordering for synchronous/debug callers as well as
+    // frontend loads. Waiting does not consume the frontend completion/error.
+    nds_savestate_wait_for_pending_save();
+    CoreState core{};
+    if (!capture_core(identity, &core, error)) return false;
+    return publish_core(path, identity, core, error);
+}
+
+bool nds_savestate_save_core_async(const std::string& path,
+                                   const NdsSavestateIdentity& identity,
+                                   std::string* error) {
+    bool reserved = false;
+    try {
+        {
+            std::lock_guard<std::mutex> lock(g_async_save_mutex);
+            if (g_async_save.valid() || g_async_capture_active) {
+                set_error(error, "a save is already pending; try again after it finishes");
+                return false;
+            }
+            g_async_capture_active = reserved = true;
+        }
+        // Export/eligibility hooks run only on the owner, outside the worker
+        // mutex. A nested sync operation can then decline through the existing
+        // TransactionGuard instead of deadlocking in a user eligibility hook.
+        auto core = std::make_unique<CoreState>();
+        if (!capture_core(identity, core.get(), error)) {
+            std::lock_guard<std::mutex> lock(g_async_save_mutex);
+            g_async_capture_active = false;
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_async_save_mutex);
+        g_async_save = std::async(std::launch::async,
+            [path, identity, core = std::move(core)] {
+                NdsSavestateAsyncSaveResult result{};
+                try {
+                    const auto parent = std::filesystem::path(path).parent_path();
+                    std::error_code ec;
+                    if (!parent.empty()) std::filesystem::create_directories(parent, ec);
+                    if (ec) {
+                        result.error = "could not create savestate directory: " + ec.message();
+                        return result;
+                    }
+                    result.success = publish_core(path, identity, *core, &result.error);
+                    if (result.success) {
+                        result.size_bytes = std::filesystem::file_size(path, ec);
+                        if (ec) result.size_bytes = 0;
+                        const auto modified = std::filesystem::last_write_time(path, ec);
+                        if (!ec) {
+                            const auto system_time = std::chrono::time_point_cast<
+                                std::chrono::system_clock::duration>(modified -
+                                std::filesystem::file_time_type::clock::now() +
+                                std::chrono::system_clock::now());
+                            result.modified_unix_seconds = std::chrono::duration_cast<
+                                std::chrono::seconds>(system_time.time_since_epoch()).count();
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    result.error = e.what();
+                } catch (...) {
+                    result.error = "unknown savestate publication failure";
+                }
+                return result;
+            });
+        g_async_capture_active = false;
+        return true;
+    } catch (const std::exception& e) {
+        if (reserved) {
+            std::lock_guard<std::mutex> lock(g_async_save_mutex);
+            g_async_capture_active = false;
+        }
+        set_error(error, e.what());
+        return false;
+    }
+}
+
+bool nds_savestate_poll_save_core(NdsSavestateAsyncSaveResult* result) {
+    if (!result) return false;
+    std::lock_guard<std::mutex> lock(g_async_save_mutex);
+    if (!g_async_save.valid() ||
+        g_async_save.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return false;
+    *result = g_async_save.get();
+    return true;
+}
+
 bool nds_savestate_load_core(const std::string& path,
                              const NdsSavestateIdentity& expected_identity,
                              std::string* error) {
+    nds_savestate_wait_for_pending_save();
     TransactionGuard transaction;
     if (!transaction.locked) {
         set_error(error, "savestate requires the scheduler owner between rounds");

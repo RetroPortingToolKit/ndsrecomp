@@ -58,6 +58,8 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     unsigned ram_reads=0,ram_writes=0;
     bool isa_guard=false;
     bool watch_code=false,code_alias=false,watch_io_dma=false,watch_immediate=false;
+    bool reject_reentrant_preparation=false;
+    bool publish_dma_pages=false;
     std::array<uint32_t,16> generations{};
     NdsArm9GenerationWatch watches;
     uint32_t device_value=0;
@@ -103,16 +105,16 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
         return permitted(a,1,false)?ram.read8(a):0;
     }
     uint16_t MemoryRead16(uint32_t a) override {
+        if(NdsArm9ReadKind(jit->ExtRegs()[0])==NdsArm9ReadKind::HalfSigned&&(a&1u)) {
+            const uint32_t value=MemoryRead8(a);
+            return uint16_t((value^0x80u)-0x80u);
+        }
         ++ram_reads;
         if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"half callback PC");++device_reads;++device_read16;jit->HaltExecution();return uint16_t(device_value);}
         return permitted(a,2,false)?ram.read16(a&~1u):0;
     }
     uint32_t MemoryRead32(uint32_t a) override {
         ++ram_reads;
-        const auto kind=NdsArm9ReadKind(jit->ExtRegs()[0]);
-        if(kind==NdsArm9ReadKind::HalfUnsigned||kind==NdsArm9ReadKind::HalfSigned)
-            return nds_arm9_read_halfword(a,kind==NdsArm9ReadKind::HalfSigned,
-                [this](uint32_t x){return MemoryRead8(x);},[this](uint32_t x){return MemoryRead16(x);});
         if(complete_io&&a>=0x04000000u){require(jit->Regs()[15]==code_pc,"read callback PC survives optimization");++device_reads;jit->HaltExecution();return device_value;}
         return permitted(a,4,false)?std::rotr(ram.read32(a&~3u),int((a&3)*8)):0;
     }
@@ -120,13 +122,18 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
     void MemoryWrite8(uint32_t a,uint8_t v) override {if(permitted(a,1,true))ram.write8(a,v);}
     void MemoryWrite16(uint32_t a,uint16_t v) override {if(permitted(a,2,true))ram.write16(a&~1u,v);}
     void MemoryWrite32(uint32_t a,uint32_t v) override {
+        if(reject_reentrant_preparation)
+            require(!jit->PrepareBlock(code_pc),"preparation refuses an executing core");
         ++ram_writes;
         if(complete_io&&a>=0x04000000u){
             require(jit->Regs()[15]==code_pc,"write callback PC survives optimization");
             ++device_writes;device_value=v;jit->HaltExecution();
             if(watch_io_dma) {
                 require(nds_arm9_can_defer_generation_check(true,true),"device halt permits coalescing");
-                ram.write32(code_pc+4,0xe3a00007u);++generations[(code_pc+4)>>12];watches.defer();
+                ram.write32(code_pc+4,0xe3a00007u);++generations[(code_pc+4)>>12];
+                if(publish_dma_pages) {
+                    if(watches.intersects(&generations[(code_pc+4)>>12],1)) {jit->ClearCache();watches.clear();}
+                } else watches.defer();
             }
             return;
         }
@@ -134,7 +141,7 @@ struct Environment final : Dynarmic::A32::UserCallbacks {
             ram.write32(a&~3u,v);
             if(watch_code&&watch_immediate) {
                 ++generations[a>>12];
-                if(watches.changed()){jit->ClearCache();watches.clear();}
+                if(watches.intersects(&generations[a>>12],1)){jit->ClearCache();watches.clear();}
             }
         }
     }
@@ -168,6 +175,48 @@ int main() {
     conf.code_cache_size=16*1024*1024;conf.check_halt_on_memory_access=true;
     conf.optimizations=Dynarmic::all_safe_optimizations;
     Dynarmic::A32::Jit jit(conf);env.jit=&jit;
+    {
+        Environment prepared;
+        auto config=conf;config.callbacks=&prepared;
+        Dynarmic::A32::Jit ready(config);prepared.jit=&ready;
+        const auto location=[](const armv4t::CPUState& s) {
+            return Dynarmic::A32::LocationDescriptor{s.R[15],Dynarmic::A32::PSR{flags(s)},Dynarmic::A32::FPSCR{0}}.UniqueHash();
+        };
+        const auto prepare=[&](const armv4t::CPUState& state) {
+            set_state(ready,state);prepared.remaining=2;
+            const auto regs=ready.Regs();const auto ext=ready.ExtRegs();
+            const auto cpsr=ready.Cpsr(),fpscr=ready.Fpscr();
+            const auto ram=prepared.ram.data;
+            const auto ticks=prepared.ticks;
+            const auto reads=prepared.ram_reads,writes=prepared.ram_writes;
+            require(ready.PrepareBlock(location(state)),"prepare qualified code");
+            require(ready.Regs()==regs&&ready.ExtRegs()==ext&&ready.Cpsr()==cpsr&&ready.Fpscr()==fpscr,
+                    "preparation leaves all CPU registers unchanged");
+            require(prepared.remaining==2&&prepared.ticks==ticks&&prepared.ram.data==ram&&
+                    prepared.ram_reads==reads&&prepared.ram_writes==writes,
+                    "preparation does not execute, charge time or access data/device memory");
+        };
+        armv4t::CPUState initial{};initial.R[15]=code_pc;initial.cpsr.mode=0x1f;
+        prepared.ram.write32(code_pc,0xe3a00007u); // MOV r0,#7
+        prepared.ram.write32(code_pc+4,0xeafffffeu);
+        prepare(initial);ready.Run();require(ready.Regs()[0]==7,"execute prepared ARM block");
+        prepared.ram.write32(code_pc,0xe3a00009u);
+        const auto old_cache_generation=ready.CodeCacheGeneration();
+        ready.InvalidateCacheRange(code_pc,4);
+        prepare(initial);
+        require(ready.CodeCacheGeneration()!=old_cache_generation,"preparation observes code-cache invalidation epoch");
+        ready.Run();require(ready.Regs()[0]==9,"prepare processes queued code invalidation");
+        prepared.ram.write16(code_pc,0x2005u); // Thumb MOVS r0,#5
+        prepared.ram.write16(code_pc+2,0xe7feu);
+        initial.cpsr.t=true;ready.InvalidateCacheRange(code_pc,8);
+        prepare(initial);ready.Run();require(ready.Regs()[0]==5,"prepare and execute Thumb descriptor");
+        prepared.ram.write32(code_pc,0xe5810000u); // STR r0,[r1]
+        prepared.ram.write32(code_pc+4,0xeafffffeu);
+        initial.cpsr.t=false;initial.R[0]=0x12345678;initial.R[1]=0x4000;
+        prepared.reject_reentrant_preparation=true;ready.InvalidateCacheRange(code_pc,8);
+        prepare(initial);ready.Run();require(prepared.ram.read32(0x4000)==0x12345678,"prepared memory op executes exactly on Run");
+        std::puts("PREPARED_CODE passed: no state/time/data effects, ARM/Thumb, queued invalidation and executing-core refusal");
+    }
     std::mt19937 random(0x4e445339);
     std::vector<uint32_t> arm;
     for(unsigned op=0;op<16;++op)for(unsigned sh=0;sh<4;++sh) {
@@ -403,6 +452,17 @@ int main() {
     require(jit.Regs()[0]==7,"resume observes DMA-modified instruction");
     env.ram.write32(code_pc+4,0xe3a00001u);jit.ClearCache();env.watches.clear();
     watched.R[15]=code_pc+4;set_state(jit,watched);env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==1,"physical DMA fixture caches the original target");
+    watched.R[15]=code_pc;watched.R[1]=0x04000000;watched.R[2]=37;
+    env.complete_io=true;env.watch_io_dma=true;env.publish_dma_pages=true;
+    set_state(jit,watched);env.remaining=100;jit.Run();
+    require(jit.Regs()[15]==code_pc+4&&!env.watches.take_pending()&&env.watches.size()==0,
+            "physical DMA publication immediately invalidates cached code at completed device boundary");
+    env.complete_io=false;env.watch_io_dma=false;env.publish_dma_pages=false;
+    jit.ClearHalt();env.remaining=16;jit.Run();
+    require(jit.Regs()[0]==7,"physical DMA target executes updated instruction");
+    env.ram.write32(code_pc+4,0xe3a00001u);jit.ClearCache();env.watches.clear();
+    watched.R[15]=code_pc+4;set_state(jit,watched);env.remaining=16;jit.Run();
     watched.R[15]=code_pc;watched.R[1]=code_pc+4;watched.R[2]=0xe3a00009u;
     env.watch_immediate=true;set_state(jit,watched);env.remaining=100;jit.Run();
     require(jit.Regs()[15]==code_pc+4,"self-modifying native store exits at completed instruction");
@@ -420,29 +480,23 @@ int main() {
         std::array<Cache*,2> caches={&a,&b};
         uint32_t physical_code=1,physical_data=1;
         a.watches.add(&physical_code);b.watches.add(&physical_code);
-        const uint32_t* current=nullptr;
-        require(!nds_arm9_notify_precise_write(current,caches),"addressless writes retain ordinary validation");
-        {
-            NdsArm9PreciseStore data(current,&physical_data);
-            ++physical_data;
-            require(nds_arm9_notify_precise_write(current,caches),"precise data store handled");
-            require(!a.clears&&!b.clears&&a.watches.size()==1&&b.watches.size()==1,"unrelated data leaves both code caches intact");
-            {
-                NdsArm9PreciseStore device(current,nullptr);
-                require(!nds_arm9_notify_precise_write(current,caches),"nested I/O/DMA keeps addressless notification");
-            }
-            require(current==&physical_data,"nested device scope restores exact RAM context");
-        }
-        require(!current,"RAM proof cannot leak beyond store");
-        {
-            NdsArm9PreciseStore code(current,&physical_code);
-            ++physical_code;
-            require(nds_arm9_notify_precise_write(current,caches,0),"peer notification skips writing CPU");
-            require(a.clears==0&&b.clears==1&&a.watches.contains(&physical_code),"writer keeps its existing immediate post-store check");
-            require(nds_arm9_notify_precise_write(current,caches),"precise code write handled");
-        }
+        require(!nds_arm9_notify_write_pages(nullptr,0,caches),"addressless writes retain ordinary validation");
+        require(!nds_arm9_notify_write_pages(&physical_data,0,caches),"empty publication remains conservative");
+        ++physical_data;
+        require(nds_arm9_notify_write_pages(&physical_data,1,caches),"physical data store handled");
+        require(!a.clears&&!b.clears&&a.watches.size()==1&&b.watches.size()==1,"unrelated data leaves both code caches intact");
+        ++physical_code;
+        require(nds_arm9_notify_write_pages(&physical_code,1,caches,0),"peer notification skips writing CPU");
+        require(a.clears==0&&b.clears==1&&a.watches.contains(&physical_code),"writer keeps its existing immediate post-store check");
+        require(nds_arm9_notify_write_pages(&physical_code,1,caches),"AOT/BIOS/DMA code write reaches both caches without a native store scope");
         require(a.clears==1&&b.clears==1&&a.precise_code_hits==1&&b.precise_code_hits==1,"physical code alias invalidates writer and peer");
         require(!a.watches.take_pending()&&!b.watches.take_pending(),"whole-cache clear discards obsolete pending work");
+        std::array<uint32_t,8> bulk{};
+        a.watches.add(&bulk[2]);a.watches.add(&bulk[6]);b.watches.add(&bulk[3]);
+        require(nds_arm9_notify_write_pages(&bulk[0],2,caches)&&a.watches.size()==2&&b.watches.size()==1,
+                "adjacent data-only bulk range preserves both caches");
+        require(nds_arm9_notify_write_pages(&bulk[1],3,caches)&&!a.watches.size()&&!b.watches.size(),
+                "bulk publication includes the last touched physical page in both caches");
 #if defined(NDS_NATIVE_PRECISE_WRITES)
         std::array<uint32_t,1025> generations{};
         a.watches.add(&generations[0]);a.watches.add(&generations[512]);
@@ -450,10 +504,11 @@ int main() {
         require(!a.watches.contains(&generations[1024]),"filter collision requires exact pointer membership");
         a.clear();require(!a.watches.contains(&generations[0]),"cache clear resets physical filter");
 #endif
-        std::puts("PRECISE_NATIVE_STORES passed: writer/peer aliases, unrelated data, addressless fallback and nested DMA scope");
+        std::puts("PHYSICAL_PUBLICATION passed: native writer/peer, AOT/BIOS/DMA, bulk ranges, aliases and addressless fallback");
     }
     // Read-only page-table lowering exercises the actual patched x64 emitter,
-    // not a mock memory wrapper. Stores and special ARM9 reads retain callbacks.
+    // not a mock memory wrapper. Stores and alignment-sensitive reads retain
+    // callbacks; mapped width-correct reads share the same physical page map.
     {
         Environment direct;direct.bounded_memory=true;
         using Pages=std::array<uint8_t*,Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
@@ -467,7 +522,7 @@ int main() {
         config.page_table_read_filter=[&](uint64_t d) {
             const Dynarmic::A32::LocationDescriptor loc{Dynarmic::IR::LocationDescriptor{d}};
             const auto i=armv4t::ArmDecoder::decode(direct.ram.read32(loc.PC()),loc.PC());
-            return i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM;
+            return i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM||i.op==armv4t::IrOp::LDRH||i.op==armv4t::IrOp::LDRSH||i.op==armv4t::IrOp::LDRSB;
         };
         Dynarmic::A32::Jit fast(config);direct.jit=&fast;
         direct.ram.write32(0x4000,0x89abcdefu);direct.ram.write32(code_pc+4,0xeafffffeu);
@@ -489,8 +544,45 @@ int main() {
         (*pages)[4]=direct.ram.data.data()+0x4000;
         run(0xe5812000u,0x4000);require(direct.ram_writes==1&&direct.ram.read32(0x4000)==0x11223344,"read-only table never bypasses write callback");
         direct.ram.write32(0x4000,0x89abcdefu);
-        run(0xe1d120b0u,0x4001);require(fast.Regs()[2]==0xef0000cdu&&direct.ram_reads,"odd unsigned halfword stays on special callback");
+        run(0xe1d120b0u,0x4001);require(fast.Regs()[2]==0xef0000cdu&&!direct.ram_reads,"odd unsigned halfword rotates a direct aligned read");
         run(0xe1d120f0u,0x4001);require(fast.Regs()[2]==0xffffffcdu&&direct.ram_reads,"odd signed halfword keeps byte semantics");
+        run(0xe1d120b0u,0x4000);require(fast.Regs()[2]==0xcdefu&&!direct.ram_reads,"aligned unsigned half direct");
+        run(0xe1d120f0u,0x4000);require(fast.Regs()[2]==0xffffcdefu&&!direct.ram_reads,"aligned signed half direct");
+        run(0xe1d120d0u,0x4001);require(fast.Regs()[2]==0xffffffcdu&&!direct.ram_reads,"signed byte direct");
+        run(0xe1d120b0u,0x2000);require(fast.Regs()[2]==0xcdefu&&!direct.ram_reads,"half physical alias");
+        unsigned half_direct_cases=0;
+        for(bool thumb:{false,true}) {
+            const unsigned count=thumb?4:unsigned(std::size(half_arm));
+            for(unsigned instruction=0;instruction<count;++instruction)for(unsigned sample=0;sample<32;++sample) {
+                const uint32_t word=thumb?uint32_t(std::array<uint16_t,4>{0x880au,0x5a0au,0x5e0au,0x560au}[instruction]):half_arm[instruction];
+                armv4t::CPUState original{};
+                for(auto& r:original.R)r=random();
+                original.R[0]=0;original.R[1]=0x4000+(sample&3);original.R[3]=0;original.R[15]=code_pc;
+                original.cpsr.mode=0x1f;original.cpsr.t=thumb;original.thumb=thumb;
+                original.cpsr.n=sample&1;original.cpsr.z=(sample>>1)&1;original.cpsr.c=(sample>>2)&1;original.cpsr.v=(sample>>3)&1;
+                for(unsigned at=0x3ff0;at<0x4010;++at)direct.ram.data[at]=uint8_t(random());
+                direct.ram.write32(code_pc,word);direct.ram.write32(code_pc+4,0xeafffffeu);
+                Ram reference=direct.ram;auto expected=original;
+                const auto decoded=thumb?armv4t::ThumbDecoder::decode(uint16_t(word),code_pc):armv4t::ArmDecoder::decode(word,code_pc);
+                require(armv4t::Interpreter::step(expected,reference,decoded)==armv4t::Interpreter::Result::Normal,"direct halfword reference");
+                fast.InvalidateCacheRange(code_pc,8);set_state(fast,original);direct.remaining=1;fast.Run();
+                if(!equal(expected,fast)||reference.data!=direct.ram.data) {
+                    std::fprintf(stderr,"Direct halfword mismatch %08x T=%u sample=%u expected=%08x actual=%08x\n",word,unsigned(thumb),sample,expected.R[2],fast.Regs()[2]);return 1;
+                }
+                ++half_direct_cases;
+            }
+        }
+        direct.complete_io=true;direct.device_value=0x89ab;
+        for(bool sign:{false,true})for(bool odd:{false,true}) {
+            direct.device_reads=direct.device_read8=direct.device_read16=0;
+            run(sign?0xe1d120f0u:0xe1d120b0u,0x04000000u+unsigned(odd));
+            const uint32_t expected=sign?(odd?0xffffff89u:0xffff89abu):(odd?0xab000089u:0x89abu);
+            require(fast.Regs()[2]==expected&&fast.Regs()[15]==code_pc+4,"mapped narrow MMIO value and PC");
+            require(direct.device_reads==1&&direct.device_read8==unsigned(sign&&odd)&&direct.device_read16==unsigned(!(sign&&odd)),"mapped narrow MMIO once/width");
+        }
+        direct.complete_io=false;
+        std::printf("NARROW_DIRECT_DIFFERENTIAL passed: %u ARM/Thumb cases plus direct/alias/MMIO checks\n",half_direct_cases);
+        direct.ram.write32(0x4000,0x89abcdefu);
         (*pages)[4]=nullptr;
         run(0xe5912000u,0x4000);require(fast.Regs()[2]==0x89abcdefu&&direct.ram_reads==1,"unmapped table entry falls back");
         direct.longer_blocks=true;

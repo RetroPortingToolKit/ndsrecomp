@@ -23,6 +23,7 @@ bool g_capture_reference_override = false;
 std::array<uint8_t, 0x20000> g_capture_bank{};
 bool g_lcdc_mapped = false;
 uint16_t g_3d_output_width = 256;
+uint64_t g_wide_line_reads = 0;
 uint16_t g_3d_render_xpos = 0;
 uint32_t g_3d_render_polygon_count = 0;
 bool g_3d_projection_has_perspective = false;
@@ -713,6 +714,35 @@ bool test_native_aspect_hd_keeps_native_fallback() {
     if (!require(native.width == 256u) || !require(native.hd_valid)) return false;
     const uint32_t* fb = nds_gpu2d_framebuffer(0);
     if (!require(std::equal(native.surface.begin(), native.surface.end(), fb))) return false;
+    // Rebuild the actual HD descriptors with no snapshot to borrow. The old
+    // path read 192 native 3D lines and overwrote this discarded RGB surface;
+    // neither is needed because success uses HD metadata and failure uses fb.
+    constexpr uint32_t poison = 0xD3A596C7u;
+    std::fill(g_adaptive_frame[0].begin(), g_adaptive_frame[0].end(), poison);
+    g_wide_3d_width[g_front] = 0;
+    g_wide_line_reads = 0;
+    nds_gpu2d_set_hd_emit(true);
+    uint16_t prepared_width = 0;
+    const uint32_t* prepared = nds_gpu2d_adaptive_framebuffer(0, &prepared_width);
+    NdsGpu2dHdFrame hd{};
+    if (!require(prepared == fb) || !require(prepared_width == 256u) ||
+        !require(nds_gpu2d_hd_frame_peek(&hd)) ||
+        !require(g_wide_line_reads == 0u) ||
+        !require(std::all_of(g_adaptive_frame[0].begin(),
+                             g_adaptive_frame[0].begin() + 256u * 192u,
+                             [](uint32_t word) { return word == poison; })) ||
+        !require(std::equal(native.hd_top.begin(), native.hd_top.end(), hd.top_pixels)) ||
+        !require(std::equal(native.hd_below.begin(), native.hd_below.end(), hd.below_pixels)) ||
+        !require(std::equal(native.surface.begin(), native.surface.end(), fb))) {
+        std::fprintf(stderr,
+            "[native HD metadata-only] discarded completion contract failed: "
+            "width=%u extra_3d_reads=%llu\n",
+            prepared_width, (unsigned long long)g_wide_line_reads);
+        return false;
+    }
+    std::puts("[native HD metadata-only] same survivor layers and canonical "
+              "fallback; no discarded RGB writes or extra 3D line reads");
+    nds_gpu2d_set_hd_emit(false);
     // With HD disabled, the ordinary native-aspect call remains a no-op.
     uint16_t width = 0;
     return require(nds_gpu2d_adaptive_framebuffer(0, &width) == fb) &&
@@ -808,7 +838,10 @@ const uint32_t* nds_gpu3d_capture_line(int) {
     return g_capture_reference_override ? g_capture_reference_line.data() : g_3d_line.data();
 }
 uint16_t nds_gpu3d_output_width() { return g_3d_output_width; }
-const uint32_t* nds_gpu3d_wide_line(int) { return g_3d_line.data(); }
+const uint32_t* nds_gpu3d_wide_line(int) {
+    ++g_wide_line_reads;
+    return g_3d_line.data();
+}
 const uint32_t* nds_gpu3d_wide_attr_line(int) { return g_3d_line.data(); }
 uint16_t nds_gpu3d_render_xpos() { return g_3d_render_xpos; }
 uint32_t nds_gpu3d_render_polygon_count() { return g_3d_render_polygon_count; }

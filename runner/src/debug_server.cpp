@@ -41,6 +41,12 @@
 #endif
 #if defined(NDS_MKDS_HLE)
 #include "hle_mkds.h"
+#if defined(NDS_MKDS_PIO_HLE)
+#include "hle_mkds_card_pio.h"
+#endif
+#if defined(NDS_MKDS_STREAM_HLE)
+#include "hle_mkds_stream.h"
+#endif
 #endif
 #include "host_profile.h"
 #include "dispatch_stats.h"
@@ -559,13 +565,16 @@ std::string handle(const std::string& line) {
         std::snprintf(buf, sizeof(buf),
             "{\"tier3_entries9\":%llu,\"tier3_entries7\":%llu,"
             "\"tier3_insns9\":%llu,\"tier3_insns7\":%llu,"
-            "\"clean_ram_rejects9\":%llu,\"clean_ram_rejects7\":%llu}",
+            "\"clean_ram_rejects9\":%llu,\"clean_ram_rejects7\":%llu,"
+            "\"canonical_entries9\":%llu,\"canonical_entries7\":%llu}",
             (unsigned long long)s.entries[0],
             (unsigned long long)s.entries[1],
             (unsigned long long)s.instructions[0],
             (unsigned long long)s.instructions[1],
             (unsigned long long)s.clean_ram_rejects[0],
-            (unsigned long long)s.clean_ram_rejects[1]);
+            (unsigned long long)s.clean_ram_rejects[1],
+            (unsigned long long)s.canonical_entries[0],
+            (unsigned long long)s.canonical_entries[1]);
         return buf;
     }
     if (cmd == "force_tier3") {
@@ -1171,6 +1180,15 @@ std::string handle(const std::string& line) {
                ",\"real_presents\":" + std::to_string(s.real_presents) +
                ",\"synthetic_presents\":" +
                std::to_string(s.synthetic_presents) +
+               ",\"cpu_render_handoff\":" + std::to_string(s.cpu_render_handoff) +
+               ",\"cpu_frames_produced\":" + std::to_string(s.cpu_frames_produced) +
+               ",\"presented_job\":" + std::to_string(s.presented_job) +
+               ",\"presented_system_timestamp\":" + std::to_string(s.presented_system_timestamp) +
+               ",\"cpu_worker_cycles\":" + std::to_string(s.cpu_worker_cycles) +
+               ",\"cpu_main_requests\":" + std::to_string(s.cpu_main_requests) +
+               ",\"cpu_overlap_ticks\":" + std::to_string(s.cpu_overlap_ticks) +
+               ",\"cpu_overlap_frames\":" + std::to_string(s.cpu_overlap_frames) +
+               ",\"cpu_prefix_cycles\":" + std::to_string(s.cpu_prefix_cycles) +
                ",\"perf_governor_stage\":" +
                std::to_string(s.perf_governor_stage) +
                ",\"perf_governor_over_frames\":" +
@@ -1465,7 +1483,19 @@ std::string handle(const std::string& line) {
             ",\"scale_add\":" + std::to_string(c.scale_add) +
             ",\"cross_product\":" + std::to_string(c.cross_product) +
             ",\"transform_translate\":" + std::to_string(c.transform_translate) +
-            ",\"matrix_concat\":" + std::to_string(c.matrix_concat) + "}";
+            ",\"matrix_concat\":" + std::to_string(c.matrix_concat) +
+#if defined(NDS_MKDS_STREAM_HLE)
+            ",\"stream_calls\":" + std::to_string(mkds_stream::statistics().calls) +
+            ",\"stream_batches\":" + std::to_string(mkds_stream::statistics().batches) +
+            ",\"stream_bytes\":" + std::to_string(mkds_stream::statistics().bytes) +
+            ",\"stream_declines\":" + std::to_string(mkds_stream::statistics().declines) +
+#endif
+#if defined(NDS_MKDS_PIO_HLE)
+            ",\"pio_calls\":" + std::to_string(mkds_card_pio::statistics().calls) +
+            ",\"pio_words\":" + std::to_string(mkds_card_pio::statistics().words) +
+            ",\"pio_declines\":" + std::to_string(mkds_card_pio::statistics().declines) +
+#endif
+            "}";
 #else
         return "{\"implementation\":\"LLE\"}";
 #endif
@@ -1527,6 +1557,11 @@ std::string handle(const std::string& line) {
     // is it costing? Asked before trusting a table, and the answer carries the
     // observer's own measured overhead.
     if (cmd == "hostprof_status") return nds_hostprof_status_json();
+    if (cmd == "arm9_native_compilations") return nds_arm9_native_compilation_json(json_bool(line,"reset",false));
+    if (cmd == "arm9_native_prepare") {
+        nds_arm9_native_prepare_idle(static_cast<uint32_t>(std::min<uint64_t>(json_u64(line,"budget_us",0),500000)));
+        return nds_arm9_native_preparation_json();
+    }
     if (cmd == "arm9_native" || cmd == "arm9_native_census") {
 #if defined(NDS_ARM9_DYNARMIC)
         if(cmd=="arm9_native_census")
@@ -1739,6 +1774,7 @@ std::string handle(const std::string& line) {
         return std::string("{\"lean_diagnostics\":") + (lean ? "true" : "false") +
             ",\"periodic_deadline_cache\":" + (periodic ? "true" : "false") +
             ",\"capture_view_reuse\":" + (capture_reuse ? "true" : "false") +
+            ",\"tier3_canonical_state\":" + (tier3_canonical_state_enabled() ? "true" : "false") +
             ",\"instruction_hook_armed\":" + std::to_string(g_insn_hook_armed) +
             ",\"deep_trace\":" + std::to_string(g_runtime_deep_trace) +
             ",\"pc_sampling\":" + (nds_pc_detail::g_enabled ? "true" : "false") +

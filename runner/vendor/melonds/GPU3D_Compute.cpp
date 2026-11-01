@@ -54,6 +54,9 @@ bool ComputeRenderer::CompileShader(GLuint& shader, const std::string& source, c
     shaderSource += "\n#define MaxWorkTiles ";
     shaderSource += std::to_string(MaxWorkTiles);
 
+    if (NativeCaptureReady && ScaleFactor > 2)
+        shaderSource += "\n#define NDS_CAPTURE_FIRST\n";
+
     shaderSource += ComputeRendererShaders::Common;
     shaderSource += source;
 
@@ -293,6 +296,14 @@ void ComputeRenderer::DeleteShaders()
 void ComputeRenderer::Reset(GPU& gpu)
 {
     Texcache.Reset();
+}
+
+void ComputeRenderer::SetNativeCaptureCallbacks(bool (*required)(), void (*ready)())
+{
+    assert(ScaleFactor == -1); // shader variants depend on this selection
+    assert((required == nullptr) == (ready == nullptr));
+    NativeCaptureRequired = required;
+    NativeCaptureReady = ready;
 }
 
 void ComputeRenderer::SetRenderSettings(int scale, bool highResolutionCoordinates)
@@ -972,98 +983,135 @@ void ComputeRenderer::RenderFrame(GPU& gpu)
         glDispatchComputeIndirect(offsetof(BinResultHeader, SortWorkWorkCount));
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
 
-        glActiveTexture(GL_TEXTURE0);
-
-        for (int i = 0; i < tilememoryLayer_Num; i++)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2+i, TileMemory[i]);
-
-        // rasterise
-        {
-            bool highLightMode = gpu.GPU3D.RenderDispCnt & (1<<1);
-
-            GLuint shadersNoTexture[] =
-            {
-                ShaderRasteriseNoTexture[wbuffer],
-                ShaderRasteriseNoTexture[wbuffer],
-                highLightMode
-                    ? ShaderRasteriseNoTextureHighlight[wbuffer]
-                    : ShaderRasteriseNoTextureToon[wbuffer],
-                ShaderRasteriseNoTexture[wbuffer],
-                ShaderRasteriseShadowMask[wbuffer]
-            };
-            GLuint shadersUseTexture[] =
-            {
-                ShaderRasteriseUseTextureModulate[wbuffer],
-                ShaderRasteriseUseTextureDecal[wbuffer],
-                highLightMode
-                    ? ShaderRasteriseUseTextureHighlight[wbuffer]
-                    : ShaderRasteriseUseTextureToon[wbuffer],
-                ShaderRasteriseUseTextureDecal[wbuffer],
-                ShaderRasteriseShadowMask[wbuffer]
-            };
-
-            GLuint prevShader = 0;
-            s32 prevTexture = 0, prevSampler = 0;
-            for (int i = 0; i < numVariants; i++)
-            {
-                GLuint shader = 0;
-                if (variants[i].Texture == 0)
-                {
-                    shader = shadersNoTexture[variants[i].BlendMode];
-                }
-                else
-                {
-                    shader = shadersUseTexture[variants[i].BlendMode];
-                    if (variants[i].Texture != prevTexture)
-                    {
-                        glBindTexture(GL_TEXTURE_2D_ARRAY, variants[i].Texture);
-                        prevTexture = variants[i].Texture;
-                    }
-                    if (variants[i].Sampler != prevSampler)
-                    {
-                        glBindSampler(0, variants[i].Sampler);
-                        prevSampler = variants[i].Sampler;
-                    }
-                }
-                assert(shader != 0);
-                if (shader != prevShader)
-                {
-                    glUseProgram(shader);
-                    prevShader = shader;
-                }
-
-                glUniform1ui(UniformIdxCurVariant, i);
-                if (variants[i].Texture != 0)
-                    glUniform2f(UniformIdxTextureSize,
-                        1.f / variants[i].Width,
-                        1.f / variants[i].Height);
-                glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, BinResultMemory);
-                glDispatchComputeIndirect(offsetof(BinResultHeader, VariantWorkCount) + i*4*4);
-            }
-        }
     }
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // compose final image
-    glUseProgram(ShaderDepthBlend[wbuffer]);
-    glDispatchCompute(ScreenWidth/TileSize, ScreenHeight/TileSize, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    const bool captureShaders = NativeCaptureReady && ScaleFactor > 2;
+    const bool captureFirst = captureShaders && NativeCaptureRequired();
+    const bool captureHalo = (gpu.GPU3D.RenderDispCnt & (1u << 5)) != 0;
+    auto rasterAndResolve = [&](u32 phase)
+    {
+        if (numYSpans > 0)
+        {
+            glActiveTexture(GL_TEXTURE0);
 
-    glBindImageTexture(0, Framebuffer, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    glBindImageTexture(1, LowResFramebuffer, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8UI);
-    u32 finalPassShader = 0;
-    if (gpu.GPU3D.RenderDispCnt & (1<<4))
-        finalPassShader |= 0x4;
-    if (gpu.GPU3D.RenderDispCnt & (1<<7))
-        finalPassShader |= 0x2;
-    if (gpu.GPU3D.RenderDispCnt & (1<<5))
-        finalPassShader |= 0x1;
-    
-    glUseProgram(ShaderFinalPass[finalPassShader]);
-    glDispatchCompute(ScreenWidth/32, ScreenHeight, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            for (int i = 0; i < tilememoryLayer_Num; i++)
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2+i, TileMemory[i]);
 
-    glBindSampler(0, 0);
+            // rasterise
+            {
+                bool highLightMode = gpu.GPU3D.RenderDispCnt & (1<<1);
+
+                GLuint shadersNoTexture[] =
+                {
+                    ShaderRasteriseNoTexture[wbuffer],
+                    ShaderRasteriseNoTexture[wbuffer],
+                    highLightMode
+                        ? ShaderRasteriseNoTextureHighlight[wbuffer]
+                        : ShaderRasteriseNoTextureToon[wbuffer],
+                    ShaderRasteriseNoTexture[wbuffer],
+                    ShaderRasteriseShadowMask[wbuffer]
+                };
+                GLuint shadersUseTexture[] =
+                {
+                    ShaderRasteriseUseTextureModulate[wbuffer],
+                    ShaderRasteriseUseTextureDecal[wbuffer],
+                    highLightMode
+                        ? ShaderRasteriseUseTextureHighlight[wbuffer]
+                        : ShaderRasteriseUseTextureToon[wbuffer],
+                    ShaderRasteriseUseTextureDecal[wbuffer],
+                    ShaderRasteriseShadowMask[wbuffer]
+                };
+
+                GLuint prevShader = 0;
+                s32 prevTexture = 0, prevSampler = 0;
+                for (int i = 0; i < numVariants; i++)
+                {
+                    GLuint shader = 0;
+                    if (variants[i].Texture == 0)
+                    {
+                        shader = shadersNoTexture[variants[i].BlendMode];
+                    }
+                    else
+                    {
+                        shader = shadersUseTexture[variants[i].BlendMode];
+                        if (variants[i].Texture != prevTexture)
+                        {
+                            glBindTexture(GL_TEXTURE_2D_ARRAY, variants[i].Texture);
+                            prevTexture = variants[i].Texture;
+                        }
+                        if (variants[i].Sampler != prevSampler)
+                        {
+                            glBindSampler(0, variants[i].Sampler);
+                            prevSampler = variants[i].Sampler;
+                        }
+                    }
+                    assert(shader != 0);
+                    if (shader != prevShader)
+                    {
+                        glUseProgram(shader);
+                        prevShader = shader;
+                        if (captureShaders)
+                        {
+                            glUniform1ui(2, phase);
+                            glUniform1i(3, captureHalo);
+                        }
+                    }
+
+                    glUniform1ui(UniformIdxCurVariant, i);
+                    if (variants[i].Texture != 0)
+                        glUniform2f(UniformIdxTextureSize,
+                            1.f / variants[i].Width,
+                            1.f / variants[i].Height);
+                    glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, BinResultMemory);
+                    glDispatchComputeIndirect(offsetof(BinResultHeader, VariantWorkCount) + i*4*4);
+                }
+            }
+
+        }
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // compose final image
+        glUseProgram(ShaderDepthBlend[wbuffer]);
+        if (captureShaders)
+        {
+            glUniform1ui(2, phase);
+            glUniform1i(3, captureHalo);
+        }
+        glDispatchCompute(ScreenWidth/TileSize, ScreenHeight/TileSize, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        glBindImageTexture(0, Framebuffer, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        glBindImageTexture(1, LowResFramebuffer, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8UI);
+        u32 finalPassShader = 0;
+        if (gpu.GPU3D.RenderDispCnt & (1<<4))
+            finalPassShader |= 0x4;
+        if (gpu.GPU3D.RenderDispCnt & (1<<7))
+            finalPassShader |= 0x2;
+        if (gpu.GPU3D.RenderDispCnt & (1<<5))
+            finalPassShader |= 0x1;
+
+        glUseProgram(ShaderFinalPass[finalPassShader]);
+        if (captureShaders) glUniform1ui(2, phase);
+        glDispatchCompute(ScreenWidth/32, ScreenHeight, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+        glBindSampler(0, 0);
+    };
+
+    if (captureFirst)
+    {
+        rasterAndResolve(1);
+        NativeCaptureReady();
+        // The callback may bind the native readback texture/PBO, but does not
+        // modify geometry, variants, SSBOs or the immutable texture cache.
+        // Phase two never writes LowResFB, so its pack/fence remains valid.
+        rasterAndResolve(2);
+        // Submit the continuation too: the native callback flushed only the
+        // earlier prefix, and CPU scanline work must overlap this display job.
+        glFlush();
+    }
+    else
+        rasterAndResolve(0);
 
     /*u64 starttime = armGetSystemTick();
     EmuQueue.waitIdle();

@@ -6,7 +6,9 @@
 
 #include "gpu3d.h"
 #include "host_profile.h"
+#include "cpu_render_handoff.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
@@ -63,7 +65,7 @@ void latch_capture_reference() {
 melonDS::CommandBatch::Cache g_command_cache;
 #endif
 
-int g_log_budget = 64;
+std::atomic<int> g_log_budget{64};
 bool g_soft_threaded = false;
 
 // Last VRAM texture generation reflected into each flat view (0 = never
@@ -305,6 +307,9 @@ void compute_readback_failed(const char* stage) {
 }
 
 void compute_submit_readback() {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { compute_submit_readback(); }); return;
+    }
     if (!g_compute_rendered_frame || g_compute_readback_pending) return;
     const auto start = profiling() ? ProfileClock::now()
                                    : ProfileClock::time_point{};
@@ -355,6 +360,9 @@ void compute_submit_readback() {
 }
 
 void compute_finish_readback() {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { compute_finish_readback(); }); return;
+    }
     if (!g_compute_readback_pending) return;
     // ALWAYS-ON: this stall is precisely the quantity governor stage 1 moves
     // off the frame's critical path, so it cannot live behind NDS_PROFILE_GPU.
@@ -429,6 +437,28 @@ void compute_finish_readback() {
     }
     g_compute_frame_ready = true;
 }
+
+#if !defined(NDS_USE_NATIVE_GL)
+// Private qualification selector. The normal shader/renderer path is retained
+// until the complete native-capture/display job is qualified per game.
+bool compute_native_capture_first() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NDS_COMPUTE_NATIVE_CAPTURE_FIRST");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+bool compute_native_capture_required() {
+    return compute_readback_overlap() &&
+        (nds_gpu2d_requires_3d_readback() || g_display_readback_latency);
+}
+
+void compute_native_capture_ready() {
+    g_compute_rendered_frame = true;
+    compute_submit_readback();
+}
+#endif
 #endif
 
 bool profiling() {
@@ -551,8 +581,14 @@ void Log(LogLevel level, const char* fmt, ...) {
          std::strstr(fmt, "OpenGL: Cannot") != nullptr))
         g_compute_shader_setup_failed = true;
 #endif
-    if (level == Debug && g_log_budget <= 0) return;
-    if (level == Debug) --g_log_budget;
+    if (level == Debug) {
+        int remaining = g_log_budget.load(std::memory_order_relaxed);
+        do {
+            if (remaining <= 0) return;
+        } while (!g_log_budget.compare_exchange_weak(
+            remaining, remaining - 1, std::memory_order_relaxed,
+            std::memory_order_relaxed));
+    }
     std::fprintf(stderr, "[gpu3d] ");
     va_list args;
     va_start(args, fmt);
@@ -828,6 +864,14 @@ bool nds_gpu3d_use_compute_renderer() {
     }
     auto renderer = NdsAcceleratedRenderer::New();
     if (!renderer || compute_gl_stage_failed("initialization")) return false;
+#if !defined(NDS_USE_NATIVE_GL)
+    if (compute_native_capture_first()) {
+        renderer->SetNativeCaptureCallbacks(compute_native_capture_required,
+                                            compute_native_capture_ready);
+        std::fprintf(stderr,
+            "[gpu3d] native capture before enhanced display: private qualification\n");
+    }
+#endif
     // Width is a shader constant and determines every framebuffer/PBO
     // allocation. Establish it before settings allocate or compile anything.
     renderer->SetRenderWidth(render_width);
@@ -1110,7 +1154,9 @@ bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
 #endif
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
         if (gpu.IsRendererAccelerated()) {
-            g_compute_rendered_frame = true;
+            // A native-first job may already own the pack/fence. Never submit
+            // it again after completing that readback during restore.
+            if (!g_compute_readback_pending) g_compute_rendered_frame = true;
             compute_submit_readback();
             compute_finish_readback();
             if (g_compute_runtime_failed) {
@@ -1248,6 +1294,9 @@ const char* nds_gpu3d_command_batch_json() {
 }
 
 void nds_gpu3d_set_power(uint16_t powcnt1) {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([=] { nds_gpu3d_set_power(powcnt1); }); return;
+    }
     g_nds.GPU.GPU3D.SetEnabled((powcnt1 & (1u << 3)) != 0,
                                (powcnt1 & (1u << 2)) != 0);
 }
@@ -1301,6 +1350,9 @@ void nds_gpu3d_check_fifo_irq() {
 }
 
 void nds_gpu3d_vcount144() {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { nds_gpu3d_vcount144(); }); return;
+    }
     // 3D frame boundary reached from the display tick. EXACT: three calls a
     // frame, each potentially a full renderer barrier, so sampling them at
     // 1-in-N would be a lottery ticket on a ~1 ms cost.
@@ -1320,6 +1372,9 @@ void nds_gpu3d_vblank() {
 }
 
 void nds_gpu3d_vcount215() {
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { nds_gpu3d_vcount215(); }); return;
+    }
     // See nds_gpu3d_vcount144. The compute submit/sync/map buckets in
     // NdsGpu3dProfile are a breakdown of this region, not an addend to it.
     NdsEmuScope emu_region(NDS_EMU_GPU3D_FRAME);
@@ -1334,7 +1389,8 @@ void nds_gpu3d_vcount215() {
         latch_capture_reference();
 #endif
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
-        if (g_nds.GPU.GPU3D.IsRendererAccelerated())
+        if (g_nds.GPU.GPU3D.IsRendererAccelerated() &&
+            !g_compute_readback_pending)
             g_compute_rendered_frame = true;
         if (g_compute_rendered_frame &&
             (compute_readback_overlap() || g_display_readback_latency) &&
@@ -1350,7 +1406,8 @@ void nds_gpu3d_vcount215() {
     latch_capture_reference();
 #endif
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
-    if (g_nds.GPU.GPU3D.IsRendererAccelerated())
+    if (g_nds.GPU.GPU3D.IsRendererAccelerated() &&
+        !g_compute_readback_pending)
         g_compute_rendered_frame = true;
 #endif
     profile_add(g_gpu3d_profile.vcount215_ns, start);
@@ -1509,6 +1566,16 @@ uint16_t nds_gpu3d_render_xpos() {
 }
 
 void nds_gpu3d_start_frame() {
+    // A no-op frame-start must not rendezvous before any CPU work can overlap
+    // Swap. Only the actual renderer/readback operations require the GL owner.
+    if (nds_cpu_render_on_worker() &&
+        (g_nds.GPU.GPU3D.AbortFrame
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+         || g_compute_readback_pending || g_compute_rendered_frame
+#endif
+        )) {
+        nds_cpu_render_main([] { nds_gpu3d_start_frame(); }); return;
+    }
     // See nds_gpu3d_vcount144. This is where the compute renderer pays its
     // readback stall (compute_finish_readback), the single largest per-call
     // cost anywhere in the emu phase.

@@ -84,16 +84,25 @@ class RomImages:
                 index[blob[offset:offset + PROBE]].append((name, offset))
         self._index = index
 
-    def locate(self, page: bytes) -> tuple[str, int] | None:
-        """Return (module, offset) when this page is verbatim ROM content."""
+    def locate_all(self, page: bytes) -> list[tuple[str, int]]:
+        """All exact module/offset matches; identical bytes need not own a module."""
         if self._index is None:
             self._build_index()
         assert self._index is not None
+        found = []
         for name, offset in self._index.get(page[:PROBE], ()):
             blob = self.modules[name]
             if blob[offset:offset + len(page)] == page:
-                return name, offset
-        return None
+                found.append((name, offset))
+        return sorted(found)
+
+    def locate(self, page: bytes) -> tuple[str, int] | None:
+        """Return unique ROM ownership; ambiguous bytes remain captured banks."""
+        found = self.locate_all(page)
+        return found[0] if len(found) == 1 else None
+
+    def valid_placement(self, module: str, base: int) -> bool:
+        return 0 <= base and base + len(self.modules[module]) <= 0x1_0000_0000
 
 
 def resolve(pages, images: RomImages):
@@ -101,7 +110,7 @@ def resolve(pages, images: RomImages):
 
     `pages` is an iterable of (cpu, addr, bytes). Returns (aliases, unresolved)
     where aliases maps (cpu, module, base) -> {addrs, offsets} and unresolved is
-    the list of pages holding code that exists nowhere in the ROM.
+    the list of pages with no unique module/offset match (absent or ambiguous).
     """
     aliases: dict[tuple[int, str, int], dict] = {}
     unresolved: list[tuple[int, int, bytes]] = []
@@ -111,6 +120,9 @@ def resolve(pages, images: RomImages):
             unresolved.append((cpu, addr, blob))
             continue
         module, offset = found
+        if not images.valid_placement(module, addr - offset):
+            unresolved.append((cpu, addr, blob))
+            continue
         slot = aliases.setdefault(
             (cpu, module, addr - offset),
             {"addrs": set(), "offsets": set()})

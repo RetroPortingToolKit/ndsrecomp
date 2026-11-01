@@ -25,6 +25,7 @@ struct NdsSavestateSlotMetadata {
 
 struct NdsSavestateSlotResult {
     bool success = false;
+    bool pending = false; // Accepted capture, not yet durable publication.
     NdsSavestateSlotCommand command{};
     NdsSavestateSlotMetadata metadata{};
     std::string message;
@@ -48,6 +49,13 @@ NdsSavestateSlotMetadata nds_savestate_slot_metadata(
 NdsSavestateSlotResult nds_savestate_slot_execute(
     const std::string& directory, const NdsSavestateIdentity& identity,
     const NdsSavestateSlotCommand& command);
+
+// Frontend-only asynchronous save path; completion polling does no filesystem
+// work. Existing execute remains synchronous for load and debug/test callers.
+NdsSavestateSlotResult nds_savestate_slot_request_save(
+    const std::string& directory, const NdsSavestateIdentity& identity,
+    const NdsSavestateSlotCommand& command);
+bool nds_savestate_slot_poll_save(NdsSavestateSlotResult* result);
 
 // Successful historical loads begin a new host-observation epoch. This resets
 // diagnostic counters, rings and attribution only; guest-visible state has

@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 #include <array>
+#include "physical_write.h"
 
 // Physical generation pointers preserve aliases. Only host validation is
 // coalesced; guest writes and their provenance counters remain immediate.
@@ -37,6 +38,17 @@ public:
         return indices.find(generation)!=indices.end();
     }
     std::size_t size() const {return watches.size();}
+    bool intersects(const uint32_t* first,uint32_t count) const {
+        if(count==1)return contains(first);
+        // A bulk publisher can span more pages than this CPU has watched.
+        if(count>watches.size()) {
+            for(const auto& watch:watches)
+                if(nds_physical_write_may_touch(first,count,watch.generation))return true;
+        } else {
+            for(uint32_t page=0;page<count;++page)if(contains(first+page))return true;
+        }
+        return false;
+    }
     void clear() {
         watches.clear();indices.clear();pending=false;
 #if defined(NDS_NATIVE_PRECISE_WRITES)
@@ -60,26 +72,15 @@ inline bool nds_arm9_can_defer_generation_check(bool running,bool device_halted)
     return !running||device_halted;
 }
 
-// A bus callback may use an exact physical page only during the corresponding
-// native RAM store. Nested device/DMA scopes use nullptr and restore the outer
-// proof on return. The context belongs to the single guest-execution thread.
-struct NdsArm9PreciseStore {
-    const uint32_t*& current;
-    const uint32_t* previous;
-    NdsArm9PreciseStore(const uint32_t*& current,const uint32_t* generation)
-        :current(current),previous(std::exchange(current,generation)) {}
-    ~NdsArm9PreciseStore() {current=previous;}
-};
-
 template<class NativeRange>
-bool nds_arm9_notify_precise_write(const uint32_t* generation,NativeRange& natives,int writer=-1) {
-    if(!generation)return false;
+bool nds_arm9_notify_write_pages(const uint32_t* first,uint32_t count,NativeRange& natives,int writer=-1) {
+    if(!first||!count)return false;
     int index=0;
     for(auto& n:natives) {
         const bool writing_cpu=index++==writer;
         if(!n||writing_cpu)continue; // writer already tests its exact page after its bus store
         ++n->precise_notifications;
-        if(n->watches.contains(generation)) {++n->precise_code_hits;n->clear();}
+        if(n->watches.intersects(first,count)) {++n->precise_code_hits;n->clear();}
     }
     return true;
 }

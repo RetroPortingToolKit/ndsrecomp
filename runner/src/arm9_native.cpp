@@ -4,10 +4,15 @@
 bool nds_arm9_native_run() { return false; }
 bool nds_arm9_native_supported() { return false; }
 void nds_arm9_native_note_write() {}
+void nds_arm9_native_note_write_pages(const uint32_t*, uint32_t) {}
 void nds_arm9_native_flush_writes() {}
 void nds_arm9_native_clear() {}
 void nds_arm9_native_census(bool, bool) {}
 std::string nds_arm9_native_json() { return "{\"available\":false}"; }
+std::string nds_arm9_native_compilation_json(bool) { return "{\"available\":false}"; }
+void nds_arm9_native_prepare_initialize(const std::string&) {}
+bool nds_arm9_native_prepare_idle(uint32_t) { return false; }
+std::string nds_arm9_native_preparation_json() { return "{\"available\":false}"; }
 #else
 #include "state.h"
 #include "tier3.h"
@@ -15,6 +20,10 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #include "arm_decode.h"
 #include "thumb_decode.h"
 #include "native_service_entries.h"
+#include "native_ram.h"
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+#include "native_store_pages.h"
+#endif
 #include "arm9_native_ir.h"
 #include "arm9_native_watch.h"
 #include "arm9_native_options.h"
@@ -23,17 +32,20 @@ std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 #endif
 #include "io.h"
 #include "scheduler.h"
+#include "sha1.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/frontend/A32/a32_ir_emitter.h"
 #include "dynarmic/frontend/A32/a32_types.h"
 #include "dynarmic/ir/terminal.h"
 #include <algorithm>
+#include <chrono>
 #include <bit>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -52,12 +64,46 @@ bool batched_writes() {
     static const bool enabled=[] {const char* value=std::getenv("NDS_ARM9_BATCH_WRITES");return value&&std::strcmp(value,"1")==0;}();
     return enabled;
 }
+bool ram_transactions() {
+    static const bool enabled=[] {
+        const char* value=std::getenv("NDS_NATIVE_RAM_TRANSACTIONS");
+        return !value||std::strcmp(value,"0")!=0;
+    }();
+    return enabled;
+}
+bool published_stores() {
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+    static const bool enabled=[] {
+        const char* value=std::getenv("NDS_NATIVE_PUBLISHED_STORES");
+        return ram_transactions()&&(!value||std::strcmp(value,"0")!=0);
+    }();
+    return enabled;
+#else
+    return false;
+#endif
+}
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+std::unordered_set<const uint32_t*> store_protected_pages;
+void protect_store_page(const uint32_t* generation);
+#endif
 bool census_enabled=false;
-#if defined(NDS_NATIVE_PRECISE_WRITES)
-// Emulation-thread-only scope. This covers one ordinary native RAM store,
-// after the normal bus has changed bytes/generations. I/O and nested DMA stay
-// on addressless notification. Physical pointers preserve mapped aliases.
-const uint32_t* precise_generation=nullptr;
+bool compilation_census() {
+    static const bool on=[] {const char* v=std::getenv("NDS_NATIVE_COMPILE_CENSUS");return v&&std::strcmp(v,"1")==0;}();
+    return on;
+}
+bool preparation_selected=false;
+bool preparation_enabled() {
+    static const bool enabled=[] {const char* v=std::getenv("NDS_NATIVE_PREPARE");return !v||std::strcmp(v,"0")!=0;}();
+    return preparation_selected&&enabled;
+}
+#if defined(NDS_MKDS_PERFORMANCE)
+struct PreparationPage {uint32_t address,first,end;const char* sha1;};
+#include "mkds_native_preparation.inc"
+struct PreparationProgress {
+    const uint32_t* generation=nullptr;
+    uint32_t value=0,next=0;
+    bool checked=false,matched=false;
+};
 #endif
 class Native final : public Dynarmic::A32::UserCallbacks {
 public:
@@ -69,6 +115,15 @@ public:
     std::unordered_map<uint64_t,uint64_t> floor_census;
     std::unordered_map<uint64_t,uint64_t> entry_census,read_census,write_census;
     uint64_t census_dropped=0;
+    std::unordered_set<uint64_t> compiled_locations;
+    uint64_t compiled_blocks=0,recompiled_blocks=0,compile_census_dropped=0;
+#if defined(NDS_MKDS_PERFORMANCE)
+    std::array<PreparationProgress,std::size(preparation_pages)> preparation_progress{};
+    size_t preparation_cursor=0;
+    bool preparation_full=false,preparation_done=false;
+    uint64_t preparation_epoch=~uint64_t(0);
+    uint64_t preparation_requests=0,preparation_mismatches=0,preparation_ns=0,preparation_max_ns=0;
+#endif
     void census(std::unordered_map<uint64_t,uint64_t>& counts,uint64_t key) {
         if(!census_enabled)return;
         auto at=counts.find(key);
@@ -85,10 +140,33 @@ public:
     uint64_t precise_notifications=0,precise_code_hits=0;
     uint32_t pending_pc=0;
     bool pending=false,known_write=false,running=false,device_halted=false;
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+    std::unique_ptr<NdsNativeStorePages<Dynarmic::PublishedMemoryWrites::Page>> store_pages;
+    Dynarmic::PublishedMemoryWrites store_publication{};
+    uint64_t store_mapping_generation=~uint64_t{0},published_store_transactions=0;
+    uint8_t stores_enabled=0;
+    void refresh_stores() {
+        if(store_pages&&store_mapping_generation!=g_busf_mapping_generation) {
+            store_pages->refresh(store_protected_pages);
+            store_mapping_generation=g_busf_mapping_generation;
+        }
+    }
+#endif
+    void watch_code(const uint32_t* generation) {
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+        if(!watches.contains(generation))protect_store_page(generation);
+#endif
+        watches.add(generation);
+    }
     struct Running {
         Native& owner;
         explicit Running(Native& owner):owner(owner) {owner.running=true;owner.device_halted=false;}
-        ~Running() {owner.running=false;}
+        ~Running() {
+            owner.running=false;
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+            owner.stores_enabled=0;
+#endif
+        }
     };
     Cp15State mapping{};
     uint64_t code_mapping_generation=~uint64_t(0);
@@ -102,11 +180,8 @@ public:
         read_pages->fill(nullptr);
         const auto add=[&](uint64_t first,uint64_t limit) {
             for(uint64_t a=first&~uint64_t(4095);a<limit&&a<0x100000000ull;a+=4096) {
-                uint32_t lo=0,hi=0;
-                const auto* w=nds_busf_classify(uint32_t(a),&lo);
-                const auto* end=nds_busf_classify(uint32_t(a+4095),&hi);
-                if(w&&w==end&&w->data&&hi==lo+4095&&uint64_t(hi)<=w->mask)
-                    (*read_pages)[a>>12]=w->data+lo;
+                const auto page=NdsNativeRam::page(uint32_t(a));
+                if(page)(*read_pages)[a>>12]=page.window->data+page.offset;
             }
         };
         add(0x02000000u,0x04000000u);
@@ -118,12 +193,19 @@ public:
     bool direct_read_instruction(uint64_t descriptor) {
         const Dynarmic::A32::LocationDescriptor location{Dynarmic::IR::LocationDescriptor{descriptor}};
         const auto i=decode(location.TFlag(),location.PC());
-        // The existing halfword lowering intentionally uses a wide callback.
-        // Keep it there, including odd signed-byte device semantics. Unaligned
-        // word/block reads also fall back, via the SDK's alignment guard.
-        const bool ordinary=i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM;
+        // Width-correct reads share one mapping and alias lifetime. Unsigned
+        // halfwords align/rotate in IR; odd signed halves and unaligned words
+        // retain callbacks through the SDK's alignment guard.
+        const bool ordinary=i.op==armv4t::IrOp::LDR||i.op==armv4t::IrOp::LDRB||i.op==armv4t::IrOp::LDM||
+            i.op==armv4t::IrOp::LDRH||i.op==armv4t::IrOp::LDRSH||i.op==armv4t::IrOp::LDRSB;
         if(ordinary)++read_sites;
         return ordinary;
+    }
+    bool direct_write_instruction(uint64_t descriptor) {
+        const Dynarmic::A32::LocationDescriptor location{Dynarmic::IR::LocationDescriptor{descriptor}};
+        const auto i=decode(location.TFlag(),location.PC());
+        return i.op==armv4t::IrOp::STR||i.op==armv4t::IrOp::STRB||
+            i.op==armv4t::IrOp::STRH||i.op==armv4t::IrOp::STM;
     }
     explicit Native(NdsCpu cpu):cpu(cpu) {
         Dynarmic::A32::UserConfig conf;
@@ -141,16 +223,43 @@ public:
             conf.page_table_read_filter=[this](uint64_t location){return direct_read_instruction(location);};
             conf.detect_misaligned_access_via_page_table=16|32|64;
         }
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+        if(published_stores()) {
+            store_pages=std::make_unique<NdsNativeStorePages<Dynarmic::PublishedMemoryWrites::Page>>();
+            store_publication={store_pages->data(),&stores_enabled,
+                runtime_native_store_epoch(),&published_store_transactions};
+            conf.published_memory_writes=&store_publication;
+            conf.published_write_filter=[this](uint64_t location){return direct_write_instruction(location);};
+        }
+#endif
         jit=std::make_unique<Dynarmic::A32::Jit>(conf);
         registers=&jit->Regs();extensions=&jit->ExtRegs();mapping=g_cp15;
     }
     void clear() {
-        jit->ClearCache();watches.clear();++invalidations;
+        jit->ClearCache();watches.clear();compiled_locations.clear();++invalidations;
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+        store_mapping_generation=~uint64_t{0};stores_enabled=0;
+#endif
+#if defined(NDS_MKDS_PERFORMANCE)
+        reset_preparation();
+#endif
     }
+#if defined(NDS_MKDS_PERFORMANCE)
+    void reset_preparation() {
+        preparation_progress.fill({});preparation_cursor=0;
+        preparation_full=false;preparation_done=false;
+    }
+#endif
     void publish() {
         std::copy(registers->begin(),registers->end(),g_cpu.R);g_cpu.cpsr=jit->Cpsr();
     }
     std::optional<uint32_t> code(uint32_t addr,bool watch) {
+        if(ram_transactions()) {
+            const NdsNativeRam view=NdsNativeRam::map<uint32_t>(addr);
+            if(!view||!view.has_provenance<uint32_t>())return std::nullopt;
+            if(watch)watch_code(view.generation());
+            return view.read<uint32_t>();
+        }
         uint32_t off=0;const auto* win=nds_busf_classify(addr,&off);
         // No speculative execution from MMIO, ROM or unmapped bytes. Native
         // BIOS/C helpers and remaining executable regions retain their backend.
@@ -158,7 +267,7 @@ public:
            !bus_range_has_write_provenance(addr,4))return std::nullopt;
         if(watch) {
             const uint32_t* generation=win->gen+(off>>12);
-            watches.add(generation);
+            watch_code(generation);
         }
         uint32_t value;std::memcpy(&value,win->data+off,4);return value;
     }
@@ -199,6 +308,13 @@ public:
     }
     bool PreCodeReadHook(bool thumb,uint32_t pc,Dynarmic::A32::IREmitter& ir) override {
         const uint32_t start=Dynarmic::A32::LocationDescriptor{ir.block.Location()}.PC();
+        if(pc==start&&compilation_census()) {
+            ++compiled_blocks;
+            const uint64_t location=ir.block.Location().Value();
+            if(compiled_locations.contains(location))++recompiled_blocks;
+            else if(compiled_locations.size()<65536)compiled_locations.insert(location);
+            else ++compile_census_dropped;
+        }
         const unsigned width=thumb?2:4;
         if(pc!=start&&(pc-start>=nds_native_block_limit(nds_native_options().blocks)*width||memory(decode(thumb,pc-width)))) {
             if(pc-start>=nds_native_block_limit(nds_native_options().blocks)*width)++arithmetic_cap_splits;
@@ -248,27 +364,42 @@ public:
         if(nds_native_options().data&&nds_native_plain_video(a,width)) {context();++data_coalesced;}
         else device();
     }
-    uint8_t MemoryRead8(uint32_t a) override {++read_callbacks;read_boundary(a,1);return bus_read_u8(a);}
-    uint16_t MemoryRead16(uint32_t a) override {++read_callbacks;read_boundary(a&~1u,2);return bus_read_u16(a&~1u);}
+    template<class T> T read(uint32_t a) {
+        if(ram_transactions()&&!g_runtime_deep_trace) {
+            const NdsNativeRam view=NdsNativeRam::map<T>(a);
+            if(view)return view.read<T>();
+        }
+        read_boundary(a,sizeof(T));
+        if constexpr(sizeof(T)==1)return bus_read_u8(a);
+        if constexpr(sizeof(T)==2)return bus_read_u16(a);
+        if constexpr(sizeof(T)==4)return bus_read_u32(a);
+    }
+    uint8_t MemoryRead8(uint32_t a) override {++read_callbacks;return read<uint8_t>(a);}
+    uint16_t MemoryRead16(uint32_t a) override {
+        ++read_callbacks;
+        if(NdsArm9ReadKind((*extensions)[0])==NdsArm9ReadKind::HalfSigned&&(a&1u)) {
+            const uint32_t value=read<uint8_t>(a);
+            return uint16_t((value^0x80u)-0x80u);
+        }
+        return read<uint16_t>(a&~1u);
+    }
     uint32_t MemoryRead32(uint32_t a) override {
         ++read_callbacks;
         const auto kind=NdsArm9ReadKind((*extensions)[0]);
-        if(kind==NdsArm9ReadKind::HalfUnsigned||kind==NdsArm9ReadKind::HalfSigned) {
-            const bool sign=kind==NdsArm9ReadKind::HalfSigned;
-            const bool byte=sign&&(a&1u);
-            read_boundary(byte?a:(a&~1u),byte?1:2);
-            return nds_arm9_read_halfword(a,sign,[](uint32_t x){return bus_read_u8(x);},[](uint32_t x){return bus_read_u16(x);});
-        }
-        read_boundary(a&~3u,4);
-        if(kind==NdsArm9ReadKind::BlockWord)return bus_read_u32(a&~3u);
-        return std::rotr(bus_read_u32(a&~3u),int((a&3)*8));
+        const uint32_t value=read<uint32_t>(a&~3u);
+        if(kind==NdsArm9ReadKind::BlockWord)return value;
+        return std::rotr(value,int((a&3)*8));
     }
     uint64_t MemoryRead64(uint32_t a) override {return uint64_t(MemoryRead32(a))|uint64_t(MemoryRead32(a+4))<<32;}
-    void write(uint32_t a,uint32_t value,unsigned width) {
+    template<class T> void write(uint32_t a,T value) {
+        constexpr unsigned width=sizeof(T);
         a&=~(width-1u);
-        uint32_t off=0;const auto* w=nds_busf_classify(a,&off);
+        const NdsNativeRam view=ram_transactions()?NdsNativeRam::map<T>(a):NdsNativeRam{};
+        uint32_t off=0;
+        const auto* w=view?view.window:nds_busf_classify(a,&off);
+        if(view)off=view.offset;
         const uint32_t* generation=w&&w->data&&w->gen? w->gen+(off>>12):nullptr;
-        const bool ordinary_ram=ram(a,width);
+        const bool ordinary_ram=bool(view)||ram(a,width);
         const bool batch_gx=!ordinary_ram&&nds_native_options().gx&&nds_native_gx_command(a,width);
         const bool batch_data=!ordinary_ram&&nds_native_options().data&&nds_native_plain_video(a,width);
         if(!ordinary_ram) {
@@ -279,13 +410,11 @@ public:
         // Only this inline RAM store is covered by the exact generation test
         // below. I/O may invoke another bus master, whose writes must stay visible.
         {
-#if defined(NDS_NATIVE_PRECISE_WRITES)
-            NdsArm9PreciseStore precise(precise_generation,ordinary_ram?generation:nullptr);
-#endif
             known_write=ordinary_ram;
-            if(width==4)bus_write_u32(a,value);
-            else if(width==2)bus_write_u16(a,uint16_t(value));
-            else bus_write_u8(a,uint8_t(value));
+            if(view&&!g_runtime_deep_trace)view.write(a,value);
+            else if constexpr(width==4)bus_write_u32(a,value);
+            else if constexpr(width==2)bus_write_u16(a,value);
+            else bus_write_u8(a,value);
             known_write=false;
         }
         if(batch_data)++data_coalesced;
@@ -299,10 +428,10 @@ public:
         }
         if(generation&&watches.contains(generation))clear();
     }
-    void MemoryWrite8(uint32_t a,uint8_t v) override {write(a,v,1);}
-    void MemoryWrite16(uint32_t a,uint16_t v) override {write(a,v,2);}
-    void MemoryWrite32(uint32_t a,uint32_t v) override {write(a,v,4);}
-    void MemoryWrite64(uint32_t a,uint64_t v) override {write(a,uint32_t(v),4);write(a+4,uint32_t(v>>32),4);}
+    void MemoryWrite8(uint32_t a,uint8_t v) override {write(a,v);}
+    void MemoryWrite16(uint32_t a,uint16_t v) override {write(a,v);}
+    void MemoryWrite32(uint32_t a,uint32_t v) override {write(a,v);}
+    void MemoryWrite64(uint32_t a,uint64_t v) override {write(a,uint32_t(v));write(a+4,uint32_t(v>>32));}
     void InterpreterFallback(uint32_t pc,size_t n) override {
         pending=true;pending_pc=pc;floors+=n;
         if(census_enabled)floor_census[(uint64_t(pc)<<1)|((jit->Cpsr()&CPSR_T_BIT)?1u:0u)]+=n;
@@ -334,6 +463,13 @@ public:
     }
 };
 std::unique_ptr<Native> natives[2];
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+void protect_store_page(const uint32_t* generation) {
+    if(!store_protected_pages.insert(generation).second)return;
+    for(auto& native:natives)
+        if(native&&native->store_pages)native->store_pages->protect(generation);
+}
+#endif
 bool supported_host() {
     static const bool supported=[] {
 #if defined(_MSC_VER)
@@ -353,8 +489,19 @@ bool nds_arm9_native_run() {
 #endif
     if(!nds_performance_execution()||g_insn_hook_armed||
        g_runtime_deep_trace||(g_cpu.cpsr&0x200u)||runtime_deferred_cycles()!=0||!supported_host())return false;
-    uint32_t off=0;const auto* w=nds_busf_classify(g_cpu.R[15],&off);
-    if(!w||!w->data||!bus_range_has_write_provenance(g_cpu.R[15],4))return false;
+    // A service whose full proof declined and has no generated entry must
+    // retire its first instruction in the existing reference floor. Otherwise
+    // native translation would stop at this same barrier and redispatch forever.
+    if(nds_native_service_entry(g_nds_active,g_cpu.R[15],(g_cpu.cpsr&CPSR_T_BIT)!=0))return false;
+    const auto entry=ram_transactions()?NdsNativeRam::map<uint32_t>(g_cpu.R[15]):NdsNativeRam{};
+    if(entry) {
+        if(!entry.has_provenance<uint32_t>())return false;
+    } else {
+        // Includes unaligned Thumb entries: preserve the original four-byte
+        // admission rule rather than borrowing provenance from adjacent code.
+        uint32_t off=0;const auto* w=nds_busf_classify(g_cpu.R[15],&off);
+        if(!w||!w->data||!bus_range_has_write_provenance(g_cpu.R[15],4))return false;
+    }
     const uint32_t before_poll=g_cpu.R[15];
     runtime_tick(0);
     if(runtime_unwinding()||runtime_should_yield())return true;
@@ -372,6 +519,9 @@ bool nds_arm9_native_run() {
     }
     n.refresh_reads();
     n.flush_writes(); // No cached native instruction executes before validation.
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+    n.refresh_stores();
+#endif
     runtime_call_stack_restore(nullptr,0);
     std::copy(std::begin(g_cpu.R),std::end(g_cpu.R),n.registers->begin());n.jit->SetCpsr(g_cpu.cpsr);
     n.jit->ClearHalt(Dynarmic::HaltReason::UserDefined1|Dynarmic::HaltReason::MemoryAbort);
@@ -380,6 +530,9 @@ bool nds_arm9_native_run() {
     n.census(n.entry_census,(uint64_t(g_cpu.R[15])<<1)|((g_cpu.cpsr&CPSR_T_BIT)?1u:0u));
     if(diagnostic()&&n.entries<=32)std::fprintf(stderr,"[arm9-native] enter %llu pc=%08x cycles=%llu limit=%llu budget=%llu\n",
         static_cast<unsigned long long>(n.entries),g_cpu.R[15],g_runtime_cycles,g_nds_fast_limit,static_cast<unsigned long long>(n.remaining));
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+    n.stores_enabled=uint8_t(n.store_pages&&runtime_native_store_window());
+#endif
     {Native::Running running(n);n.jit->Run();}
     n.publish();n.flush_writes();
     if(diagnostic()&&n.entries<=32)std::fprintf(stderr,"[arm9-native] leave pc=%08x cycles=%llu pending=%u floorpc=%08x\n",
@@ -394,22 +547,147 @@ bool nds_arm9_native_run() {
     runtime_tick(0);
     return true;
 }
-// A write by either CPU or DMA is visible to BOTH caches. Only the emitting
-// adapter's exact inline store suppresses its notification; its physical watch
-// is checked immediately after that store. The other adapter is inactive.
+// Addressless/legacy publications remain conservative. Normal writes from every
+// bus master use the physical-page entry below, including AOT/BIOS and DMA.
 void nds_arm9_native_note_write() {
-#if defined(NDS_NATIVE_PRECISE_WRITES)
-    if(nds_arm9_notify_precise_write(precise_generation,natives,int(g_nds_active)))return;
-#endif
     for(auto& n:natives)if(n)n->unknown_write();
 }
+void nds_arm9_native_note_write_pages(const uint32_t* first,uint32_t count) {
+#if defined(NDS_NATIVE_PRECISE_WRITES)
+    // A native writer still performs its existing immediate post-store check.
+    // Nested I/O/DMA has no known_write proof and publishes to both CPUs.
+    const auto& active=natives[g_nds_active];
+    const int writer=active&&active->known_write?int(g_nds_active):-1;
+    if(nds_arm9_notify_write_pages(first,count,natives,writer))return;
+#else
+    (void)first;(void)count;
+#endif
+    nds_arm9_native_note_write();
+}
 void nds_arm9_native_flush_writes() {for(auto& n:natives)if(n)n->flush_writes();}
-void nds_arm9_native_clear() {for(auto& n:natives)if(n)n->clear();}
+void nds_arm9_native_clear() {
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+    store_protected_pages.clear();
+#endif
+    for(auto& n:natives)if(n)n->clear();
+}
+void nds_arm9_native_prepare_initialize(const std::string& rom_sha1) {
+#if defined(NDS_MKDS_PERFORMANCE)
+    preparation_selected=rom_sha1=="691e00d9a5dd80b04f80cc7559503e8b06848785";
+#else
+    (void)rom_sha1;
+#endif
+}
+bool nds_arm9_native_prepare_idle(uint32_t budget_us) {
+#if defined(NDS_MKDS_PERFORMANCE)
+    if(!budget_us||!preparation_enabled()||!nds_performance_execution()||!natives[NDS_ARM9])return false;
+    auto& n=*natives[NDS_ARM9];
+    if(n.running||n.code_mapping_generation!=g_busf_mapping_generation||
+       n.mapping.control!=g_cp15.control||n.mapping.itcm_size!=g_cp15.itcm_size||
+       n.mapping.dtcm_base!=g_cp15.dtcm_base||n.mapping.dtcm_size!=g_cp15.dtcm_size)return false;
+    const auto epoch=n.jit->CodeCacheGeneration();
+    if(n.preparation_epoch!=epoch) {n.reset_preparation();n.preparation_epoch=epoch;}
+    if(n.preparation_full||n.preparation_done)return false;
+    using Clock=std::chrono::steady_clock;
+    const auto begin=Clock::now();
+    const auto deadline=begin+std::chrono::microseconds(std::min(budget_us,500000u));
+    // Only code reads/classification run here. Do not switch scheduler slots or
+    // copy register files; restore the bus's CPU selector before returning.
+    struct CpuView {
+        NdsCpu old=g_nds_active;
+        CpuView() {g_nds_active=NDS_ARM9;}
+        ~CpuView() {g_nds_active=old;}
+    } view;
+    n.flush_writes();n.refresh_reads();
+    bool worked=false;
+    std::array<uint8_t,4096> bytes;
+    for(size_t visited=0;visited<std::size(preparation_pages)&&Clock::now()<deadline;) {
+        const auto& page=preparation_pages[n.preparation_cursor];
+        auto& progress=n.preparation_progress[n.preparation_cursor];
+        uint32_t offset=0;
+        const auto* window=nds_busf_classify(page.address,&offset);
+        if(window&&window->data&&window->gen&&uint64_t(offset)+bytes.size()<=uint64_t(window->mask)+1) {
+            const uint32_t* generation=window->gen+(offset>>12);
+            if(!progress.checked||progress.generation!=generation||progress.value!=*generation) {
+                progress={generation,*generation,page.first,true,false};
+                std::memcpy(bytes.data(),window->data+offset,bytes.size());
+                progress.matched=gba::sha1(bytes.data(),bytes.size()).hex()==page.sha1;
+                if(!progress.matched) {
+                    ++n.preparation_mismatches;progress.next=page.end;
+                }
+            }
+            for(;progress.next<page.end&&Clock::now()<deadline;++progress.next) {
+                const uint64_t location=preparation_locations[progress.next];
+                // Hints never confer executable provenance. The ordinary code
+                // reader and its physical-page watches qualify the live image.
+                if(!n.code(uint32_t(location)&~3u,false)) {progress.matched=false;continue;}
+                if(!n.jit->PrepareBlock(location)) {n.preparation_full=true;break;}
+                n.preparation_epoch=n.jit->CodeCacheGeneration();
+                ++n.preparation_requests;worked=true;
+            }
+            if(progress.next<page.end)break;
+        }
+        n.preparation_cursor=(n.preparation_cursor+1)%std::size(preparation_pages);
+        ++visited;
+    }
+    n.preparation_done=true;
+    for(size_t i=0;i<std::size(preparation_pages);++i) {
+        const auto& p=n.preparation_progress[i];
+        if(!p.matched||p.next<preparation_pages[i].end) {n.preparation_done=false;break;}
+    }
+    const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-begin).count();
+    n.preparation_ns+=uint64_t(ns);n.preparation_max_ns=std::max(n.preparation_max_ns,uint64_t(ns));
+    return worked;
+#else
+    (void)budget_us;return false;
+#endif
+}
+std::string nds_arm9_native_preparation_json() {
+    std::string out="{\"available\":true,\"selected\":"+std::string(preparation_selected?"true":"false")+
+        ",\"enabled\":"+(preparation_enabled()?"true":"false");
+#if defined(NDS_MKDS_PERFORMANCE)
+    out+=",\"seed_pages\":"+std::to_string(std::size(preparation_pages))+
+        ",\"seed_locations\":"+std::to_string(std::size(preparation_locations));
+    if(const auto& n=natives[NDS_ARM9])out+=",\"requests\":"+std::to_string(n->preparation_requests)+
+        ",\"page_mismatches\":"+std::to_string(n->preparation_mismatches)+
+        ",\"wall_work_ns\":"+std::to_string(n->preparation_ns)+
+        ",\"max_call_ns\":"+std::to_string(n->preparation_max_ns)+
+        ",\"complete\":"+(n->preparation_done?"true":"false")+
+        ",\"cache_full\":"+(n->preparation_full?"true":"false");
+#endif
+    return out+"}";
+}
 void nds_arm9_native_census(bool enabled,bool reset) {
     census_enabled=enabled;
     if(reset)for(auto& n:natives)if(n) {
         n->floor_census.clear();n->entry_census.clear();n->read_census.clear();n->write_census.clear();n->census_dropped=0;
     }
+}
+std::string nds_arm9_native_compilation_json(bool reset) {
+    if(reset)for(auto& native:natives)if(native) {
+        // Reset diagnostics without discarding warmed executable code.
+        native->compiled_locations.clear();native->compiled_blocks=0;
+        native->recompiled_blocks=0;native->compile_census_dropped=0;
+    }
+    std::string out="{\"enabled\":"+std::string(compilation_census()?"true":"false");
+    for(const auto cpu:{NDS_ARM9,NDS_ARM7}) {
+        out+=cpu==NDS_ARM9?",\"arm9\":[":",\"arm7\":[";
+        if(const auto& native=natives[cpu]) {
+            std::vector<uint64_t> locations(native->compiled_locations.begin(),native->compiled_locations.end());
+            std::sort(locations.begin(),locations.end());
+            bool comma=false;
+            for(const auto descriptor:locations) {
+                const Dynarmic::A32::LocationDescriptor location{Dynarmic::IR::LocationDescriptor{descriptor}};
+                if(comma)out+=",";
+                comma=true;
+                out+="{\"pc\":"+std::to_string(location.PC())+
+                    ",\"thumb\":"+(location.TFlag()?"true":"false")+
+                    ",\"descriptor\":\""+std::to_string(descriptor)+"\"}";
+            }
+        }
+        out+="]";
+    }
+    return out+"}";
 }
 static std::string native_census_json(const Native* n,int cpu) {
     std::string out;
@@ -449,11 +727,14 @@ static std::string native_census_json(const Native* n,int cpu) {
 std::string nds_arm9_native_json() {
     const auto& native=natives[NDS_ARM9];
     uint64_t windows=0,fences=0;scheduler_performance_window_counts(&windows,&fences);
-    std::string out="{\"available\":"+std::string(supported_host()?"true":"false")+
+    std::string out="{\"ram_transactions\":"+std::string(ram_transactions()?"true":"false")+",\"available\":"+std::string(supported_host()?"true":"false")+
+        ",\"published_stores\":"+(published_stores()?"true":"false")+
         ",\"diagnostic\":"+std::string(diagnostic()?"true":"false")+
         ",\"census_enabled\":"+std::string(census_enabled?"true":"false")+
+        ",\"compile_census_enabled\":"+std::string(compilation_census()?"true":"false")+
         ",\"batched_writes\":"+std::string(batched_writes()?"true":"false")+
         ",\"direct_reads\":"+(nds_native_options().reads?"true":"false")+
+        ",\"narrow_reads\":true"+
         ",\"long_blocks\":"+(nds_native_options().blocks?"true":"false")+
         ",\"data_handoffs\":"+(nds_native_options().data?"true":"false")+
         ",\"gx_batch\":"+(nds_native_options().gx?"true":"false")+
@@ -462,9 +743,9 @@ std::string nds_arm9_native_json() {
         ",\"event_window_fences\":"+std::to_string(fences)+
         ",\"cycles_per_instruction\":"+std::to_string(cycles_per_instruction);
 #if defined(NDS_NATIVE_PRECISE_WRITES)
-    out+=",\"precise_ram_writes\":true";
+    out+=",\"precise_ram_writes\":true,\"physical_write_publication\":true";
 #else
-    out+=",\"precise_ram_writes\":false";
+    out+=",\"precise_ram_writes\":false,\"physical_write_publication\":false";
 #endif
     if(native)out+=",\"entries\":"+std::to_string(native->entries)+
         ",\"read_callbacks\":"+std::to_string(native->read_callbacks)+
@@ -478,6 +759,9 @@ std::string nds_arm9_native_json() {
         ",\"reference_stops\":"+std::to_string(native->floors)+
         ",\"device_handoffs\":"+std::to_string(native->devices)+
         ",\"invalidations\":"+std::to_string(native->invalidations)+
+        ",\"compiled_blocks\":"+std::to_string(native->compiled_blocks)+
+        ",\"recompiled_blocks\":"+std::to_string(native->recompiled_blocks)+
+        ",\"compile_census_dropped\":"+std::to_string(native->compile_census_dropped)+
         ",\"unknown_write_checks\":"+std::to_string(native->watches.checks)+
         ",\"watched_pages\":"+std::to_string(native->watches.size())+
         ",\"write_notifications\":"+std::to_string(native->write_notifications)+
@@ -487,6 +771,9 @@ std::string nds_arm9_native_json() {
         ",\"precise_code_hits\":"+std::to_string(native->precise_code_hits)+
         ",\"write_checks_arm9\":"+std::to_string(native->checks_by_cpu[0])+
         ",\"write_checks_arm7\":"+std::to_string(native->checks_by_cpu[1]);
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+    if(native)out+=",\"published_store_transactions\":"+std::to_string(native->published_store_transactions);
+#endif
     out+=native_census_json(native.get(),9);
     const auto& arm7=natives[NDS_ARM7];
     out+=",\"arm7\":{\"available\":";
@@ -496,11 +783,18 @@ std::string nds_arm9_native_json() {
     out+="false";
 #endif
     if(arm7)out+=",\"entries\":"+std::to_string(arm7->entries)+
+        ",\"invalidations\":"+std::to_string(arm7->invalidations)+
+        ",\"compiled_blocks\":"+std::to_string(arm7->compiled_blocks)+
+        ",\"recompiled_blocks\":"+std::to_string(arm7->recompiled_blocks)+
+        ",\"compile_census_dropped\":"+std::to_string(arm7->compile_census_dropped)+
         ",\"instructions\":"+std::to_string(arm7->instructions)+
         ",\"reference_stops\":"+std::to_string(arm7->floors)+
         ",\"device_handoffs\":"+std::to_string(arm7->devices)+
         ",\"watched_pages\":"+std::to_string(arm7->watches.size())+
         ",\"unknown_write_checks\":"+std::to_string(arm7->watches.checks);
+#if defined(NDS_NATIVE_PUBLISHED_STORES)
+    if(arm7)out+=",\"published_store_transactions\":"+std::to_string(arm7->published_store_transactions);
+#endif
     out+=native_census_json(arm7.get(),7)+"}";
     return out+"}";
 }
