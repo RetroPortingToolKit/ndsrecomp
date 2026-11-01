@@ -1,4 +1,4 @@
-# CPU/main rendering ownership prototype
+# MKDS CPU/render overlap profile
 
 The underlying b0cf mechanism passed the bounded MKDS OriginalCompute4x
 runtime/current-NSS gate. This branch's final title-admission guard is a source
@@ -73,8 +73,28 @@ bounded publication, progress while main withholds its native pump, immutable
 prior output, native/CPU errors, rearm and shutdown draining. This fixture passed
 one direct GCC15.2 CPU run (zero warnings), with logs retained at
 `C:/Temp/Codex/ndsrecomp-area20-handoff/component`. Its tested class bytes are
-unchanged by the frontend lifecycle/priority repairs. Parent and independent
-validator own frontend compilation, focused native/capture
-and current-build restore checks, then one same-binary serial/worker4x pair
-per selected game through the existing controllers. No performance, native
-pixel equivalence, audio or adoption result is implied by this source.
+unchanged by the frontend lifecycle/priority repairs and the clean native-accessor port.
+The clean port uses the original renderer's native/high-resolution texture ID
+getters and latched scale; it imports no experimental provider or enhanced-surface
+lease interface. It is stacked on the accepted native-access foundation and
+reviewed PR30-36 integration at01ba3b2. Its frontend/GPU3D production TUs compile
+for MKDS and MPH, and its ComputeHost TU compiles for MKDS, with zero warnings
+using the matching GCC15.2 target definitions and accepted-base headers. This
+establishes compilation, not a linked clean-port runtime result.
+
+The measured b0cf mechanism used one same-binary OriginalCompute4x/AA8 MKDS
+pair:180VBlank/180CSV per mode, wall1.587805->1.3767951s and process
+CPU2.28125->2.078125s. Produced guest timestamps match exactly; presented
+timestamps trail by exactly one completed frame. Positive actual overlap and
+current-build Saving->Saved->Loaded continuation pass. Unequal host load and
+GPU clocks limit attribution of the observed13.29% wall/8.90% CPU reductions.
+The analogous MPH profile is unselected: observed wall improved10.89% while
+process CPU rose12.86%. MPH and generic/default execution stay serial.
+
+Raw results and existing focused checks are retained under
+`G:/Temp/Codex/ndsrecomp/mkds-input-load-20261027/loading-hitches/gpu-high-resolution/mkds-primitive-runtime-prepared/runs/mkds-cpu-render-handoff/measurements`,
+`C:/Temp/Codex/ndsrecomp-area20-handoff/mph/pair/measurements`, and
+`C:/Temp/Codex/ndsrecomp-area20-handoff/native-port-compile`.
+Final combined linking/runtime integration and the owner's practical check
+with normal audio remain before merge/delivery. Preserve the original loading,
+save-hitch/audio and native-rendering correctness gaps in Beads72/65/112.
