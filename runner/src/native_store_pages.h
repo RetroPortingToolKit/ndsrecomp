@@ -1,5 +1,6 @@
 #pragma once
 #include "runtime_arm.h"
+#include "native_ram.h"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -33,17 +34,10 @@ public:
                 // This virtual page has an instruction-context observer. Its
                 // aliases keep their own original logical-address behavior.
                 if (address == 0x027e0000u) continue;
-                uint32_t lo = 0, hi = 0;
-                const auto* window = nds_busf_classify(uint32_t(address), &lo);
-                const auto* end = nds_busf_classify(uint32_t(address + 4095), &hi);
-                if (!window || window != end || !window->data ||
-                    !window->written || !window->gen || (lo & 4095u) ||
-                    hi != lo + 4095u || uint64_t{hi} > window->mask) continue;
-                // Endpoint agreement alone cannot rule out a smaller TCM
-                // overlay inside an otherwise ordinary physical RAM page.
-                if (g_nds_active == NDS_ARM9 && window != &g_busf_dtcm &&
-                    g_busf_dtcm_limit && address < uint64_t{g_busf_dtcm_base} + g_busf_dtcm_limit &&
-                    address + 4096 > g_busf_dtcm_base) continue;
+                const auto page=NdsNativeRam::page(uint32_t(address));
+                if(!page.can_publish())continue;
+                const auto* window=page.window;
+                const uint32_t lo=page.offset;
                 auto* generation = window->gen + (lo >> 12);
                 auto [entry, inserted] = physical.try_emplace(generation,
                     Page{window->data + lo, window->written + lo, generation});

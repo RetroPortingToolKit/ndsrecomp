@@ -23,6 +23,20 @@ struct NdsNativeRam {
             uint64_t{off}+sizeof(T)>uint64_t{w->mask}+1u) return {};
         return {w,off};
     }
+    bool can_publish() const { return window && window->written && window->gen; }
+    // Read and store page tables share this mapping proof. Matching endpoints
+    // do not exclude a subpage TCM overlay inside an imported CP15 mapping.
+    static NdsNativeRam page(uint32_t address) {
+        if(address&4095u)return {};
+        uint32_t lo=0,hi=0;
+        const auto* w=nds_busf_classify(address,&lo);
+        const auto* end=nds_busf_classify(address+4095u,&hi);
+        if(!w||w!=end||!w->data||(lo&4095u)||hi!=lo+4095u||uint64_t(hi)>w->mask)return {};
+        if(g_nds_active==NDS_ARM9&&w!=&g_busf_dtcm&&g_busf_dtcm_limit&&
+           uint64_t(address)<uint64_t(g_busf_dtcm_base)+g_busf_dtcm_limit&&
+           uint64_t(address)+4096>g_busf_dtcm_base)return {};
+        return {w,lo};
+    }
     template<class T> bool has_provenance() const {
         for (unsigned i=0;i<sizeof(T);++i)
             if (!window->written[offset+i]) return false;

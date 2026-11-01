@@ -540,6 +540,20 @@ void check_native_ram_transactions() {
     cfg_tcm_moved();cp15_savestate_import(snapshot,nullptr);
     native_ram_case<uint32_t>(0x027c0000u);
     native_ram_case<uint32_t>(0x02400000u);
+    // Imported CP15 state is accepted verbatim. A subpage DTCM window can
+    // leave both page endpoints in MainRAM while changing its interior.
+    cp15_savestate_export(&snapshot);
+    snapshot.visible.dtcm_base=0x02008100u;snapshot.visible.dtcm_size=512;
+    cp15_savestate_import(snapshot,nullptr);g_nds_active=NDS_ARM9;
+    uint32_t lo=0,hi=0;
+    const auto* first=nds_busf_classify(0x02008000u,&lo);
+    const auto* last=nds_busf_classify(0x02008fffu,&hi);
+    ++g_checks;
+    if(first!=last||!first||hi!=lo+4095u||NdsNativeRam::page(0x02008000u)||
+       NdsNativeRam::map<uint32_t>(0x02008100u).window!=&g_busf_dtcm)
+        fail("shared page qualification missed an interior imported TCM window");
+    g_nds_active=NDS_ARM7;++g_checks;
+    if(!NdsNativeRam::page(0x02008000u))fail("ARM9 TCM incorrectly changed ARM7 page mapping");
     cp15_reset();
     check_physical_write_guards();
     std::printf("native_ram_transactions: %lld checks, %d failure(s)\n",g_checks,g_failures);
