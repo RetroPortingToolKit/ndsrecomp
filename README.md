@@ -289,6 +289,16 @@ running game.
 
 ## Copyright and licensing
 
+For this project's code covered by the [PolyForm Noncommercial License](LICENSE),
+[PERMISSIONS.md](PERMISSIONS.md) grants standing permission for voluntary
+donations, sponsorships, and advertising revenue, including support for broader
+development initiatives. Payment must not buy access to the software, games
+built with it, or their updates, features, or game content, including early access.
+
+Matthew Stanley has authority from the relevant copyright holders to grant
+these permissions for the project's PolyForm-covered code. Third-party
+components and code explicitly licensed under other terms retain those terms.
+
 This repository intentionally contains no Nintendo BIOS, firmware, ROM, save
 data, generated recompiled code, or binary embedding those materials. The
 checked-in showcase images are manually selected demonstration screenshots;
