@@ -641,12 +641,12 @@ NdsIoCoreSaveState patterned_io(uint32_t seed) {
     out.wramcnt = static_cast<uint8_t>(seed);
     out.wifiwaitcnt = static_cast<uint16_t>(seed + 3u);
     out.biosprot = seed + 0xC000u;
-    out.pm_index = static_cast<uint8_t>(seed & 7u);
+    out.pm_index = static_cast<uint8_t>(0x80u | (seed & 7u));
     out.pm_hold = 1u;
     out.powered_off = 1u;
     out.tsc_ctrl = static_cast<uint8_t>(seed + 4u);
     out.tsc_conv = static_cast<uint16_t>(seed + 5u);
-    out.tsc_datapos = 2;
+    out.tsc_datapos = 3;
     out.tsc_x = static_cast<uint16_t>(seed + 6u);
     out.tsc_y = static_cast<uint16_t>(seed + 7u);
     for (size_t i = 0; i < 8u; ++i) {
