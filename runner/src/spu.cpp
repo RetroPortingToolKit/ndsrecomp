@@ -261,8 +261,14 @@ struct Capture {
         }
     }
     template<typename T> void write_value(T value) {
-        std::memcpy(&fifo[fifo_write], &value, sizeof(T));
-        fifo_write = (fifo_write + sizeof(T)) & 0xFu;
+        // The guest can switch an active capture from 8 to 16 bit on an odd
+        // cursor, so a sample may straddle the end of the FIFO.
+        uint8_t bytes[sizeof(T)];
+        std::memcpy(bytes, &value, sizeof(T));
+        for (uint8_t byte : bytes) {
+            fifo[fifo_write] = byte;
+            fifo_write = (fifo_write + 1u) & 0xFu;
+        }
         fifo_level += sizeof(T);
         if (fifo_level >= 16) flush();
     }
@@ -645,8 +651,9 @@ bool spu_savestate_validate(const NdsSpuSaveState& in, std::string* error) {
             (capture.length == 0u ? capture.write_offset != 0u
                                   : capture.write_offset >= capture.length))
             return fail("savestate SPU capture state is invalid");
-        if ((capture.fifo_read & 3u) != 0u ||
-            ((capture.cnt & 0x88u) == 0x80u && (capture.fifo_write & 1u) != 0u))
+        // Format changes may leave an odd write cursor; write_value wraps
+        // each byte, while flush always consumes aligned words.
+        if ((capture.fifo_read & 3u) != 0u)
             return fail("savestate SPU capture FIFO cursor is invalid");
     }
     return true;
