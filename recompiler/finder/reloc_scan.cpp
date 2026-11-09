@@ -3,9 +3,10 @@
 #include "reloc_scan.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
-#include <map>
+#include <unordered_map>
 #include <vector>
 
 #include "arm_decode.h"
@@ -55,34 +56,65 @@ public:
              | (static_cast<uint32_t>(load(addr + 3)) << 24);
     }
 
-    void write8(uint32_t addr, uint8_t v) override { shadow_[addr] = v; }
+    void write8(uint32_t addr, uint8_t v) override { store(addr, v); }
     void write16(uint32_t addr, uint16_t v) override {
-        shadow_[addr] = static_cast<uint8_t>(v);
-        shadow_[addr + 1] = static_cast<uint8_t>(v >> 8);
+        store(addr, static_cast<uint8_t>(v));
+        store(addr + 1, static_cast<uint8_t>(v >> 8));
     }
     void write32(uint32_t addr, uint32_t v) override {
-        shadow_[addr] = static_cast<uint8_t>(v);
-        shadow_[addr + 1] = static_cast<uint8_t>(v >> 8);
-        shadow_[addr + 2] = static_cast<uint8_t>(v >> 16);
-        shadow_[addr + 3] = static_cast<uint8_t>(v >> 24);
+        store(addr, static_cast<uint8_t>(v));
+        store(addr + 1, static_cast<uint8_t>(v >> 8));
+        store(addr + 2, static_cast<uint8_t>(v >> 16));
+        store(addr + 3, static_cast<uint8_t>(v >> 24));
     }
 
-    const std::map<uint32_t, uint8_t>& shadow() const { return shadow_; }
+    std::size_t shadow_bytes() const { return shadow_bytes_; }
+    template<class Visitor>
+    void for_each_shadow_byte(Visitor visit) const {
+        std::vector<uint32_t> pages;
+        pages.reserve(shadow_.size());
+        for (const auto& entry : shadow_) pages.push_back(entry.first);
+        std::sort(pages.begin(), pages.end());
+        for (uint32_t number : pages) {
+            const auto& page = shadow_.at(number);
+            for (uint32_t i = 0; i < kPageSize; ++i)
+                if (page.written[i]) visit((number << 12) + i, page.bytes[i]);
+        }
+    }
     std::size_t unmapped_reads() const { return unmapped_reads_; }
 
 private:
     uint8_t load(uint32_t addr) {
-        auto it = shadow_.find(addr);
-        if (it != shadow_.end()) return it->second;
+        auto it = shadow_.find(addr >> 12);
+        if (it != shadow_.end() && it->second.written[addr & (kPageSize - 1)])
+            return it->second.bytes[addr & (kPageSize - 1)];
         if (addr >= base_ && addr - base_ < size_) return image_[addr - base_];
         ++unmapped_reads_;
         return 0;
     }
 
+    void store(uint32_t addr, uint8_t value) {
+        auto& page = shadow_[addr >> 12];
+        const auto offset = addr & (kPageSize - 1);
+        if (!page.written[offset]) {
+            page.written[offset] = 1;
+            ++shadow_bytes_;
+        }
+        page.bytes[offset] = value;
+    }
+
     const uint8_t* image_;
     std::size_t size_;
     uint32_t base_;
-    std::map<uint32_t, uint8_t> shadow_;
+    // Startup copies and BSS clears are dense. Allocate per touched page,
+    // not per byte, while preserving which individual bytes were written.
+    static constexpr uint32_t kPageSize = 4096;
+    struct ShadowPage {
+        std::array<uint8_t, kPageSize> bytes{};
+        std::array<uint8_t, kPageSize> written{};
+    };
+    std::unordered_map<uint32_t, ShadowPage> shadow_;
+    std::size_t shadow_bytes_ = 0;
     std::size_t unmapped_reads_ = 0;
 };
 
@@ -158,21 +190,21 @@ std::vector<RelocCopy> scan_relocations(const uint8_t* image,
     }
     if (stats.stop_reason.empty()) stats.stop_reason = "step-cap";
     stats.unmapped_reads = bus.unmapped_reads();
-    stats.shadow_bytes = bus.shadow().size();
+    stats.shadow_bytes = bus.shadow_bytes();
 
     // ── Coalesce shadow writes outside the module span ───────────────
     struct Region { uint32_t start; std::vector<uint8_t> bytes; };
     std::vector<Region> regions;
-    for (const auto& [addr, byte] : bus.shadow()) {
+    bus.for_each_shadow_byte([&](uint32_t addr, uint8_t byte) {
         if (addr >= image_base && addr - image_base < image_size)
-            continue;  // self-modification inside the span: not an alias
+            return;  // self-modification inside the span: not an alias
         if (!regions.empty() &&
             addr == regions.back().start + regions.back().bytes.size()) {
             regions.back().bytes.push_back(byte);
         } else {
             regions.push_back(Region{addr, {byte}});
         }
-    }
+    });
     stats.regions_total = regions.size();
 
     // ── Content-match each region against the module image ───────────
