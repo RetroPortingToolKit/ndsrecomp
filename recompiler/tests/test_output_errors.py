@@ -61,6 +61,27 @@ def main():
                 output.mkdir()
                 (output / name).symlink_to("/dev/full")
                 failed(run(output))
+
+        # Byte validation supports relocated functions, but dependency
+        # closures require identity-mapped runtime bytes. The emitter must
+        # propagate that validation failure just like an output IO failure.
+        with (root / "image.toml").open("a") as config:
+            config.write(
+                '[[code_copy]]\nruntime_start=0x03000000\n'
+                'source_start=0x02000000\nsize=4\n'
+                '[[entry_point]]\naddr=0x03000000\nmode="arm"\n'
+            )
+        output = root / "relocated-valid"
+        output.mkdir()
+        result = run(output, "--validate-live-bytes")
+        assert result.returncode == 0, result.stdout + result.stderr
+        output = root / "relocated-closure"
+        output.mkdir()
+        result = run(output, "--validate-live-bytes",
+                     "--validated-live-direct-calls")
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "dependency closures require identity-mapped" in result.stderr, result.stderr
+        assert "[emit] bank " not in result.stdout, result.stdout
     print("output failures return nonzero; successful emission remains intact")
 
 
