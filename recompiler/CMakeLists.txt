@@ -85,6 +85,11 @@ add_test(NAME codegen_golden
 # two projects configure separately.
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+  add_test(NAME output_errors
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_LIST_DIR}/tests/test_output_errors.py"
+      --recompiler $<TARGET_FILE:nds_recompile>
+      --work "${CMAKE_CURRENT_BINARY_DIR}/output-errors-work")
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
     add_test(NAME flat_execution_semantics
       COMMAND "${Python3_EXECUTABLE}"
