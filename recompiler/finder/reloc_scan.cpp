@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -77,8 +79,14 @@ public:
         std::sort(pages.begin(), pages.end());
         for (uint32_t number : pages) {
             const auto& page = shadow_.at(number);
-            for (uint32_t i = 0; i < kPageSize; ++i)
-                if (page.written[i]) visit((number << 12) + i, page.bytes[i]);
+            if (page.dense) {
+                for (uint32_t i = 0; i < kPageSize; ++i)
+                    if (page.dense->written[i])
+                        visit((number << 12) + i, page.dense->bytes[i]);
+            } else {
+                for (const auto& byte : page.sparse)
+                    visit((number << 12) + byte.offset, byte.value);
+            }
         }
     }
     std::size_t unmapped_reads() const { return unmapped_reads_; }
@@ -86,8 +94,17 @@ public:
 private:
     uint8_t load(uint32_t addr) {
         auto it = shadow_.find(addr >> 12);
-        if (it != shadow_.end() && it->second.written[addr & (kPageSize - 1)])
-            return it->second.bytes[addr & (kPageSize - 1)];
+        if (it != shadow_.end()) {
+            const auto& page = it->second;
+            const auto offset = addr & (kPageSize - 1);
+            if (page.dense) {
+                if (page.dense->written[offset]) return page.dense->bytes[offset];
+            } else {
+                const auto byte = page.find(offset);
+                if (byte != page.sparse.end() && byte->offset == offset)
+                    return byte->value;
+            }
+        }
         if (addr >= base_ && addr - base_ < size_) return image_[addr - base_];
         ++unmapped_reads_;
         return 0;
@@ -96,22 +113,56 @@ private:
     void store(uint32_t addr, uint8_t value) {
         auto& page = shadow_[addr >> 12];
         const auto offset = addr & (kPageSize - 1);
-        if (!page.written[offset]) {
-            page.written[offset] = 1;
+        if (page.dense) {
+            if (!page.dense->written[offset]) {
+                page.dense->written.set(offset);
+                ++shadow_bytes_;
+            }
+            page.dense->bytes[offset] = value;
+            return;
+        }
+        auto byte = page.find(offset);
+        if (byte != page.sparse.end() && byte->offset == offset) {
+            byte->value = value;
+        } else {
+            page.sparse.insert(byte, {static_cast<uint16_t>(offset), value});
             ++shadow_bytes_;
         }
-        page.bytes[offset] = value;
+        if (page.sparse.size() == kDenseThreshold) {
+            page.dense = std::make_unique<DensePage>();
+            for (const auto& entry : page.sparse) {
+                page.dense->bytes[entry.offset] = entry.value;
+                page.dense->written.set(entry.offset);
+            }
+            std::vector<SparseByte>().swap(page.sparse);
+        }
     }
 
     const uint8_t* image_;
     std::size_t size_;
     uint32_t base_;
-    // Startup copies and BSS clears are dense. Allocate per touched page,
-    // not per byte, while preserving which individual bytes were written.
+    // Keep sparse writes proportional to their byte count. Once a page has
+    // 128 distinct writes, dense storage costs at most 36 bytes per write
+    // and gives startup copies/BSS clears constant-time byte lookup.
     static constexpr uint32_t kPageSize = 4096;
-    struct ShadowPage {
+    static constexpr std::size_t kDenseThreshold = 128;
+    struct DensePage {
         std::array<uint8_t, kPageSize> bytes{};
-        std::array<uint8_t, kPageSize> written{};
+        std::bitset<kPageSize> written{};
+    };
+    struct SparseByte { uint16_t offset; uint8_t value; };
+    struct ShadowPage {
+        std::vector<SparseByte> sparse;
+        std::unique_ptr<DensePage> dense;
+
+        std::vector<SparseByte>::iterator find(uint32_t offset) {
+            return std::lower_bound(sparse.begin(), sparse.end(), offset,
+                [](const SparseByte& byte, uint32_t at) { return byte.offset < at; });
+        }
+        std::vector<SparseByte>::const_iterator find(uint32_t offset) const {
+            return std::lower_bound(sparse.begin(), sparse.end(), offset,
+                [](const SparseByte& byte, uint32_t at) { return byte.offset < at; });
+        }
     };
     std::unordered_map<uint32_t, ShadowPage> shadow_;
     std::size_t shadow_bytes_ = 0;

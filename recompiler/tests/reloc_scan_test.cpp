@@ -2,7 +2,23 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <new>
 #include <vector>
+
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
+
+// Address/thread/memory sanitizers reserve large virtual address ranges.
+// Keep semantic coverage there without imposing the normal-build AS limit.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define NDS_RELOC_TEST_VIRTUAL_SANITIZER 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+    __has_feature(memory_sanitizer)
+#define NDS_RELOC_TEST_VIRTUAL_SANITIZER 1
+#endif
+#endif
 
 namespace {
 constexpr uint32_t base = 0x02000000;
@@ -17,6 +33,42 @@ void word(std::vector<uint8_t>& image, unsigned offset, uint32_t value) {
 bool expect(bool condition, const char* message) {
     if (!condition) std::fprintf(stderr, "FAIL: %s\n", message);
     return condition;
+}
+
+bool sparse_writes() {
+#if defined(__linux__) && !defined(NDS_RELOC_TEST_VIRTUAL_SANITIZER)
+    // One byte per page must not allocate hundreds of MiB. This catches
+    // eager dense-page allocation; other hosts still check scan semantics.
+    rlimit limit{};
+    if (!expect(getrlimit(RLIMIT_AS, &limit) == 0, "read memory limit"))
+        return false;
+    constexpr rlim_t budget = 256u * 1024u * 1024u;
+    if (limit.rlim_cur == RLIM_INFINITY || limit.rlim_cur > budget) {
+        limit.rlim_cur = budget;
+        if (!expect(setrlimit(RLIMIT_AS, &limit) == 0, "set memory limit"))
+            return false;
+    }
+#endif
+    // 65,536 STRB writes, one per page, with no relocatable content.
+    const uint32_t program[] = {
+        0xE59F001C, 0xE59F101C, 0xE3A02000, 0xE5C02000,
+        0xE2800A01, 0xE2511001, 0x1AFFFFFB, 0xE12FFF1E,
+        0, 0x10000000, 65536,
+    };
+    std::vector<uint8_t> image(sizeof(program));
+    for (unsigned i = 0; i < sizeof(program) / sizeof(program[0]); ++i)
+        word(image, i * 4, program[i]);
+    ndsrecomp::RelocScanStats stats;
+    try {
+        const auto copies = ndsrecomp::scan_relocations(
+            image.data(), image.size(), base, base, &stats);
+        return expect(copies.empty() && stats.shadow_bytes == 65536 &&
+                      stats.regions_total == 65536 &&
+                      stats.stop_reason == "pc-left-module",
+                      "all sparse writes retained within memory budget");
+    } catch (const std::bad_alloc&) {
+        return expect(false, "sparse scan exceeded memory budget");
+    }
 }
 } // namespace
 
@@ -79,5 +131,6 @@ int main() {
                  "sparse writes stay separate; in-image writes are excluded");
     ok &= expect(stats.unmapped_reads == 0 && stats.stop_reason == "pc-left-module",
                  "shadow reads override image without unmapped reads");
+    ok &= sparse_writes();
     return ok ? 0 : 1;
 }
