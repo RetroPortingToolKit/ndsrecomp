@@ -94,24 +94,38 @@ int main() {
         emit(0xE2522001);                 // subs r2, r2, #1
         emit(0x1AFFFFFB);                 // bne copy loop
     };
+    // First make the code's own page dense: later instruction fetches must
+    // still fall back to the image for bytes the scan never wrote.
+    copy(0xC0, 0xD0);
     // Write in reverse address order, then overwrite an existing region.
-    copy(0x80, 0x88);
-    copy(0x88, 0x84);                     // read back the shadow copy
-    copy(0x80, 0x88);
-    literal(1, 0x8C);
+    copy(0xC0, 0xC8);
+    copy(0xC8, 0xC4);                     // read back the shadow copy
+    copy(0xC0, 0xC8);
+    literal(1, 0xCC);
     emit(0xE3A03000);                     // mov r3, #0
     emit(0xE5C13000);                     // strb r3, [r1] (a sparse zero)
-    literal(0, 0x80);
+    literal(1, 0xD4);
+    emit(0xE3A03011);                     // mov r3, #0x11
+    emit(0xE5613001);                     // strb r3, [r1, #-1]! (descending)
+    emit(0xE5613001);                     // strb r3, [r1, #-1]!
+    emit(0xE3A03022);                     // mov r3, #0x22
+    emit(0xE5C13000);                     // strb r3, [r1] (sparse overwrite)
+    emit(0xE5D12001);                     // ldrb r2, [r1, #1]
+    emit(0xE3520011);                     // cmp r2, #0x11
+    emit(0x1F000000);                     // swine #0 (lost sparse byte)
+    literal(0, 0xC0);
     emit(0xE3A030AB);                     // mov r3, #0xAB
     emit(0xE5C03000);                     // strb r3, [r0] (inside image)
     emit(0xE5D03000);                     // ldrb r3, [r0] (shadow wins)
     emit(0xE35300AB);                     // cmp r3, #0xAB
     emit(0x1F000000);                     // swine #0 (wrong read stops here)
     emit(0xE12FFF1E);                     // bx lr (leave image)
-    word(image, 0x80, base + 0x100);
-    word(image, 0x84, low);
-    word(image, 0x88, high);
-    word(image, 0x8C, high + 0x1000);
+    word(image, 0xC0, base + 0x100);
+    word(image, 0xC4, low);
+    word(image, 0xC8, high);
+    word(image, 0xCC, high + 0x1000);
+    word(image, 0xD0, base + 0x200);
+    word(image, 0xD4, high + 0x2002);
 
     ndsrecomp::RelocScanStats stats;
     const auto copies = ndsrecomp::scan_relocations(
@@ -125,9 +139,10 @@ int main() {
             ok &= expect(c.source_start == base + 0x100 && c.size == 128,
                          "exact source and extent");
     }
-    ok &= expect(stats.shadow_bytes == 258, "overwrites count once; zero is written");
-    ok &= expect(stats.regions_total == 3 && stats.regions_matched == 2 &&
-                 stats.regions_unmatched == 1 && stats.regions_ambiguous == 0,
+    ok &= expect(pc <= 0xC0, "fixture code stays below its literal pool");
+    ok &= expect(stats.shadow_bytes == 388, "overwrites count once; zero is written");
+    ok &= expect(stats.regions_total == 4 && stats.regions_matched == 2 &&
+                 stats.regions_unmatched == 2 && stats.regions_ambiguous == 0,
                  "sparse writes stay separate; in-image writes are excluded");
     ok &= expect(stats.unmapped_reads == 0 && stats.stop_reason == "pc-left-module",
                  "shadow reads override image without unmapped reads");
