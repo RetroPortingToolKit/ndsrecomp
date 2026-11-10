@@ -18,7 +18,7 @@ constexpr uint32_t nds_gpu2d_pack_direct_pixel(uint32_t color, uint8_t priority,
 }
 
 constexpr int nds_gpu2d_adaptive_hud_x(int x, int width, bool anchor,
-                                      int center_width) {
+                                      int center_width, bool fill_gaps = false) {
     const int extra = (width - 256) / 2;
     const int left = (256 - center_width) / 2;
     const int right = left + center_width;
@@ -26,6 +26,15 @@ constexpr int nds_gpu2d_adaptive_hud_x(int x, int width, bool anchor,
         if (x < left) return x;
         if (x >= extra + left && x < extra + right) return x - extra;
         if (x >= width - (256 - right)) return x - (width - 256);
+        // A title may extend its decorative background seams while keeping
+        // authored panels and all separately anchored OBJ instruments intact.
+        // Stretch only the two adjacent source columns, preserving both ends.
+        if (fill_gaps && extra > 0) {
+            if (x < extra + left)
+                return left ? left - 1 + (2 * (x - left)) / extra : 0;
+            return right < 256
+                ? right - 1 + (2 * (x - extra - right)) / extra : 255;
+        }
     } else if (x >= extra && x < extra + 256) return x - extra;
     return -1;
 }

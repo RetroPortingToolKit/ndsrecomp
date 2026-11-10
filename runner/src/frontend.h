@@ -244,6 +244,8 @@ struct NdsFrontendOptions {
     // remains title-owned because arbitrary 2D backgrounds are not safe to
     // split or reposition.
     bool adaptive_hud_anchor = false;
+    // Extend audited decorative BG seams; OBJ text/instruments stay unscaled.
+    bool adaptive_hud_gap_fill = false;
     // Width of the authored center HUD band that stays centered. Pixels on
     // either side are anchored to the corresponding wide edge.
     uint16_t adaptive_hud_center_width = 64;

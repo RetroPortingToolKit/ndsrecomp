@@ -166,6 +166,7 @@ bool g_frame_capture_active = false;
 bool g_present_capture_active = false;
 uint32_t g_direct_force_cpu_frames = 0;
 bool g_adaptive_hud_anchor = false;
+bool g_adaptive_hud_gap_fill = false;
 int g_adaptive_hud_center_width = 64;
 int g_front = 0;
 uint64_t g_render_ns = 0;
@@ -2519,8 +2520,9 @@ bool nds_gpu2d_direct_frame(NdsGpu2dDirectFrame* out) {
 }
 
 void nds_gpu2d_set_adaptive_hud_anchor(bool enabled,
-                                       uint16_t center_width) {
+                                       uint16_t center_width, bool fill_gaps) {
     g_adaptive_hud_anchor = enabled;
+    g_adaptive_hud_gap_fill = enabled && fill_gaps;
     g_adaptive_hud_center_width =
         std::clamp<int>(center_width, 8, 256);
 }
@@ -2730,9 +2732,18 @@ void composite_adaptive_line(const AdaptiveCtx& c, int y,
         const uint8_t window_mask = nds_gpu2d_window_mask(
             window_state, window_x, static_cast<uint8_t>(y),
             obj_window[x] != 0u);
-        if (hud_x >= 0) {
+        const int bg_hud_x = g_adaptive_hud_gap_fill
+            ? nds_gpu2d_adaptive_hud_x(x, output_width, g_adaptive_hud_anchor,
+                                      g_adaptive_hud_center_width, true)
+            : hud_x;
+        // Authored OBJ panels can cross the edge of an anchored band. Keep
+        // their original stack in those pixels instead of covering them with
+        // a newly introduced, higher-priority decorative BG seam.
+        const bool preserve_obj = hud_x < 0 && obj[x].valid &&
+                                  (window_mask & 0x10u);
+        if (bg_hud_x >= 0 && !preserve_obj) {
             for (size_t i = 0; i < hud_bg_count; ++i) {
-                const uint16_t c = hud_bg_lines[i].color[hud_x];
+                const uint16_t c = hud_bg_lines[i].color[bg_hud_x];
                 if (!(c & 0x8000u) ||
                     !(window_mask & (1u << hud_bgs[i])))
                     continue;

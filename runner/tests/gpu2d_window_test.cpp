@@ -573,6 +573,77 @@ void run_adaptive_frame(AdaptiveRun& out, uint16_t output_width = 448) {
     nds_gpu2d_set_hd_emit(false);
 }
 
+bool test_adaptive_hud_gap_composition() {
+    std::array<uint8_t, 0x4000> background{};
+    std::array<uint8_t, 0x4000> objects{};
+    std::fill_n(background.begin(), 32, 0x11u);
+    std::fill_n(objects.begin(), 32, 0x22u);
+    g_scene_tweak = [&](Unit& u) {
+        // Give the production decoder a real opaque tile and an independent
+        // OBJ marker. The older generic fixture has unmapped BG VRAM.
+        u.bgcnt[1] = 0x0100u;
+        g_view = {};
+        g_view.bg[0] = background.data();
+        g_view.obj[1] = objects.data();
+        write16(g_palette, 0x204u, 0x7C00u);
+        // A lower-priority HUD panel crosses from the center band into the
+        // left gap. Its visible pixels must survive higher-priority seam BGs.
+        set_obj(2, 0x0020u, 0x8030u, 0x0A00u);
+    };
+    nds_gpu2d_set_adaptive_workers(0);
+    nds_gpu2d_set_adaptive_center_max_polygons(0);
+    nds_gpu2d_set_adaptive_hud_anchor(true, 128, false);
+    AdaptiveRun original{};
+    run_adaptive_frame(original, 384);
+    nds_gpu2d_set_adaptive_hud_anchor(true, 128, true);
+    AdaptiveRun filled{};
+    run_adaptive_frame(filled, 384);
+    const size_t marker = 32u * 384u + 112u;
+    if (!require(original.surface[marker] == to_rgb32(rgb6(0x7C00u)))) return false;
+    if (!require(original.surface[marker] == filled.surface[marker])) return false;
+    bool changed_gap = false;
+    for (size_t i = 0; i < original.surface.size(); ++i) {
+        const int x = static_cast<int>(i % 384u);
+        if (nds_gpu2d_adaptive_hud_x(x, 384, true, 128) >= 0) {
+            if (!require(original.surface[i] == filled.surface[i])) return false;
+        } else if (original.surface[i] != filled.surface[i]) {
+            changed_gap = true;
+        }
+    }
+    if (!require(changed_gap)) return false;
+    nds_gpu2d_set_adaptive_hud_anchor(true, 128, false);
+    AdaptiveRun native_original{};
+    run_adaptive_frame(native_original, 256);
+    nds_gpu2d_set_adaptive_hud_anchor(true, 128, true);
+    AdaptiveRun native_filled{};
+    run_adaptive_frame(native_filled, 256);
+    nds_gpu2d_set_adaptive_hud_anchor(false, 64);
+    g_scene_tweak = {};
+    g_view = {};
+    return require(native_original.surface == native_filled.surface);
+}
+
+bool test_adaptive_hud_gap_fill() {
+    for (int width : {256, 320, 384, 448}) {
+        for (int center : {8, 64, 128, 256}) {
+            for (int x = 0; x < width; ++x) {
+                const int original = nds_gpu2d_adaptive_hud_x(x, width, true, center);
+                const int filled = nds_gpu2d_adaptive_hud_x(x, width, true, center, true);
+                if (!require(filled >= 0 && filled < 256)) return false;
+                if (original >= 0 && !require(original == filled)) return false;
+                if (width == 256 && !require(filled == x)) return false;
+                if (!require(nds_gpu2d_adaptive_hud_x(x, width, false, center, true) ==
+                             nds_gpu2d_adaptive_hud_x(x, width, false, center))) return false;
+            }
+        }
+    }
+    return require(nds_gpu2d_adaptive_hud_x(64, 384, true, 128) == -1) &&
+           require(nds_gpu2d_adaptive_hud_x(64, 384, true, 128, true) == 63) &&
+           require(nds_gpu2d_adaptive_hud_x(127, 384, true, 128, true) == 64) &&
+           require(nds_gpu2d_adaptive_hud_x(256, 384, true, 128, true) == 191) &&
+           require(nds_gpu2d_adaptive_hud_x(319, 384, true, 128, true) == 192);
+}
+
 bool test_adaptive_window_x() {
     // HUD-sourced columns keep their native coordinate; margins clamp to the
     // nearest native edge column instead of wrapping through uint8_t.
@@ -909,6 +980,8 @@ int main() {
     if (!test_capture_uses_reference()) return 15;
     if (!test_direct_window_scanline_latch()) return 16;
     if (!test_native_aspect_hd_keeps_native_fallback()) return 17;
+    if (!test_adaptive_hud_gap_fill()) return 18;
+    if (!test_adaptive_hud_gap_composition()) return 19;
     return 0;
 }
 #endif
