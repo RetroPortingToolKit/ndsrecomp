@@ -73,6 +73,7 @@ extern "C" void nds_region_finish(uint32_t single_step,uint32_t) {
 extern "C" void runtime_note_code_write() {
     ++code_writes;if(invalidate)g_nds_fast_limit=0;
 }
+extern "C" void runtime_note_code_write_pages(const uint32_t*,uint32_t) { runtime_note_code_write(); }
 extern "C" void runtime_note_live_write(uint32_t,uint32_t,uint32_t,uint32_t) {}
 extern "C" uint32_t runtime_code_cycles(uint32_t pc) {g_last_code_pc[0]=pc;return 1;}
 extern "C" uint32_t runtime_mem_cycles_slow(uint32_t a,uint32_t,uint32_t) {g_last_data_addr[0]=a;return 1;}
