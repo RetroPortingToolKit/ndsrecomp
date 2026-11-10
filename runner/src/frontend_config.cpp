@@ -129,7 +129,7 @@ bool nds_parse_internal_resolution(const std::string& value, uint8_t* out) {
     if (!out || value.empty()) return false;
     char* end = nullptr;
     const long parsed = std::strtol(value.c_str(), &end, 10);
-    if (!end || *end != '\0' || parsed < 1 || parsed > 4) return false;
+    if (!end || *end != '\0' || parsed < 1 || parsed > 12) return false;
     *out = static_cast<uint8_t>(parsed);
     return true;
 }
@@ -611,6 +611,10 @@ bool nds_load_frontend_config(const std::string& path,
             options->adaptive_hud_anchor = *value;
         }
         if (const auto value =
+                (*display)["adaptive_hud_gap_fill"].value<bool>()) {
+            options->adaptive_hud_gap_fill = *value;
+        }
+        if (const auto value =
                 (*display)["adaptive_center_native"].value<bool>()) {
             options->adaptive_center_native = *value;
         }
@@ -693,7 +697,7 @@ bool nds_load_frontend_config(const std::string& path,
             if (!nds_parse_internal_resolution(
                     std::to_string(*value), &options->internal_resolution)) {
                 if (error) {
-                    *error = "display.internal_resolution must be 1..4";
+                    *error = "display.internal_resolution must be 1..12";
                 }
                 return false;
             }

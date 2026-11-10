@@ -81,7 +81,7 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width);
 void nds_gpu2d_set_adaptive_skybox_fill(bool enabled);
 // Title-audited transparent text HUD composition for wide 3D scenes.
 void nds_gpu2d_set_adaptive_hud_anchor(bool enabled,
-                                       uint16_t center_width);
+                                       uint16_t center_width, bool fill_gaps = false);
 // Title-owned escape hatch for adaptive scenes whose widened 3D projection has
 // not been audited yet. The presenter still uses the adaptive window width,
 // but the source pixels remain a centered native-width composite.

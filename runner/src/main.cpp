@@ -714,7 +714,7 @@ int main(int argc, char** argv) {
                 "[--adaptive-widescreen none|top|bottom|both] "
                 "[--widescreen-width even:256..448] "
                 "[--supersampling 1|2|3|4] "
-                "[--internal-resolution 1|2|3|4] "
+                "[--internal-resolution 1..12] "
                 "[--window-scale 1..8] "
                 "[--keyboard-bindings <12 comma-separated SDL scancodes>] "
                 "[--gamepad-bindings <12 comma-separated encoded controls>] "
@@ -865,7 +865,7 @@ int main(int argc, char** argv) {
                 value, &frontend_options.internal_resolution)) {
             std::fprintf(stderr,
                          "invalid NDS_INTERNAL_RESOLUTION "
-                         "(expected 1..4)\n");
+                         "(expected 1..12)\n");
             return 2;
         }
     }
@@ -995,7 +995,7 @@ int main(int argc, char** argv) {
             cli_internal_resolution,
             &frontend_options.internal_resolution)) {
         std::fprintf(stderr,
-                     "invalid --internal-resolution (expected 1..4)\n");
+                     "invalid --internal-resolution (expected 1..12)\n");
         return 2;
     }
     if (!cli_antialiasing.empty() &&
@@ -2032,7 +2032,8 @@ int main(int argc, char** argv) {
     nds_gpu2d_set_adaptive_hud_anchor(
         frontend_options.adaptive_hud_anchor &&
         (frontend_options.adaptive_screens & NDS_ADAPTIVE_TOP) != 0u,
-        frontend_options.adaptive_hud_center_width);
+        frontend_options.adaptive_hud_center_width,
+        frontend_options.adaptive_hud_gap_fill);
     nds_gpu2d_set_adaptive_center_native(
         frontend_options.adaptive_center_native &&
         (frontend_options.adaptive_screens & NDS_ADAPTIVE_TOP) != 0u);

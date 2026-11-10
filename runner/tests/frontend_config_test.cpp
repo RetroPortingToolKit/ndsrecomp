@@ -23,6 +23,12 @@ bool set_fullscreen_environment(const char* value) {
 }  // namespace
 
 int main() {
+    uint8_t high_internal = 1;
+    if (!require(nds_parse_internal_resolution("12", &high_internal)) ||
+        !require(high_internal == 12) ||
+        !require(!nds_parse_internal_resolution("13", &high_internal)) ||
+        !require(!nds_parse_internal_resolution("0", &high_internal)))
+        return 129;
     NdsScreenLayout layout = NdsScreenLayout::Stacked;
     if (!require(nds_parse_screen_layout("separate", &layout)) ||
         !require(layout == NdsScreenLayout::Separate) ||
@@ -133,6 +139,7 @@ int main() {
                 "adaptive_width = 448\n"
                 "adaptive_skybox_fill = true\n"
                 "adaptive_hud_anchor = true\n"
+                "adaptive_hud_gap_fill = true\n"
                 "adaptive_center_native = true\n"
                 "adaptive_guest_culling = true\n"
                 "adaptive_center_max_polygons = 64\n"
@@ -175,6 +182,7 @@ int main() {
         !require(options.adaptive_max_width[1] == 256) ||
         !require(options.adaptive_skybox_fill) ||
         !require(options.adaptive_hud_anchor) ||
+        !require(options.adaptive_hud_gap_fill) ||
         !require(options.adaptive_center_native) ||
         !require(options.adaptive_guest_culling) ||
         !require(options.adaptive_center_max_polygons == 64) ||
