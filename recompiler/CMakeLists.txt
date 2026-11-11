@@ -30,6 +30,11 @@ add_executable(interpreter_cycle_test
     tests/interpreter_cycle_test.cpp)
 target_link_libraries(interpreter_cycle_test PRIVATE nds_armv4t)
 
+add_executable(reloc_scan_test tests/reloc_scan_test.cpp finder/reloc_scan.cpp)
+target_include_directories(reloc_scan_test PRIVATE finder)
+target_link_libraries(reloc_scan_test PRIVATE nds_armv4t)
+add_test(NAME reloc_scan_test COMMAND reloc_scan_test)
+
 add_executable(hle_manifest_test
     tests/hle_manifest_test.cpp
     finder/config.cpp
