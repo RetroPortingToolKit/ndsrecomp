@@ -612,6 +612,12 @@ bool spu_savestate_validate(const NdsSpuSaveState& in, std::string* error) {
         return fail("savestate SPU global state is invalid");
     for (const NdsSpuChannelSaveState& channel : in.channel) {
         const uint32_t format = (channel.cnt >> 29) & 3u;
+        // A stopped or keyed-on channel still holds the previous note's stream
+        // cursors while the guest programs the next note; start() rebuilds
+        // them before they are read again. Only a streaming channel's cursors
+        // have to agree with its current registers.
+        const bool streaming =
+            (channel.cnt & 0x80000000u) != 0u && channel.key_on == 0u;
         if ((channel.cnt & ~0xFF7F837Fu) != 0u ||
             (channel.src & ~0x07FFFFFCu) != 0u ||
             channel.loop > 0x3FFFCu || (channel.loop & 3u) != 0u ||
@@ -620,30 +626,36 @@ bool spu_savestate_validate(const NdsSpuSaveState& in, std::string* error) {
             channel.pos < -3 || channel.adpcm_index < 0 ||
             channel.adpcm_index > 88 || channel.adpcm_loop_index < 0 ||
             channel.adpcm_loop_index > 88 || channel.fifo_read >= 32u ||
-            channel.fifo_write >= 32u || channel.fifo_level > 32u ||
+            channel.fifo_write >= 32u ||
+            (streaming && channel.fifo_level > 32u) ||
             ((channel.fifo_write + 32u - channel.fifo_read) & 0x1Fu) !=
                 (channel.fifo_level & 0x1Fu) ||
             (channel.source_offset & 3u) != 0u ||
-            channel.source_offset > channel.loop + channel.length)
+            (streaming &&
+             channel.source_offset > channel.loop + channel.length))
             return fail("savestate SPU channel state is invalid");
         if ((channel.fifo_write & 3u) != 0u ||
-            (format == 1u && (channel.fifo_read & 1u) != 0u) ||
-            (format == 2u && channel.pos < 8 && (channel.fifo_read & 3u) != 0u))
+            (streaming && format == 1u && (channel.fifo_read & 1u) != 0u) ||
+            (streaming && format == 2u && channel.pos < 8 &&
+             (channel.fifo_read & 3u) != 0u))
             return fail("savestate SPU channel FIFO cursor is invalid");
     }
     for (const NdsSpuCaptureSaveState& capture : in.capture) {
+        // A one-shot capture finishes with cnt &= 0x7F, which keeps bit 0 and
+        // its last stream state; start() rebuilds that state on re-enable.
+        const bool active = (capture.cnt & 0x80u) != 0u;
         if ((capture.cnt & ~0x8Fu) != 0u ||
-            (!(capture.cnt & 0x80u) && (capture.cnt & 1u)) ||
             (capture.dst & ~0x07FFFFFCu) != 0u ||
             capture.length > 0x3FFFCu || (capture.length & 3u) != 0u ||
-            capture.timer > 0xFFFFu || capture.pos < 0 ||
+            (active && capture.timer > 0xFFFFu) || capture.pos < 0 ||
             capture.fifo_read >= 16u || capture.fifo_write >= 16u ||
             capture.fifo_level > 16u ||
             ((capture.fifo_write + 16u - capture.fifo_read) & 0xFu) !=
                 (capture.fifo_level & 0xFu) ||
             (capture.write_offset & 3u) != 0u ||
-            (capture.length == 0u ? capture.write_offset != 0u
-                                  : capture.write_offset >= capture.length))
+            (active && (capture.length == 0u
+                            ? capture.write_offset != 0u
+                            : capture.write_offset >= capture.length)))
             return fail("savestate SPU capture state is invalid");
         if ((capture.fifo_read & 3u) != 0u ||
             ((capture.cnt & 0x88u) == 0x80u && (capture.fifo_write & 1u) != 0u))
