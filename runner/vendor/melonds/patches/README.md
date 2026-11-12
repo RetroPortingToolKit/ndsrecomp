@@ -11,6 +11,24 @@ patch here against the committed file, or re-copy from
 `ndsref/third_party/melonDS` (pinned tag `1.0rc`,
 `e3fa6f4224e0d706df3ee262ae41cfb0deadc593`) and diff.
 
+## 0025-native-gl-depth-equality.patch
+
+2026-11-12: native GL evaluates equality polygons against the inclusive
+Z ±512 / W ±255 depth band. Each polygon observes preceding depth writes;
+overlapping equality polygons cannot share a stale reference. Shadow masks
+retain their inverted depth-failure stencil behavior.
+
+Drivers with OpenGL 4.5 or ARB_texture_barrier can read the same pixel's
+depth after a texture barrier for verified convex, nonoverlapping polygon
+draws. The OpenGL 4.3 fallback copies the polygon's bounded depth area into
+a distinct image. Lines and nonconvex polygons also use that fallback.
+The extension and entry point are checked once per renderer construction.
+Guest capture continues through the existing integer reference renderer.
+
+The focused native GL test covers both band boundaries, depth writes between
+overlapping polygons, translucent draws, shadow masks and identical images
+from the barrier and copy paths.
+
 ## 0022-native-gl-runner-adapter.patch
 
 `GPU3D_OpenGL.{cpp,h}`: import the pinned native GL rasterizer and adapt its

@@ -1286,7 +1286,7 @@ ndsrecomp_link_tomlpp(frontend_config_test)
         vendor/melonds/GPU3D_OpenGL.cpp vendor/melonds/OpenGLSupport.cpp
         vendor/melonds/glad/glad.c)
     target_include_directories(native_gl_test PRIVATE vendor/melonds src/melonds_compute)
-    target_compile_definitions(native_gl_test PRIVATE OGLRENDERER_ENABLED=1 MELONDS_GL_HEADER="glad/glad.h")
+    target_compile_definitions(native_gl_test PRIVATE OGLRENDERER_ENABLED=1 MELONDS_GL_HEADER="glad/glad.h" NDS_NATIVE_GL_DEPTH_BARRIER_TEST=1)
     if(NDS_CAPTURE_VIEW_REUSE)
         target_compile_definitions(native_gl_test PRIVATE NDS_CAPTURE_VIEW_REUSE=1)
     endif()
