@@ -1401,6 +1401,13 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_link_libraries(savestate_test PRIVATE nds_armv4t nds_support)
   add_test(NAME savestate_test COMMAND savestate_test)
 
+  add_executable(spu_savestate_test tests/spu_savestate_test.cpp
+      src/spu.cpp src/emu_profile.cpp src/dispatch_timing.cpp)
+  target_include_directories(spu_savestate_test PRIVATE src vendor/melonds
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
+      ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  add_test(NAME spu_savestate_test COMMAND spu_savestate_test)
+
   # Bit-exactness rail for the fused timed-access fast path (yjp.70 ph2 B):
   # sweeps every region boundary / width / seq / CPU / CP15 configuration
   # asserting the inline path == the retained reference implementations.
