@@ -854,8 +854,15 @@ bool nds_gpu3d_use_compute_renderer() {
     g_compute_runtime_failed = false;
     clear_compute_gl_errors();
     const uint32_t render_width = g_nds.GPU.GPU3D.GetRenderWidth();
+    // Native GL rasterization accepts every even width, including fixed16:9
+    // (342). Only the compute renderer's coarse tile grid requires64 pixels.
+#if defined(NDS_USE_NATIVE_GL)
+    const bool aligned_width = (render_width & 1u) == 0u;
+#else
+    const bool aligned_width = (render_width % 64u) == 0u;
+#endif
     if (render_width < 256u || render_width > kComputeMaxWidth ||
-        (render_width % 64u) != 0u) {
+        !aligned_width) {
         std::fprintf(stderr,
                      "[gpu3d] compute render width %u is unsupported\n",
                      render_width);
