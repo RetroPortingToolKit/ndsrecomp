@@ -225,8 +225,8 @@ bool io_savestate_validate(const NdsIoCoreSaveState& in,
     if (!binary(in.next_vcount_valid) || !binary(in.in_vblank) ||
         !binary(in.gxfifo_stall) || !binary(in.pm_hold) ||
         !binary(in.powered_off) || in.vcount > 262u ||
-        in.tsc_datapos < 0 || in.tsc_datapos > 2 ||
-        (in.powercontrol7 & ~0x0003u) != 0u || in.pm_index >= 8u) {
+        in.tsc_datapos < 0 || in.tsc_datapos > 3 ||
+        (in.powercontrol7 & ~0x0003u) != 0u) {
         if (error) *error = "savestate IO core scalar is invalid";
         return false;
     }

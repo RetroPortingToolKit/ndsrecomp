@@ -1377,6 +1377,17 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_include_directories(firmware_state_test PRIVATE src)
   add_test(NAME firmware_state_test COMMAND firmware_state_test)
 
+  # A focused real-IO fixture; section GC avoids linking unrelated devices.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(io_spi_savestate_test tests/io_spi_savestate_test.cpp)
+    target_include_directories(io_spi_savestate_test PRIVATE src vendor/melonds
+        ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
+        ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+    target_compile_options(io_spi_savestate_test PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(io_spi_savestate_test PRIVATE -Wl,--gc-sections)
+    add_test(NAME io_spi_savestate_test COMMAND io_spi_savestate_test)
+  endif()
+
   add_executable(savestate_test
       tests/savestate_test.cpp
       tests/savestate_test_stubs.cpp
