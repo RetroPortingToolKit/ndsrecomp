@@ -1463,6 +1463,13 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   add_test(NAME network_savestate_guard_test
            COMMAND network_savestate_guard_test)
 
+  add_executable(spu_capture_wrap_test tests/spu_capture_wrap_test.cpp
+      src/spu.cpp src/emu_profile.cpp src/dispatch_timing.cpp)
+  target_include_directories(spu_capture_wrap_test PRIVATE src vendor/melonds
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
+      ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  add_test(NAME spu_capture_wrap_test COMMAND spu_capture_wrap_test)
+
   add_executable(video_savestate_test
       tests/video_savestate_test.cpp
       tests/video_savestate_test_stubs.cpp
