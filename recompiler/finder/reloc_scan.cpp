@@ -3,9 +3,12 @@
 #include "reloc_scan.h"
 
 #include <algorithm>
+#include <array>
+#include <bitset>
 #include <cstdio>
 #include <cstring>
-#include <map>
+#include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "arm_decode.h"
@@ -55,34 +58,114 @@ public:
              | (static_cast<uint32_t>(load(addr + 3)) << 24);
     }
 
-    void write8(uint32_t addr, uint8_t v) override { shadow_[addr] = v; }
+    void write8(uint32_t addr, uint8_t v) override { store(addr, v); }
     void write16(uint32_t addr, uint16_t v) override {
-        shadow_[addr] = static_cast<uint8_t>(v);
-        shadow_[addr + 1] = static_cast<uint8_t>(v >> 8);
+        store(addr, static_cast<uint8_t>(v));
+        store(addr + 1, static_cast<uint8_t>(v >> 8));
     }
     void write32(uint32_t addr, uint32_t v) override {
-        shadow_[addr] = static_cast<uint8_t>(v);
-        shadow_[addr + 1] = static_cast<uint8_t>(v >> 8);
-        shadow_[addr + 2] = static_cast<uint8_t>(v >> 16);
-        shadow_[addr + 3] = static_cast<uint8_t>(v >> 24);
+        store(addr, static_cast<uint8_t>(v));
+        store(addr + 1, static_cast<uint8_t>(v >> 8));
+        store(addr + 2, static_cast<uint8_t>(v >> 16));
+        store(addr + 3, static_cast<uint8_t>(v >> 24));
     }
 
-    const std::map<uint32_t, uint8_t>& shadow() const { return shadow_; }
+    std::size_t shadow_bytes() const { return shadow_bytes_; }
+    template<class Visitor>
+    void for_each_shadow_byte(Visitor visit) const {
+        std::vector<uint32_t> pages;
+        pages.reserve(shadow_.size());
+        for (const auto& entry : shadow_) pages.push_back(entry.first);
+        std::sort(pages.begin(), pages.end());
+        for (uint32_t number : pages) {
+            const auto& page = shadow_.at(number);
+            if (page.dense) {
+                for (uint32_t i = 0; i < kPageSize; ++i)
+                    if (page.dense->written[i])
+                        visit((number << 12) + i, page.dense->bytes[i]);
+            } else {
+                for (const auto& byte : page.sparse)
+                    visit((number << 12) + byte.offset, byte.value);
+            }
+        }
+    }
     std::size_t unmapped_reads() const { return unmapped_reads_; }
 
 private:
     uint8_t load(uint32_t addr) {
-        auto it = shadow_.find(addr);
-        if (it != shadow_.end()) return it->second;
+        auto it = shadow_.find(addr >> 12);
+        if (it != shadow_.end()) {
+            const auto& page = it->second;
+            const auto offset = addr & (kPageSize - 1);
+            if (page.dense) {
+                if (page.dense->written[offset]) return page.dense->bytes[offset];
+            } else {
+                const auto byte = page.find(offset);
+                if (byte != page.sparse.end() && byte->offset == offset)
+                    return byte->value;
+            }
+        }
         if (addr >= base_ && addr - base_ < size_) return image_[addr - base_];
         ++unmapped_reads_;
         return 0;
     }
 
+    void store(uint32_t addr, uint8_t value) {
+        auto& page = shadow_[addr >> 12];
+        const auto offset = addr & (kPageSize - 1);
+        if (page.dense) {
+            if (!page.dense->written[offset]) {
+                page.dense->written.set(offset);
+                ++shadow_bytes_;
+            }
+            page.dense->bytes[offset] = value;
+            return;
+        }
+        auto byte = page.find(offset);
+        if (byte != page.sparse.end() && byte->offset == offset) {
+            byte->value = value;
+        } else {
+            page.sparse.insert(byte, {static_cast<uint16_t>(offset), value});
+            ++shadow_bytes_;
+        }
+        if (page.sparse.size() == kDenseThreshold) {
+            page.dense = std::make_unique<DensePage>();
+            for (const auto& entry : page.sparse) {
+                page.dense->bytes[entry.offset] = entry.value;
+                page.dense->written.set(entry.offset);
+            }
+            std::vector<SparseByte>().swap(page.sparse);
+        }
+    }
+
     const uint8_t* image_;
     std::size_t size_;
     uint32_t base_;
-    std::map<uint32_t, uint8_t> shadow_;
+    // Keep sparse writes proportional to their byte count. Once a page has
+    // 128 distinct writes, dense storage costs at most 36 bytes per write
+    // and gives startup copies/BSS clears constant-time byte lookup.
+    static constexpr uint32_t kPageSize = 4096;
+    static constexpr std::size_t kDenseThreshold = 128;
+    struct DensePage {
+        std::array<uint8_t, kPageSize> bytes{};
+        std::bitset<kPageSize> written{};
+    };
+    struct SparseByte { uint16_t offset; uint8_t value; };
+    struct ShadowPage {
+        std::vector<SparseByte> sparse;
+        std::unique_ptr<DensePage> dense;
+
+        std::vector<SparseByte>::iterator find(uint32_t offset) {
+            return std::lower_bound(sparse.begin(), sparse.end(), offset,
+                [](const SparseByte& byte, uint32_t at) { return byte.offset < at; });
+        }
+        std::vector<SparseByte>::const_iterator find(uint32_t offset) const {
+            return std::lower_bound(sparse.begin(), sparse.end(), offset,
+                [](const SparseByte& byte, uint32_t at) { return byte.offset < at; });
+        }
+    };
+    std::unordered_map<uint32_t, ShadowPage> shadow_;
+    std::size_t shadow_bytes_ = 0;
     std::size_t unmapped_reads_ = 0;
 };
 
@@ -158,21 +241,21 @@ std::vector<RelocCopy> scan_relocations(const uint8_t* image,
     }
     if (stats.stop_reason.empty()) stats.stop_reason = "step-cap";
     stats.unmapped_reads = bus.unmapped_reads();
-    stats.shadow_bytes = bus.shadow().size();
+    stats.shadow_bytes = bus.shadow_bytes();
 
     // ── Coalesce shadow writes outside the module span ───────────────
     struct Region { uint32_t start; std::vector<uint8_t> bytes; };
     std::vector<Region> regions;
-    for (const auto& [addr, byte] : bus.shadow()) {
+    bus.for_each_shadow_byte([&](uint32_t addr, uint8_t byte) {
         if (addr >= image_base && addr - image_base < image_size)
-            continue;  // self-modification inside the span: not an alias
+            return;  // self-modification inside the span: not an alias
         if (!regions.empty() &&
             addr == regions.back().start + regions.back().bytes.size()) {
             regions.back().bytes.push_back(byte);
         } else {
             regions.push_back(Region{addr, {byte}});
         }
-    }
+    });
     stats.regions_total = regions.size();
 
     // ── Content-match each region against the module image ───────────
