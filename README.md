@@ -176,12 +176,19 @@ configs under `bios/firmware_banks/`. The current capture and regeneration
 tools are `tools/capture_firmware_images.py` and
 `tools/export_firmware_bank_configs.py`, but this bootstrap workflow still
 assumes an active developer setup. Once every required bank exists under
-`generated/`, configure and build the runner:
+`generated/`, obtain the shared in-game menu dependency and build the runner.
+The example assumes `recomp-ui` and `ndsrecomp` are sibling checkouts:
 
 ```sh
+git clone https://github.com/RetroPortingToolKit/recomp-ui.git ../recomp-ui
 cmake -G Ninja -B runner/build runner
 cmake --build runner/build
 ```
+
+For a different location, pass `-DNDS_RECOMP_UI_ROOT=/path/to/recomp-ui` or
+set the `RECOMP_UI_ROOT` environment variable. An explicit CMake value takes
+precedence. A checkout inside `ndsrecomp/recomp-ui` is also discovered. Missing
+headers or common runtime sources produce a setup error during configuration.
 
 SDL3 is the default host presentation backend. Configure with
 `-DNDS_SDL_BACKEND=SDL2` for the compatibility backend, or
