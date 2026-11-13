@@ -273,6 +273,7 @@ layout (std430, binding = 6) buffer BinResultBuffer
 {
     uvec4 VariantWorkCount[MaxVariants];
     uint SortedWorkOffset[MaxVariants];
+    uint VariantWorkItems[MaxVariants];
 
     uvec4 SortWorkWorkCount;
 
@@ -1046,9 +1047,19 @@ void main()
         if (gl_GlobalInvocationID.x == 0)
         {
             // a bit of a cheat putting this here, but this shader won't run that often
-            SortWorkWorkCount = uvec4((VariantWorkCount[0].w + 31) / 32, 1, 1, 0);
+            uint groups = (VariantWorkCount[0].w + 31u) / 32u;
+            uint columns = max(1u, (groups + 65534u) / 65535u);
+            SortWorkWorkCount = uvec4(columns, (groups + columns - 1u) / columns, 1, 0);
         }
-        SortedWorkOffset[gl_GlobalInvocationID.x] = atomicAdd(VariantWorkCount[1].w, VariantWorkCount[gl_GlobalInvocationID.x].z);
+        uint variant = gl_GlobalInvocationID.x;
+        uint count = VariantWorkCount[variant].z;
+        SortedWorkOffset[variant] = atomicAdd(VariantWorkCount[1].w, count);
+        VariantWorkItems[variant] = count;
+        // GL4.3 guarantees only 65,535 work groups per dispatch axis. Spread
+        // large variants over X/Z with less than one row of unused groups.
+        uint columns = max(1u, (count + 65534u) / 65535u);
+        VariantWorkCount[variant].x = columns;
+        VariantWorkCount[variant].z = (count + columns - 1u) / columns;
     }
 }
 
@@ -1064,19 +1075,29 @@ layout (local_size_x = 32) in;
 
 void main()
 {
-    if (gl_GlobalInvocationID.x < VariantWorkCount[0].w)
+    uint workIndex = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) *
+        gl_WorkGroupSize.x + gl_LocalInvocationID.x;
+    if (workIndex < VariantWorkCount[0].w)
     {
-        uvec2 workDesc = WorkDescs[WorkDescsUnsortedStart + gl_GlobalInvocationID.x];
+        uvec2 workDesc = WorkDescs[WorkDescsUnsortedStart + workIndex];
         int inVariantOffset = int(bitfieldExtract(workDesc.y, 11, 21));
         int polygonIdx = int(bitfieldExtract(workDesc.y, 0, 11));
         int variantIdx = Polygons[polygonIdx].Variant;
 
         int sortedIndex = int(SortedWorkOffset[variantIdx]) + inVariantOffset;
-        WorkDescs[WorkDescsSortedStart + sortedIndex] = uvec2(workDesc.x, bitfieldInsert(workDesc.y, gl_GlobalInvocationID.x, 11, 21));
+        WorkDescs[WorkDescsSortedStart + sortedIndex] = uvec2(workDesc.x, bitfieldInsert(workDesc.y, workIndex, 11, 21));
     }
 }
 
 )";
+
+const std::string RasterWorkIndex{R"(
+bool GetRasterWorkIndex(out uint index)
+{
+    index = gl_WorkGroupID.z * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    return index < VariantWorkItems[CurVariant];
+}
+)"};
 
 const std::string Rasterise =
     PolygonBuffer +
@@ -1091,10 +1112,12 @@ layout (binding = 0) uniform usampler2DArray CurrentTexture;
 
 layout (location = 0) uniform uint CurVariant;
 layout (location = 1) uniform vec2 InvTextureSize;
-
+)" + RasterWorkIndex + R"(
 void main()
 {
-    uvec2 workDesc = WorkDescs[WorkDescsSortedStart + SortedWorkOffset[CurVariant] + gl_WorkGroupID.z];
+    uint workIndex;
+    if (!GetRasterWorkIndex(workIndex)) return;
+    uvec2 workDesc = WorkDescs[WorkDescsSortedStart + SortedWorkOffset[CurVariant] + workIndex];
     Polygon polygon = Polygons[bitfieldExtract(workDesc.y, 0, 11)];
     ivec2 position = ivec2(bitfieldExtract(workDesc.x, 0, 16), bitfieldExtract(workDesc.x, 16, 16)) + ivec2(gl_LocalInvocationID.xy);
 #ifdef NDS_CAPTURE_FIRST

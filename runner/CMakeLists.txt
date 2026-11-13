@@ -1306,6 +1306,12 @@ ndsrecomp_link_tomlpp(frontend_config_test)
     target_link_libraries(compute_capture_first_test PRIVATE SDL3::SDL3)
     add_test(NAME compute_capture_first_test COMMAND compute_capture_first_test)
     set_tests_properties(compute_capture_first_test PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(compute_dispatch_test tests/compute_dispatch_test.cpp vendor/melonds/glad/glad.c)
+    target_include_directories(compute_dispatch_test PRIVATE vendor/melonds)
+    target_link_libraries(compute_dispatch_test PRIVATE SDL3::SDL3)
+    add_test(NAME compute_dispatch_test COMMAND compute_dispatch_test)
+    set_tests_properties(compute_dispatch_test PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 
   add_executable(hle_mkds_test tests/hle_mkds_test.cpp src/hle_mkds.cpp)
