@@ -220,6 +220,34 @@ bool test_mph_exact_wide_width() {
         if(!std::equal(g_main_ram.begin(),g_main_ram.end(),allowed.begin()) || std::memcmp(state.mph_adventure_wide_site_applied,
             repeated.mph_adventure_wide_site_applied,sizeof state.mph_adventure_wide_site_applied))return false;
     }
+    // Current-build states restore guest RAM, while the current host width
+    // remains selected. An older valid group must be rebound as one group.
+    const std::vector<uint8_t> saved_342(g_main_ram.begin(), g_main_ram.end());
+    for (uint16_t width : {384u, 448u}) {
+        g_render_width = width;
+        nds_title_patches_set_mph_adventure_wide(true, width);
+        nds_title_patches_start_frame();
+        if (!nds_title_patches_debug_state().mph_adventure_wide_active) return false;
+    }
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    nds_title_patches_start_frame();
+    if (!nds_title_patches_debug_state().mph_adventure_wide_active || !g_guest_wide ||
+        get(addresses[0]) != (0x1555u * 448u + 128u) / 256u ||
+        get(addresses[1]) != 0xE28100C1u || get(addresses[2]) != 0xE3A00D07u ||
+        get(addresses[3]) != 0xE1A00600u) return false;
+    // Individually valid words from two widths are not a valid patch group.
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    bus_write_u32_slow(addresses[0], (0x1555u * 448u + 128u) / 256u);
+    const std::vector<uint8_t> mixed(g_main_ram.begin(), g_main_ram.end());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), mixed.begin()) ||
+        nds_title_patches_debug_state().mph_adventure_wide_active || g_guest_wide) return false;
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    bus_write_u32_slow(0x02110FFCu, 0xE5991668u);
+    const std::vector<uint8_t> wrong_neighbor(g_main_ram.begin(), g_main_ram.end());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), wrong_neighbor.begin()) ||
+        nds_title_patches_debug_state().mph_adventure_wide_active || g_guest_wide) return false;
     // A different instruction in the adjacent consumer must reject the whole
     // patch, preserving all words rather than installing half a constant.
     seed();bus_write_u32_slow(addresses[3],0xE1A00000u);const std::vector<uint8_t> foreign(g_main_ram.begin(),g_main_ram.end());
