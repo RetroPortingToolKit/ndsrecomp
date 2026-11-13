@@ -215,6 +215,7 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
 #include "recomp_runtime_ui.h"
 
 #include "frontend_latency.h"
+#include "frontend_window_pair.h"
 
 namespace {
 
@@ -1865,6 +1866,11 @@ bool create_presentation(const NdsFrontendOptions& options,
             destroy_presentation(presentation);
             return false;
         }
+#if defined(NDS_HAVE_SDL3)
+        if (!nds_parent_touch_window(presentation.windows[1], presentation.windows[0])) {
+            std::fprintf(stderr, "[sdl] touch-window parent failed: %s\n", SDL_GetError());
+        }
+#endif
     } else {
         presentation.windows[1] = presentation.windows[0];
         presentation.renderers[1] = presentation.renderers[0];
