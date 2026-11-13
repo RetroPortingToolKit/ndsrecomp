@@ -332,6 +332,10 @@ struct NdsFrontendOptions {
 bool nds_load_frontend_config(const std::string& path,
                               NdsFrontendOptions* options,
                               std::string* error);
+// Runtime menu preferences share the title's existing settings file. Only
+// the named frontend keys are changed; unrelated title choices are retained.
+bool nds_load_runtime_quality_setting(NdsFrontendOptions* options);
+bool nds_save_runtime_settings(const NdsFrontendOptions& options);
 bool nds_parse_screen_layout(const std::string& value,
                              NdsScreenLayout* out);
 bool nds_parse_fullscreen_mode(const std::string& value,

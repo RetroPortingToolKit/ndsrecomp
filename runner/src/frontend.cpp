@@ -1183,54 +1183,25 @@ uint64_t framebuffer_rgb_fnv(int screen) {
 
 constexpr const char* kRuntimeMouseSensitivityKey =
     "input.mouse_sensitivity";
+constexpr const char* kRuntimeAutomaticQualityKey = "graphics.automatic_quality";
+constexpr const char* kRuntimeResolutionNowKey = "graphics.resolution_now";
+constexpr const char* kRuntimeSupersamplingNowKey = "graphics.supersampling_now";
 constexpr const char* kRuntimeResumeKey = "system.resume";
 constexpr const char* kRuntimeQuitKey = "system.quit";
+
+struct FrontendPresentation;
 
 struct RuntimeMenuState {
     NdsFrontendOptions* options = nullptr;
     bool* running = nullptr;
     bool close_requested = false;
+    FrontendPresentation* presentation = nullptr;
+    NdsPerfGovernorState* governor = nullptr;
 };
 
-bool save_runtime_mouse_sensitivity(const std::string& path, uint16_t value) {
-    if (path.empty()) return false;
-    std::filesystem::path settings(path);
-    std::error_code error;
-    if (!settings.parent_path().empty()) {
-        std::filesystem::create_directories(settings.parent_path(), error);
-        if (error) return false;
-    }
-
-    std::vector<std::string> lines;
-    bool found = false;
-    bool saw_version = false;
-    {
-        std::ifstream in(settings);
-        std::string line;
-        while (std::getline(in, line)) {
-            const size_t equals = line.find('=');
-            if (equals != std::string::npos) {
-                const std::string key = line.substr(0, equals);
-                if (key == "settings_version") saw_version = true;
-                if (key == "mouse_sensitivity") {
-                    line = "mouse_sensitivity=" + std::to_string(value);
-                    found = true;
-                }
-            }
-            lines.push_back(line);
-        }
-    }
-    if (!saw_version)
-        lines.insert(lines.begin(), "settings_version=12");
-    if (!found)
-        lines.push_back("mouse_sensitivity=" + std::to_string(value));
-
-    std::ofstream out(settings, std::ios::trunc);
-    if (!out) return false;
-    for (const std::string& line : lines)
-        out << line << '\n';
-    return static_cast<bool>(out);
-}
+int runtime_menu_set_automatic_quality(RuntimeMenuState* state, int value);
+int runtime_menu_get_quality_text(void* context, const RecompRuntimeUiItem* item,
+                                  char* text, size_t size);
 
 int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
                            int* value_out) {
@@ -1240,6 +1211,10 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
         *value_out = state->options->relative_mouse_sensitivity;
         return 1;
     }
+    if (std::strcmp(item->key, kRuntimeAutomaticQualityKey) == 0) {
+        *value_out = state->options->perf_governor_mode != NdsPerfGovernorMode::Off;
+        return 1;
+    }
     return 0;
 }
 
@@ -1247,6 +1222,8 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
                            int value) {
     auto* state = static_cast<RuntimeMenuState*>(context);
     if (!state || !state->options || !item) return 0;
+    if (std::strcmp(item->key, kRuntimeAutomaticQualityKey) == 0)
+        return runtime_menu_set_automatic_quality(state, value);
     if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
         if (value < 10 || value > 400) return 0;
         state->options->relative_mouse_sensitivity =
@@ -1276,18 +1253,17 @@ int runtime_menu_is_enabled(void* context, const RecompRuntimeUiItem* item) {
     if (!state || !state->options || !item) return 0;
     if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0)
         return state->options->relative_mouse_touch ? 1 : 0;
+    if (std::strcmp(item->key, kRuntimeResolutionNowKey) == 0 ||
+        std::strcmp(item->key, kRuntimeSupersamplingNowKey) == 0)
+        return 0;  // Live readouts, not editable target settings.
     return 1;
 }
 
 void runtime_menu_save(void* context) {
     auto* state = static_cast<RuntimeMenuState*>(context);
     if (!state || !state->options) return;
-    if (save_runtime_mouse_sensitivity(
-            state->options->runtime_settings_path,
-            state->options->relative_mouse_sensitivity)) {
-        std::fprintf(stderr,
-                     "[sdl] saved mouse sensitivity to runtime settings\n");
-    }
+    if (!nds_save_runtime_settings(*state->options))
+        std::fprintf(stderr, "[sdl] could not save runtime settings\n");
 }
 
 bool runtime_menu_key_input(SDL_Scancode scancode,
@@ -2001,6 +1977,45 @@ bool apply_performance_governor_stage(
     return true;
 }
 
+int runtime_menu_set_automatic_quality(RuntimeMenuState* state, int value) {
+    if (!state || !state->options || !state->presentation || !state->governor ||
+        (value != 0 && value != 1)) return 0;
+    // Rebuild the actual renderer first. A failure leaves policy, installed
+    // stage and the player's selected targets unchanged.
+    if (!apply_performance_governor_stage(*state->options, *state->presentation, 0))
+        return 0;
+    const uint8_t before = state->governor->stage;
+    const auto mode = value ? NdsPerfGovernorMode::Auto : NdsPerfGovernorMode::Off;
+    const auto config = state->governor->config;
+    nds_perf_governor_init(state->governor, mode, config);
+    state->options->perf_governor_mode = mode;
+    if (before != state->governor->stage)
+        nds_perf_governor_record_transition(before, state->governor->stage,
+            state->governor->last_reason, g_live_stats.frames, false, false);
+    std::fprintf(stderr, "[graphics] automatic quality %s; requested quality restored\n",
+                 value ? "on" : "off");
+    return 1;
+}
+
+int runtime_menu_get_quality_text(void* context, const RecompRuntimeUiItem* item,
+                                  char* text, size_t size) {
+    const auto* state = static_cast<const RuntimeMenuState*>(context);
+    if (!state || !state->options || !state->presentation || !item || !text || !size)
+        return 0;
+    if (std::strcmp(item->key, kRuntimeResolutionNowKey) == 0) {
+        std::snprintf(text, size, "%ux (target %ux)",
+            static_cast<unsigned>(nds_gpu3d_internal_scale()),
+            static_cast<unsigned>(state->options->internal_resolution));
+        return 1;
+    }
+    if (std::strcmp(item->key, kRuntimeSupersamplingNowKey) == 0) {
+        std::snprintf(text, size, "%dx (target %ux)", state->presentation->sample_scale,
+            static_cast<unsigned>(state->options->supersampling));
+        return 1;
+    }
+    return 0;
+}
+
 void draw_virtual_stylus(SDL_Renderer* renderer, const SDL_Rect& destination,
                          float stylus_x, float stylus_y) {
     const int x = destination.x + static_cast<int>(
@@ -2531,8 +2546,17 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     publish_keys();
     nds_set_touch(0, 0, false);
     bool running = true;
-    RuntimeMenuState runtime_menu_state{&options, &running, false};
+    RuntimeMenuState runtime_menu_state{&options, &running, false, &presentation, &perf_governor};
     static const RecompRuntimeUiItem runtime_menu_items[] = {
+        {kRuntimeAutomaticQualityKey, "Graphics", "Automatic quality",
+         "Resolution and SSAA are targets when On. Off restores selected quality; it may run slower.",
+         RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr},
+        {kRuntimeResolutionNowKey, "Graphics", "Resolution now",
+         "Actual internal resolution, followed by your selected target.",
+         RECOMP_RUNTIME_UI_TEXT, 0, 0, 0, nullptr, 0, nullptr},
+        {kRuntimeSupersamplingNowKey, "Graphics", "SSAA now",
+         "Actual supersampling, followed by your selected target.",
+         RECOMP_RUNTIME_UI_TEXT, 0, 0, 0, nullptr, 0, nullptr},
         {kRuntimeMouseSensitivityKey, "Input", "Mouse sensitivity",
          "Prime Controls relative aim speed.",
          RECOMP_RUNTIME_UI_INT, 10, 400, 1, nullptr, 0, nullptr},
@@ -2555,6 +2579,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     runtime_menu_config.callbacks.run_action = runtime_menu_run_action;
     runtime_menu_config.callbacks.is_enabled = runtime_menu_is_enabled;
     runtime_menu_config.callbacks.save = runtime_menu_save;
+    runtime_menu_config.callbacks.get_text = runtime_menu_get_quality_text;
     runtime_menu_config.theme = "nds";
     runtime_menu_config.accept_label = "A / Enter";
     runtime_menu_config.back_label = "B / Backspace";
