@@ -15,7 +15,8 @@ struct NdsTitlePatchDebugState {
 };
 
 // Title-specific, opt-in presentation patches. Native DS execution never
-// enables these paths.
+// enables widening. Recognized MPH presentation words can be restored to
+// native values when a current-build state is loaded in a native profile.
 void nds_title_patches_set_sm64ds_adaptive(bool enabled);
 void nds_title_patches_set_mkds_adaptive(bool enabled, uint16_t adaptive_width);
 // Called on a direct GX projection-mode write, after MKDS rebuilds its
@@ -24,9 +25,12 @@ void nds_title_patches_projection_begin();
 void nds_title_patches_set_mph_mouse_aim(bool enabled);
 // MPH adventure mode: rebuild the guest's own frusta at the host's adaptive
 // top width so per-room sub-frusta and entity sphere culling cover the whole
-// band. `adaptive_width` must equal the host 3D render width.
+// band. `adaptive_width` must equal the host 3D render width. The runner passes
+// verified ROM eligibility separately so native profiles can undo a restored
+// wide group without probing unrelated titles.
 void nds_title_patches_set_mph_adventure_wide(bool enabled,
-                                              uint16_t adaptive_width);
+                                              uint16_t adaptive_width,
+                                              bool matching_title = true);
 void nds_title_patches_set_mph_adaptive(bool enabled);
 bool nds_title_patches_apply_mph_mouse_delta(int32_t dx, int32_t dy);
 bool nds_title_patches_mph_local_morph_ball();

@@ -77,6 +77,7 @@ bool g_mph_adaptive_centered_native = false;
 bool g_logged_sm64ds_clipper = false;
 
 bool g_mph_adventure_wide = false;
+bool g_mph_adventure_title = false;
 uint16_t g_mph_adventure_width = 0;
 uint32_t g_mph_wide_words[kMphWideSiteCount] = {};
 uint32_t g_mph_width_shift = kMphWidthShiftNative;
@@ -181,10 +182,11 @@ bool materialize_mph_width(uint32_t width, uint32_t* words, uint32_t* shift) {
 void patch_mph_adventure_wide() {
     // The wide words bake the adaptive width into guest constants, so they
     // are only correct when the 3D engine actually renders at that width.
-    // Headless/serve runs keep the native 256-wide surface; leave the guest
-    // untouched there instead of widening its frusta against a native render.
-    if (nds_gpu3d_output_width() != g_mph_adventure_width) {
-        ++g_mph_wide_frames_inactive;
+    // A disabled/native-width profile can also restore a wide current-build
+    // state. Restore only a complete recognized group before guest execution.
+    const bool wide = g_mph_adventure_wide &&
+        nds_gpu3d_output_width() == g_mph_adventure_width;
+    if (g_mph_adventure_wide && !wide) {
         if (!g_logged_mph_wide_width) {
             std::fprintf(stderr,
                          "[mph] adventure wide frustum idle (render width %u, "
@@ -193,9 +195,6 @@ void patch_mph_adventure_wide() {
                          static_cast<unsigned>(g_mph_adventure_width));
             g_logged_mph_wide_width = true;
         }
-        g_mph_wide_active = false;
-        nds_gpu3d_set_guest_wide_projection(false);
-        return;
     }
 
     // Preflight the complete group before changing code. In particular, a
@@ -219,7 +218,7 @@ void patch_mph_adventure_wide() {
     bool native_group = shift == kMphWidthShiftNative;
     for (uint32_t i = 0; i < kMphWideSiteCount; ++i)
         native_group &= words[i] == kMphWideSites[i].native;
-    bool known_group = shift == g_mph_width_shift &&
+    bool known_group = g_mph_adventure_wide && shift == g_mph_width_shift &&
         std::equal(words, words + kMphWideSiteCount, g_mph_wide_words);
     if (!known_group && (words[1] & 0xFFFFFF00u) == 0xE2810000u) {
         uint32_t expected[kMphWideSiteCount] = {}, expected_shift = 0;
@@ -229,22 +228,27 @@ void patch_mph_adventure_wide() {
             std::equal(words, words + kMphWideSiteCount, expected);
     }
     active &= native_group || known_group;
+    uint32_t target[kMphWideSiteCount] = {};
+    for (uint32_t i = 0; i < kMphWideSiteCount; ++i)
+        target[i] = wide ? g_mph_wide_words[i] : kMphWideSites[i].native;
+    const uint32_t target_shift = wide ? g_mph_width_shift : kMphWidthShiftNative;
     if (active) {
         for (uint32_t i = 0; i < kMphWideSiteCount; ++i) {
-            if (words[i] != g_mph_wide_words[i])
-                bus_write_u32_slow(kMphWideSites[i].addr, g_mph_wide_words[i]);
-            if (words[i] != g_mph_wide_words[i] ||
-                (i == 2u && shift != g_mph_width_shift)) ++g_mph_wide_applied[i];
+            if (words[i] != target[i])
+                bus_write_u32_slow(kMphWideSites[i].addr, target[i]);
+            if (words[i] != target[i] ||
+                (i == 2u && shift != target_shift)) ++g_mph_wide_applied[i];
             uint32_t actual = 0;
             active &= read_main_ram_word(kMphWideSites[i].addr, &actual) &&
-                actual == g_mph_wide_words[i];
+                actual == target[i];
         }
-        if (shift != g_mph_width_shift)
-            bus_write_u32_slow(kMphWidthShiftAddress, g_mph_width_shift);
+        if (shift != target_shift)
+            bus_write_u32_slow(kMphWidthShiftAddress, target_shift);
         uint32_t actual = 0;
         active &= read_main_ram_word(kMphWidthShiftAddress, &actual) &&
-            actual == g_mph_width_shift;
+            actual == target_shift;
     }
+    active &= wide;
 
     if (active) ++g_mph_wide_frames_active;
     else ++g_mph_wide_frames_inactive;
@@ -254,7 +258,7 @@ void patch_mph_adventure_wide() {
                      "[mph] adventure wide frustum enabled (%u px)\n",
                      static_cast<unsigned>(g_mph_adventure_width));
         g_logged_mph_wide_active = true;
-    } else if (!active && g_logged_mph_wide_active &&
+    } else if (wide && !active && g_logged_mph_wide_active &&
                !g_logged_mph_wide_lost) {
         std::fprintf(stderr,
                      "[mph] adventure wide frustum inactive "
@@ -410,10 +414,12 @@ void nds_title_patches_set_mph_mouse_aim(bool enabled) {
 }
 
 void nds_title_patches_set_mph_adventure_wide(bool enabled,
-                                              uint16_t adaptive_width) {
+                                              uint16_t adaptive_width,
+                                              bool matching_title) {
+    g_mph_adventure_title = matching_title;
     g_mph_adventure_wide = false;
     g_mph_adventure_width = 0;
-    if (enabled) {
+    if (enabled && matching_title) {
         if (adaptive_width < 256u || adaptive_width > 510u) {
             std::fprintf(stderr,
                 "[mph] adaptive width %u is out of range for the adventure "
@@ -615,5 +621,5 @@ void nds_title_patches_start_frame() {
         }
     }
     if (g_sm64ds_adaptive) patch_sm64ds_clipper();
-    if (g_mph_adventure_wide) patch_mph_adventure_wide();
+    if (g_mph_adventure_title) patch_mph_adventure_wide();
 }

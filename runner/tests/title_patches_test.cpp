@@ -248,6 +248,37 @@ bool test_mph_exact_wide_width() {
     nds_title_patches_start_frame();
     if (!std::equal(g_main_ram.begin(), g_main_ram.end(), wrong_neighbor.begin()) ||
         nds_title_patches_debug_state().mph_adventure_wide_active || g_guest_wide) return false;
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    nds_title_patches_set_mph_adventure_wide(false, 342);
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), original.begin()) ||
+        nds_title_patches_debug_state().mph_adventure_wide_active || g_guest_wide) return false;
+    // A fresh native-aspect profile can load a wide current-build snapshot.
+    nds_title_patches_set_mph_adventure_wide(false, 256);
+    g_render_width = 256;
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), original.begin()) || g_guest_wide) return false;
+    nds_title_patches_set_mph_adventure_wide(true, 342);
+    g_render_width = 342;
+    nds_title_patches_start_frame();
+    g_render_width = 256;
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), original.begin()) || g_guest_wide) return false;
+    g_render_width = 342;
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), saved_342.begin()) || !g_guest_wide) return false;
+    nds_title_patches_set_mph_adventure_wide(false, 256, false);
+    g_render_width = 256;
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), saved_342.begin()) || g_guest_wide) return false;
+    nds_title_patches_set_mph_adventure_wide(false, 256, true);
+    std::copy(mixed.begin(), mixed.end(), g_main_ram.begin());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), mixed.begin()) || g_guest_wide) return false;
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), original.begin()) || g_guest_wide) return false;
     // A different instruction in the adjacent consumer must reject the whole
     // patch, preserving all words rather than installing half a constant.
     seed();bus_write_u32_slow(addresses[3],0xE1A00000u);const std::vector<uint8_t> foreign(g_main_ram.begin(),g_main_ram.end());
