@@ -63,6 +63,8 @@ constexpr MphWideSite kMphWideSites[kMphWideSiteCount] = {
     {0x0211C620u, 0xE2810001u, 0x0211C618u, 0xE59A1670u},
     {0x02110FF8u, 0xE5990670u, 0x02110FFCu, 0xE5991664u},
 };
+constexpr uint32_t kMphWidthShiftAddress = 0x02111000u;
+constexpr uint32_t kMphWidthShiftNative = 0xE1A00600u; // mov r0,r0,lsl#12
 
 bool g_sm64ds_adaptive = false;
 bool g_mkds_adaptive = false;
@@ -77,6 +79,10 @@ bool g_logged_sm64ds_clipper = false;
 bool g_mph_adventure_wide = false;
 uint16_t g_mph_adventure_width = 0;
 uint32_t g_mph_wide_words[kMphWideSiteCount] = {};
+uint32_t g_mph_width_shift = kMphWidthShiftNative;
+uint32_t g_mph_installed_words[kMphWideSiteCount] = {};
+uint32_t g_mph_installed_shift = kMphWidthShiftNative;
+bool g_mph_has_installed_width = false;
 uint32_t g_mph_jump_restore_addr = 0;
 uint8_t g_mph_jump_restore_value = 0;
 uint8_t g_mph_jump_restore_player_position = 0;
@@ -141,8 +147,8 @@ uint16_t clamp_signed16_bits(int32_t value) {
 }
 
 // ARM data-processing immediates are an 8-bit value rotated right by an even
-// amount; not every width is representable, so the caller disables the feature
-// rather than emitting a wrong constant.
+// amount. A following fixed-point shift can absorb a factor of two when an
+// exact even screen width is not representable by one MOV.
 bool encode_arm_mov_r0_imm(uint32_t value, uint32_t* out) {
     for (uint32_t rot = 0; rot < 16u; ++rot) {
         const uint32_t shift = rot * 2u;
@@ -177,25 +183,47 @@ void patch_mph_adventure_wide() {
         return;
     }
 
+    // Preflight the complete group before changing code. In particular, a
+    // half-width MOV and its adjusted fixed-point shift must be installed
+    // together. Recognize our last installed group when the aspect changes.
     bool active = true;
+    uint32_t words[kMphWideSiteCount] = {};
     for (uint32_t i = 0; i < kMphWideSiteCount; ++i) {
         const MphWideSite& site = kMphWideSites[i];
-        uint32_t word = 0;
         uint32_t neighbor = 0;
-        if (!read_main_ram_word(site.addr, &word) ||
+        if (!read_main_ram_word(site.addr, &words[i]) ||
             !read_main_ram_word(site.neighbor_addr, &neighbor)) {
             active = false;
             continue;
         }
-        if (word == site.native && neighbor == site.neighbor) {
-            bus_write_u32_slow(site.addr, g_mph_wide_words[i]);
-            ++g_mph_wide_applied[i];
-            if (!read_main_ram_word(site.addr, &word)) {
-                active = false;
-                continue;
-            }
+        active &= neighbor == site.neighbor &&
+            (words[i] == site.native || words[i] == g_mph_wide_words[i] ||
+             (g_mph_has_installed_width && words[i] == g_mph_installed_words[i]));
+    }
+    uint32_t shift = 0;
+    active &= read_main_ram_word(kMphWidthShiftAddress, &shift) &&
+        (shift == kMphWidthShiftNative || shift == g_mph_width_shift ||
+         (g_mph_has_installed_width && shift == g_mph_installed_shift));
+    if (active) {
+        for (uint32_t i = 0; i < kMphWideSiteCount; ++i) {
+            if (words[i] != g_mph_wide_words[i])
+                bus_write_u32_slow(kMphWideSites[i].addr, g_mph_wide_words[i]);
+            if (words[i] != g_mph_wide_words[i] ||
+                (i == 2u && shift != g_mph_width_shift)) ++g_mph_wide_applied[i];
+            uint32_t actual = 0;
+            active &= read_main_ram_word(kMphWideSites[i].addr, &actual) &&
+                actual == g_mph_wide_words[i];
         }
-        active &= (word == g_mph_wide_words[i]);
+        if (shift != g_mph_width_shift)
+            bus_write_u32_slow(kMphWidthShiftAddress, g_mph_width_shift);
+        uint32_t actual = 0;
+        active &= read_main_ram_word(kMphWidthShiftAddress, &actual) &&
+            actual == g_mph_width_shift;
+        if (active) {
+            std::copy_n(g_mph_wide_words, kMphWideSiteCount, g_mph_installed_words);
+            g_mph_installed_shift = g_mph_width_shift;
+            g_mph_has_installed_width = true;
+        }
     }
 
     if (active) ++g_mph_wide_frames_active;
@@ -367,12 +395,18 @@ void nds_title_patches_set_mph_adventure_wide(bool enabled,
     g_mph_adventure_width = 0;
     if (enabled) {
         uint32_t mov_r0_width = 0;
+        bool half_width = false;
+        bool encodable = encode_arm_mov_r0_imm(adaptive_width, &mov_r0_width);
+        if (!encodable && (adaptive_width & 1u) == 0u) {
+            encodable = encode_arm_mov_r0_imm(adaptive_width / 2u, &mov_r0_width);
+            half_width = encodable;
+        }
         if (adaptive_width < 256u || adaptive_width > 510u) {
             std::fprintf(stderr,
                 "[mph] adaptive width %u is out of range for the adventure "
                 "wide frustum; leaving it disabled\n",
                 static_cast<unsigned>(adaptive_width));
-        } else if (!encode_arm_mov_r0_imm(adaptive_width, &mov_r0_width)) {
+        } else if (!encodable) {
             std::fprintf(stderr,
                 "[mph] adaptive width %u is not an ARM immediate; leaving the "
                 "adventure wide frustum disabled\n",
@@ -382,6 +416,10 @@ void nds_title_patches_set_mph_adventure_wide(bool enabled,
                 (kNativeAspect * adaptive_width + 128) / 256);
             g_mph_wide_words[1] = 0xE2810000u | (adaptive_width - 255u);
             g_mph_wide_words[2] = mov_r0_width;
+            // Rooms_TraverseAndDraw already shifts the numerator left 12
+            // after its unchanged r1 load. MOV 171 + LSL 13 produces 342<<12
+            // exactly using instructions supported by the original ARM ISA.
+            g_mph_width_shift = half_width ? 0xE1A00680u : kMphWidthShiftNative;
             g_mph_adventure_wide = true;
             g_mph_adventure_width = adaptive_width;
         }
