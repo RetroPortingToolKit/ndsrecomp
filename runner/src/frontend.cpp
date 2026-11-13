@@ -20,6 +20,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "debug_server.h"
@@ -1328,6 +1329,11 @@ bool runtime_menu_controller_input(SDL_GameControllerButton button,
     }
 }
 
+std::thread::id g_frontend_thread;
+RecompRuntimeUi* g_runtime_menu_ui = nullptr;
+std::vector<uint32_t> g_runtime_menu_surface;
+unsigned g_runtime_menu_width = 0, g_runtime_menu_height = 0;
+
 const uint32_t* runtime_menu_overlay(RecompRuntimeUi* ui,
                                      const uint32_t* pixels,
                                      int width,
@@ -1336,12 +1342,15 @@ const uint32_t* runtime_menu_overlay(RecompRuntimeUi* ui,
         width <= 0 || height <= 0) {
         return pixels;
     }
-    static std::vector<uint32_t> surface;
     const size_t count = static_cast<size_t>(width) *
                          static_cast<size_t>(height);
+    auto& surface = g_runtime_menu_surface;
     surface.assign(pixels, pixels + count);
     recomp_runtime_ui_render_argb8888(
         ui, surface.data(), width, height, width * sizeof(uint32_t));
+    g_runtime_menu_ui = ui;
+    g_runtime_menu_width = static_cast<unsigned>(width);
+    g_runtime_menu_height = static_cast<unsigned>(height);
     return surface.data();
 }
 
@@ -2220,6 +2229,7 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
 } // namespace
 
 int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+    g_frontend_thread = std::this_thread::get_id();
     NdsFrontendOptions options = initial_options;
     SDL_SetMainReady();
     // SDL_INIT_TIMER matters on Windows: it raises the OS timer resolution
@@ -4561,6 +4571,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
 #endif
     if (controller) SDL_GameControllerClose(controller);
     if (runtime_ui) {
+        g_runtime_menu_ui = nullptr;
         recomp_runtime_ui_destroy(runtime_ui);
         runtime_ui = nullptr;
     }
@@ -4651,6 +4662,23 @@ int nds_run_interactive_frontend(const NdsFrontendOptions&) {
 }
 
 #endif
+
+bool nds_frontend_read_runtime_menu(std::vector<uint32_t>& pixels,
+                                    unsigned* width, unsigned* height) {
+#if defined(NDS_HAVE_SDL3) || defined(NDS_HAVE_SDL2)
+    if (std::this_thread::get_id() != g_frontend_thread || !g_live_stats.active ||
+        !width || !height || !g_runtime_menu_ui ||
+        !recomp_runtime_ui_is_open(g_runtime_menu_ui) || g_runtime_menu_surface.empty())
+        return false;
+    pixels = g_runtime_menu_surface;
+    *width = g_runtime_menu_width;
+    *height = g_runtime_menu_height;
+    return true;
+#else
+    (void)pixels; (void)width; (void)height;
+    return false;
+#endif
+}
 
 bool nds_frontend_request_exit() {
 #if defined(NDS_HAVE_SDL3) || defined(NDS_HAVE_SDL2)

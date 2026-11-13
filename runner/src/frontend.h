@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "cartridge_config.h"
 #include "perf_governor.h"
@@ -398,6 +399,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options);
 // scenario harnesses use this instead of TerminateProcess so runtime teardown
 // (including compiler profile-data flushing) completes normally.
 bool nds_frontend_request_exit();
+// Read the last rendered menu composite at a frontend-thread debug safe point.
+// No window capture or extra per-frame copy; unavailable when the menu is shut.
+bool nds_frontend_read_runtime_menu(std::vector<uint32_t>& pixels,
+                                    unsigned* width, unsigned* height);
 
 // Live frontend counters for the play-mode debug surface (`frontend_stats`).
 // Cumulative since frontend start; a client samples twice and derives fps /
