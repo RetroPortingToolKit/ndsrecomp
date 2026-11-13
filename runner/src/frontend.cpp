@@ -1198,6 +1198,8 @@ struct RuntimeMenuState {
     bool close_requested = false;
     FrontendPresentation* presentation = nullptr;
     NdsPerfGovernorState* governor = nullptr;
+    bool mouse_changed = false;
+    bool quality_changed = false;
 };
 
 int runtime_menu_set_automatic_quality(RuntimeMenuState* state, int value);
@@ -1229,6 +1231,7 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
         if (value < 10 || value > 400) return 0;
         state->options->relative_mouse_sensitivity =
             static_cast<uint16_t>(value);
+        state->mouse_changed = true;
         std::fprintf(stderr, "[sdl] mouse sensitivity set to %d%%\n", value);
         return 1;
     }
@@ -1263,8 +1266,13 @@ int runtime_menu_is_enabled(void* context, const RecompRuntimeUiItem* item) {
 void runtime_menu_save(void* context) {
     auto* state = static_cast<RuntimeMenuState*>(context);
     if (!state || !state->options) return;
-    if (!nds_save_runtime_settings(*state->options))
+    if (!nds_save_runtime_settings(*state->options,
+                                  state->mouse_changed, state->quality_changed)) {
         std::fprintf(stderr, "[sdl] could not save runtime settings\n");
+    } else {
+        state->mouse_changed = false;
+        state->quality_changed = false;
+    }
 }
 
 bool runtime_menu_key_input(SDL_Scancode scancode,
@@ -1998,6 +2006,7 @@ int runtime_menu_set_automatic_quality(RuntimeMenuState* state, int value) {
     const auto config = state->governor->config;
     nds_perf_governor_init(state->governor, mode, config);
     state->options->perf_governor_mode = mode;
+    state->quality_changed = true;
     if (before != state->governor->stage)
         nds_perf_governor_record_transition(before, state->governor->stage,
             state->governor->last_reason, g_live_stats.frames, false, false);

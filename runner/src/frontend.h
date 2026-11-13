@@ -336,7 +336,8 @@ bool nds_load_frontend_config(const std::string& path,
 // Runtime menu preferences share the title's existing settings file. Only
 // the named frontend keys are changed; unrelated title choices are retained.
 bool nds_load_runtime_quality_setting(NdsFrontendOptions* options);
-bool nds_save_runtime_settings(const NdsFrontendOptions& options);
+bool nds_save_runtime_settings(const NdsFrontendOptions& options,
+                                bool mouse_changed, bool quality_changed);
 bool nds_parse_screen_layout(const std::string& value,
                              NdsScreenLayout* out);
 bool nds_parse_fullscreen_mode(const std::string& value,

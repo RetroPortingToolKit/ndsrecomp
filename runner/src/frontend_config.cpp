@@ -42,7 +42,9 @@ bool nds_load_runtime_quality_setting(NdsFrontendOptions* options) {
     return !file.bad();
 }
 
-bool nds_save_runtime_settings(const NdsFrontendOptions& options) {
+bool nds_save_runtime_settings(const NdsFrontendOptions& options,
+                                bool mouse_changed, bool quality_changed) {
+    if (!mouse_changed && !quality_changed) return true;
     if (options.runtime_settings_path.empty()) return false;
     const std::filesystem::path path(options.runtime_settings_path);
     std::error_code error;
@@ -64,11 +66,11 @@ bool nds_save_runtime_settings(const NdsFrontendOptions& options) {
             const size_t equals = line.find('=');
             const std::string key = line.substr(0, equals);
             if (key == "settings_version") saw_version = true;
-            if (key == "mouse_sensitivity") {
+            if (mouse_changed && key == "mouse_sensitivity") {
                 line = sensitivity;
                 saw_sensitivity = true;
             }
-            if (key == "automatic_quality") {
+            if (quality_changed && key == "automatic_quality") {
                 line = quality;
                 saw_quality = true;
             }
@@ -77,8 +79,8 @@ bool nds_save_runtime_settings(const NdsFrontendOptions& options) {
         if (file.bad()) return false;
     }
     if (!saw_version) lines.insert(lines.begin(), "settings_version=12");
-    if (!saw_sensitivity) lines.push_back(sensitivity);
-    if (!saw_quality) lines.push_back(quality);
+    if (mouse_changed && !saw_sensitivity) lines.push_back(sensitivity);
+    if (quality_changed && !saw_quality) lines.push_back(quality);
     std::ofstream file(path, std::ios::trunc);
     if (!file) return false;
     for (const auto& line : lines) file << line << '\n';
