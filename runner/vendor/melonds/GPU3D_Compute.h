@@ -207,6 +207,7 @@ private:
     {
         u32 VariantWorkCount[MaxVariants*4];
         u32 SortedWorkOffset[MaxVariants];
+        u32 VariantWorkItems[MaxVariants];
 
         u32 SortWorkWorkCount[4];
     };
