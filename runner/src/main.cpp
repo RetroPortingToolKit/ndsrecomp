@@ -809,6 +809,11 @@ int main(int argc, char** argv) {
         }
         return 2;
     }
+    frontend_options.runtime_settings_path = cli_runtime_settings_path;
+    if (!nds_load_runtime_quality_setting(&frontend_options)) {
+        std::fprintf(stderr, "could not load automatic quality preference\n");
+        return 2;
+    }
     if (const char* value = std::getenv("NDS_SCREEN_LAYOUT")) {
         if (!nds_parse_screen_layout(value,
                                      &frontend_options.screen_layout)) {
@@ -1025,7 +1030,6 @@ int main(int argc, char** argv) {
                      "(expected off or blend)\n");
         return 2;
     }
-    frontend_options.runtime_settings_path = cli_runtime_settings_path;
     if (!cli_relative_mouse_touch.empty() &&
         !nds_parse_on_off(cli_relative_mouse_touch,
                           &frontend_options.relative_mouse_touch)) {

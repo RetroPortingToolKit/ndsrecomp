@@ -410,6 +410,66 @@ int main() {
     if (!require(
             !nds_load_frontend_config(path.string(), &options, &error)))
         return 16;
+    {
+        std::ofstream file(path);
+        file << "[display]\n"
+                "automatic_quality = false\n"
+                "internal_resolution = 4\n"
+                "supersampling = 3\n";
+    }
+    options = {};
+    if (!require(nds_load_frontend_config(path.string(), &options, &error)) ||
+        !require(options.perf_governor_mode == NdsPerfGovernorMode::Off) ||
+        !require(options.internal_resolution == 4 && options.supersampling == 3))
+        return 150;
+    {
+        std::ofstream file(path);
+        file << "[display]\nautomatic_quality = true\n";
+    }
+    if (!require(nds_load_frontend_config(path.string(), &options, &error)) ||
+        !require(options.perf_governor_mode == NdsPerfGovernorMode::Auto))
+        return 151;
+    {
+        std::ofstream file(path);
+        file << "[display]\nautomatic_quality = \"off\"\n";
+    }
+    if (!require(!nds_load_frontend_config(path.string(), &options, &error)))
+        return 152;
+    {
+        std::ofstream file(path);
+        file << "settings_version=12\nautomatic_quality=true\n"
+                "widescreen_mode=off\ninternal_resolution=4\n"
+                "supersampling=3\nrom_path=keep-this.nds\n"
+                "mouse_sensitivity=25\n";
+    }
+    options.runtime_settings_path = path.string();
+    options.perf_governor_mode = NdsPerfGovernorMode::Off;
+    options.relative_mouse_sensitivity = 137;
+    if (!require(nds_save_runtime_settings(options, false, true))) return 153;
+    NdsFrontendOptions restarted{};
+    restarted.runtime_settings_path = path.string();
+    if (!require(nds_load_runtime_quality_setting(&restarted)) ||
+        !require(restarted.perf_governor_mode == NdsPerfGovernorMode::Off))
+        return 154;
+    {
+        std::ifstream file(path);
+        const std::string saved((std::istreambuf_iterator<char>(file)), {});
+        for (const auto* preserved : {"widescreen_mode=off", "internal_resolution=4",
+                                      "supersampling=3", "rom_path=keep-this.nds"})
+            if (!require(saved.find(preserved) != std::string::npos)) return 155;
+        if (!require(saved.find("mouse_sensitivity=25") != std::string::npos))
+            return 156;
+    }
+    options.perf_governor_mode = NdsPerfGovernorMode::Auto;
+    // A temporary override is not a request to persist quality when changing input.
+    if (!require(nds_save_runtime_settings(options, true, false)) ||
+        !require(nds_load_runtime_quality_setting(&restarted)) ||
+        !require(restarted.perf_governor_mode == NdsPerfGovernorMode::Off))
+        return 158;
+    if (!require(nds_save_runtime_settings(options, false, true)) ||
+        !require(nds_load_runtime_quality_setting(&restarted)) ||
+        !require(restarted.perf_governor_mode == NdsPerfGovernorMode::Auto))
+        return 157;
     std::filesystem::remove(path);
     return 0;
 }

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "cartridge_config.h"
 #include "perf_governor.h"
@@ -332,6 +333,11 @@ struct NdsFrontendOptions {
 bool nds_load_frontend_config(const std::string& path,
                               NdsFrontendOptions* options,
                               std::string* error);
+// Runtime menu preferences share the title's existing settings file. Only
+// the named frontend keys are changed; unrelated title choices are retained.
+bool nds_load_runtime_quality_setting(NdsFrontendOptions* options);
+bool nds_save_runtime_settings(const NdsFrontendOptions& options,
+                                bool mouse_changed, bool quality_changed);
 bool nds_parse_screen_layout(const std::string& value,
                              NdsScreenLayout* out);
 bool nds_parse_fullscreen_mode(const std::string& value,
@@ -394,6 +400,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& options);
 // scenario harnesses use this instead of TerminateProcess so runtime teardown
 // (including compiler profile-data flushing) completes normally.
 bool nds_frontend_request_exit();
+// Read the last rendered menu composite at a frontend-thread debug safe point.
+// No window capture or extra per-frame copy; unavailable when the menu is shut.
+bool nds_frontend_read_runtime_menu(std::vector<uint32_t>& pixels,
+                                    unsigned* width, unsigned* height);
 
 // Live frontend counters for the play-mode debug surface (`frontend_stats`).
 // Cumulative since frontend start; a client samples twice and derives fps /
