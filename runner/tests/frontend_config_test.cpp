@@ -339,6 +339,9 @@ int main() {
         return 26;
     {
         uint16_t width = 0;
+        if (!require(nds_parse_widescreen_width("342", &width) &&
+                     width == 342))
+            return 34;
         if (!require(nds_parse_widescreen_width("448", &width) &&
                      width == 448))
             return 27;
@@ -346,7 +349,7 @@ int main() {
             return 28;
         if (!require(!nds_parse_widescreen_width("449", &width)))
             return 29;
-        if (!require(!nds_parse_widescreen_width("342", &width)))
+        if (!require(!nds_parse_widescreen_width("341", &width)))
             return 30;
     }
 

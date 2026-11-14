@@ -624,7 +624,7 @@ bool test_adaptive_hud_gap_composition() {
 }
 
 bool test_adaptive_hud_gap_fill() {
-    for (int width : {256, 320, 384, 448}) {
+    for (int width : {256, 320, 342, 384, 448}) {
         for (int center : {8, 64, 128, 256}) {
             for (int x = 0; x < width; ++x) {
                 const int original = nds_gpu2d_adaptive_hud_x(x, width, true, center);
@@ -642,6 +642,29 @@ bool test_adaptive_hud_gap_fill() {
            require(nds_gpu2d_adaptive_hud_x(127, 384, true, 128, true) == 64) &&
            require(nds_gpu2d_adaptive_hud_x(256, 384, true, 128, true) == 191) &&
            require(nds_gpu2d_adaptive_hud_x(319, 384, true, 128, true) == 192);
+}
+
+bool test_fixed_16_9_composition() {
+    nds_gpu2d_set_adaptive_workers(0);
+    nds_gpu2d_set_adaptive_center_max_polygons(0);
+    g_scene_tweak = [](Unit& u) {
+        // Only the actual 3D plane: distinct opaque colors in the new margins
+        // detect cropping, edge replication and a native-width fallback.
+        u.dispcnt = 0x00010108u;
+        for (size_t x = 0; x < g_3d_line.size(); ++x)
+            g_3d_line[x] = 0x1F000000u | ((x & 63u) << 16) |
+                           (((x >> 2) & 63u) << 8) | ((x >> 4) & 63u);
+    };
+    AdaptiveRun fixed{};
+    run_adaptive_frame(fixed, 342);
+    g_scene_tweak = nullptr;
+    if (!require(fixed.width == 342 && fixed.hd_valid)) return false;
+    if (!require(fixed.surface.size() == 342u * 192u &&
+                 fixed.hd_top.size() == 342u * 192u * 2u)) return false;
+    for (int x : {0, 42, 43, 170, 298, 299, 341})
+        if (!require(fixed.surface[96u * 342u + x] ==
+                     to_rgb32(g_3d_line[x]))) return false;
+    return true;
 }
 
 bool test_adaptive_window_x() {
@@ -982,6 +1005,7 @@ int main() {
     if (!test_native_aspect_hd_keeps_native_fallback()) return 17;
     if (!test_adaptive_hud_gap_fill()) return 18;
     if (!test_adaptive_hud_gap_composition()) return 19;
+    if (!test_fixed_16_9_composition()) return 20;
     return 0;
 }
 #endif

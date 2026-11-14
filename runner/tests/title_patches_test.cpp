@@ -1,5 +1,6 @@
 #include "title_patches.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -29,6 +30,7 @@ constexpr uint8_t kSentinel = 0xA5u;
 
 std::array<uint8_t, kMainRamSize> g_main_ram{};
 uint16_t g_render_width = 256;
+bool g_guest_wide = false;
 
 bool require(bool value) {
     return value;
@@ -87,7 +89,8 @@ uint16_t nds_gpu3d_output_width() {
     return g_render_width;
 }
 
-void nds_gpu3d_set_guest_wide_projection(bool) {
+void nds_gpu3d_set_guest_wide_projection(bool enabled) {
+    g_guest_wide = enabled;
 }
 
 bool test_mkds_object_clipping() {
@@ -177,7 +180,120 @@ bool test_mkds_object_clipping() {
     return true;
 }
 
+bool test_mph_exact_wide_width() {
+    constexpr uint32_t addresses[] = {0x02110820u,0x0211C620u,0x02110FF8u,0x02111000u};
+    constexpr uint32_t native[] = {0x1555u,0xE2810001u,0xE5990670u,0xE1A00600u};
+    const auto get=[](uint32_t address) {
+        uint32_t value;std::memcpy(&value,g_main_ram.data()+main_ram_offset(address),4);return value;
+    };
+    const auto seed=[&]() {
+        g_main_ram.fill(0);
+        for(unsigned i=0;i<4;++i)bus_write_u32_slow(addresses[i],native[i]);
+        bus_write_u32_slow(0x0211081Cu,0x021230CCu);
+        bus_write_u32_slow(0x0211C618u,0xE59A1670u);
+        bus_write_u32_slow(0x02110FFCu,0xE5991664u);
+    };
+    seed();const std::vector<uint8_t> original(g_main_ram.begin(),g_main_ram.end());
+    // Start with the actual 16:9 width, then change existing supported widths
+    // on the resident overlay. Check the emitted ARM computation numerically.
+    for(uint16_t width:{342u,256u,320u,384u,448u,510u,342u}) {
+        g_render_width=width;
+        nds_title_patches_set_mph_adventure_wide(true,width);
+        nds_title_patches_start_frame();
+        const auto state=nds_title_patches_debug_state();
+        if(!state.mph_adventure_wide_enabled || !state.mph_adventure_wide_active ||
+            state.mph_adventure_wide_width!=width || !g_guest_wide)return false;
+        uint32_t mov=get(addresses[2]),shift=get(addresses[3]);
+        if((mov&0xFFFFF000u)!=0xE3A00000u || (shift&~0xF80u)!=0xE1A00000u)return false;
+        unsigned rot=((mov>>8)&15u)*2u;uint32_t value=mov&255u;
+        if(rot)value=(value>>rot)|(value<<(32u-rot));
+        unsigned bits=(shift>>7)&31u;
+        if((value<<bits)!=(uint32_t(width)<<12) ||
+            get(addresses[0])!=(0x1555u*width+128u)/256u ||
+            get(addresses[1])!=0xE2810000u+width-255u)return false;
+        auto allowed=original;
+        for(uint32_t address:addresses)
+            std::memcpy(allowed.data()+main_ram_offset(address),g_main_ram.data()+main_ram_offset(address),4);
+        if(!std::equal(g_main_ram.begin(),g_main_ram.end(),allowed.begin()))return false;
+        nds_title_patches_start_frame();
+        const auto repeated=nds_title_patches_debug_state();
+        if(!std::equal(g_main_ram.begin(),g_main_ram.end(),allowed.begin()) || std::memcmp(state.mph_adventure_wide_site_applied,
+            repeated.mph_adventure_wide_site_applied,sizeof state.mph_adventure_wide_site_applied))return false;
+    }
+    // Current-build states restore guest RAM, while the current host width
+    // remains selected. An older valid group must be rebound as one group.
+    const std::vector<uint8_t> saved_342(g_main_ram.begin(), g_main_ram.end());
+    for (uint16_t width : {384u, 448u}) {
+        g_render_width = width;
+        nds_title_patches_set_mph_adventure_wide(true, width);
+        nds_title_patches_start_frame();
+        if (!nds_title_patches_debug_state().mph_adventure_wide_active) return false;
+    }
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    nds_title_patches_start_frame();
+    if (!nds_title_patches_debug_state().mph_adventure_wide_active || !g_guest_wide ||
+        get(addresses[0]) != (0x1555u * 448u + 128u) / 256u ||
+        get(addresses[1]) != 0xE28100C1u || get(addresses[2]) != 0xE3A00D07u ||
+        get(addresses[3]) != 0xE1A00600u) return false;
+    // Individually valid words from two widths are not a valid patch group.
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    bus_write_u32_slow(addresses[0], (0x1555u * 448u + 128u) / 256u);
+    const std::vector<uint8_t> mixed(g_main_ram.begin(), g_main_ram.end());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), mixed.begin()) ||
+        nds_title_patches_debug_state().mph_adventure_wide_active || g_guest_wide) return false;
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    bus_write_u32_slow(0x02110FFCu, 0xE5991668u);
+    const std::vector<uint8_t> wrong_neighbor(g_main_ram.begin(), g_main_ram.end());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), wrong_neighbor.begin()) ||
+        nds_title_patches_debug_state().mph_adventure_wide_active || g_guest_wide) return false;
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    nds_title_patches_set_mph_adventure_wide(false, 342);
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), original.begin()) ||
+        nds_title_patches_debug_state().mph_adventure_wide_active || g_guest_wide) return false;
+    // A fresh native-aspect profile can load a wide current-build snapshot.
+    nds_title_patches_set_mph_adventure_wide(false, 256);
+    g_render_width = 256;
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), original.begin()) || g_guest_wide) return false;
+    nds_title_patches_set_mph_adventure_wide(true, 342);
+    g_render_width = 342;
+    nds_title_patches_start_frame();
+    g_render_width = 256;
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), original.begin()) || g_guest_wide) return false;
+    g_render_width = 342;
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), saved_342.begin()) || !g_guest_wide) return false;
+    nds_title_patches_set_mph_adventure_wide(false, 256, false);
+    g_render_width = 256;
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), saved_342.begin()) || g_guest_wide) return false;
+    nds_title_patches_set_mph_adventure_wide(false, 256, true);
+    std::copy(mixed.begin(), mixed.end(), g_main_ram.begin());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), mixed.begin()) || g_guest_wide) return false;
+    std::copy(saved_342.begin(), saved_342.end(), g_main_ram.begin());
+    nds_title_patches_start_frame();
+    if (!std::equal(g_main_ram.begin(), g_main_ram.end(), original.begin()) || g_guest_wide) return false;
+    // A different instruction in the adjacent consumer must reject the whole
+    // patch, preserving all words rather than installing half a constant.
+    seed();bus_write_u32_slow(addresses[3],0xE1A00000u);const std::vector<uint8_t> foreign(g_main_ram.begin(),g_main_ram.end());
+    nds_title_patches_set_mph_adventure_wide(true,342);g_render_width=342;
+    nds_title_patches_start_frame();
+    if(!std::equal(g_main_ram.begin(),g_main_ram.end(),foreign.begin()) || nds_title_patches_debug_state().mph_adventure_wide_active || g_guest_wide)return false;
+    seed();g_render_width=256;const std::vector<uint8_t> narrow(g_main_ram.begin(),g_main_ram.end());
+    nds_title_patches_start_frame();
+    if(!std::equal(g_main_ram.begin(),g_main_ram.end(),narrow.begin()) || g_guest_wide)return false;
+    nds_title_patches_set_mph_adventure_wide(false,342);g_render_width=256;
+    return true;
+}
+
 int main() {
+    if (!test_mph_exact_wide_width()) return 101;
     if (!test_mkds_object_clipping()) return 100;
     for (uint8_t slot = 0; slot < 4u; ++slot) {
         reset_main_ram(slot);
