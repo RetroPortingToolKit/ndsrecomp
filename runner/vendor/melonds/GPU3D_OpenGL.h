@@ -1,5 +1,7 @@
 /*
     Copyright 2016-2024 melonDS team
+    Modified 2026-11-12 by ndsrecomp: depth-equality reference resources and
+    optional texture-barrier entry point. See patches/0025-native-gl-depth-equality.patch.
     Modified 2026-10-18 by ndsrecomp: common renderer interface, adaptive
     surfaces and portable clear-bitmap fallback. See patches/0022.
 
@@ -33,6 +35,8 @@ class GPU;
 class GLRenderer : public Renderer3D
 {
 public:
+    using TextureBarrierProc = void (APIENTRY*)();
+    bool SetTextureBarrier(TextureBarrierProc barrier);
     ~GLRenderer() override;
     void Reset(GPU& gpu) override;
 
@@ -88,6 +92,7 @@ private:
     u32* SetupVertex(const Polygon* poly, int vid, const Vertex* vtx, u32 vtxattr, u32* vptr) const;
     void BuildPolygons(RendererPolygon* polygons, int npolys);
     int RenderSinglePolygon(int i) const;
+    void CopyEqualDepth(const RendererPolygon& polygon) const;
     int RenderPolygonBatch(int i) const;
     int RenderPolygonEdgeBatch(int i) const;
     void RenderSceneChunk(const GPU3D& gpu3d, int y, int h);
@@ -164,6 +169,8 @@ private:
     int ScreenW {}, ScreenH {};
 
     GLuint ColorBufferTex {}, DepthBufferTex {}, AttrBufferTex {};
+    GLuint EqualDepthTex {};
+    TextureBarrierProc TextureBarrier = nullptr;
     GLuint DownScaleBufferTex {};
     GLuint PixelbufferID {};
 

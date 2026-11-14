@@ -3,6 +3,8 @@
     Modified 2026-10-18 by ndsrecomp: flat VRAM, adaptive width, integer
     presentation transport, HD output and portable clear-bitmap fallback.
     See patches/0022-native-gl-runner-adapter.patch for the applied changes.
+    Modified 2026-11-12: two-sided depth equality and ordered depth reads.
+    See patches/0025-native-gl-depth-equality.patch.
 
     This file is part of melonDS.
 
@@ -24,6 +26,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <algorithm>
 #include "NDS.h"
 #include "GPU.h"
 #include "GPU3D_OpenGL_shaders.h"
@@ -65,6 +68,8 @@ bool GLRenderer::BuildRenderShader(u32 flags, const std::string& vs, const std::
     glUniform1i(uni_id, 0);
     uni_id = glGetUniformLocation(prog, "TexPalMem");
     glUniform1i(uni_id, 1);
+    uni_id = glGetUniformLocation(prog, "EqualDepthBuffer");
+    glUniform1i(uni_id, 2);
 
     RenderShader[flags] = prog;
 
@@ -255,6 +260,8 @@ std::unique_ptr<GLRenderer> GLRenderer::New() noexcept
     // depth/stencil buffer
     glGenTextures(1, &result->DepthBufferTex);
     SetupDefaultTexParams(result->DepthBufferTex);
+    glGenTextures(1, &result->EqualDepthTex);
+    SetupDefaultTexParams(result->EqualDepthTex);
 
     // attribute buffer
     // R: opaque polyID (for edgemarking)
@@ -307,6 +314,7 @@ GLRenderer::~GLRenderer()
     glDeleteFramebuffers(1, &DownscaleFramebuffer);
     glDeleteTextures(1, &ColorBufferTex);
     glDeleteTextures(1, &DepthBufferTex);
+    glDeleteTextures(1, &EqualDepthTex);
     glDeleteTextures(1, &AttrBufferTex);
     glDeleteTextures(1, &DownScaleBufferTex);
     glDeleteTextures(1, &HiResOutputTex);
@@ -340,6 +348,22 @@ void GLRenderer::Reset(GPU& gpu)
     // except there's no such method right now.
 }
 
+bool GLRenderer::SetTextureBarrier(TextureBarrierProc barrier)
+{
+    TextureBarrier = nullptr;
+    if (!barrier) return false;
+    GLint major = 0, minor = 0, count = 0;
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    bool supported = major > 4 || (major == 4 && minor >= 5);
+    glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+    for (GLint i = 0; !supported && i < count; ++i)
+        supported = strcmp(reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i)),
+                           "GL_ARB_texture_barrier") == 0;
+    if (supported) TextureBarrier = barrier;
+    return TextureBarrier != nullptr;
+}
+
 void GLRenderer::SetBetterPolygons(bool betterpolygons) noexcept
 {
     SetRenderSettings(ScaleFactor, betterpolygons);
@@ -367,6 +391,8 @@ void GLRenderer::SetRenderSettings(int scale, bool betterpolygons) noexcept
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ScreenW, ScreenH, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
     glBindTexture(GL_TEXTURE_2D, DepthBufferTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, ScreenW, ScreenH, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
+    glBindTexture(GL_TEXTURE_2D, EqualDepthTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, ScreenW, ScreenH, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
     glBindTexture(GL_TEXTURE_2D, AttrBufferTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, ScreenW, ScreenH, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
@@ -729,9 +755,72 @@ void GLRenderer::BuildPolygons(GLRenderer::RendererPolygon* polygons, int npolys
     NumEdgeIndices = eidx - EdgeIndicesOffset;
 }
 
+void GLRenderer::CopyEqualDepth(const RendererPolygon& polygon) const
+{
+    // ARB_texture_barrier permits same-pixel read/modify/write when a draw
+    // does not overlap itself. Verify convexity using the actual projected
+    // vertices; lines, concave and crossing polygons retain the copy path.
+    const Polygon& poly = *polygon.PolyData;
+    s64 projected[10][2]{};
+    for (u32 i = 0; i < poly.NumVertices; ++i)
+        for (u32 axis = 0; axis < 2; ++axis)
+            projected[i][axis] = ScaleFactor > 1
+                ? (s64(poly.Vertices[i]->HiresPosition[axis]) * ScaleFactor) >> 4
+                : poly.Vertices[i]->FinalPosition[axis];
+    bool convex = TextureBarrier && polygon.PrimType == GL_TRIANGLES;
+    for (u32 edge = 0; convex && edge < poly.NumVertices; ++edge)
+    {
+        const auto& a = projected[edge];
+        const auto& b = projected[(edge + 1) % poly.NumVertices];
+        int sign = 0;
+        for (u32 i = 0; i < poly.NumVertices; ++i)
+        {
+            const auto& c = projected[i];
+            const s64 cross = (b[0] - a[0]) * (c[1] - a[1]) -
+                              (b[1] - a[1]) * (c[0] - a[0]);
+            if (!cross) continue;
+            const int side = cross < 0 ? -1 : 1;
+            if (sign && sign != side) { convex = false; break; }
+            sign = side;
+        }
+    }
+    if (TextureBarrier && convex)
+    {
+        TextureBarrier();
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, DepthBufferTex);
+        glActiveTexture(GL_TEXTURE0);
+        return;
+    }
+    // Each equality polygon observes all preceding writes. A distinct image
+    // avoids framebuffer texture feedback, and splitting equality batches
+    // prevents overlapping polygons from testing against stale batch depth.
+    int left = ScreenW, bottom = ScreenH, right = 0, top = 0;
+    for (u32 i = 0; i < polygon.PolyData->NumVertices; ++i)
+    {
+        const int x = static_cast<int>(projected[i][0]);
+        const int y = static_cast<int>(projected[i][1]);
+        left = std::min(left, x); right = std::max(right, x);
+        bottom = std::min(bottom, y); top = std::max(top, y);
+    }
+    // Include line coverage and edge rounding; copy only the polygon's area.
+    left = std::clamp(left - 1, 0, ScreenW);
+    right = std::clamp(right + 2, 0, ScreenW);
+    bottom = std::clamp(bottom - 1, 0, ScreenH);
+    top = std::clamp(top + 2, 0, ScreenH);
+    if (left < right && bottom < top)
+        glCopyImageSubData(DepthBufferTex, GL_TEXTURE_2D, 0, left, bottom, 0,
+                           EqualDepthTex, GL_TEXTURE_2D, 0, left, bottom, 0,
+                           right - left, top - bottom, 1);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, EqualDepthTex);
+    glActiveTexture(GL_TEXTURE0);
+}
+
 int GLRenderer::RenderSinglePolygon(int i) const
 {
     const RendererPolygon* rp = &PolygonList[i];
+    if (rp->PolyData->Attr & (1u << 14)) CopyEqualDepth(*rp);
 
     glDrawElements(rp->PrimType, rp->NumIndices, GL_UNSIGNED_SHORT, (void*)(uintptr_t)(rp->IndicesOffset * 2));
 
@@ -741,6 +830,7 @@ int GLRenderer::RenderSinglePolygon(int i) const
 int GLRenderer::RenderPolygonBatch(int i) const
 {
     const RendererPolygon* rp = &PolygonList[i];
+    if (rp->PolyData->Attr & (1u << 14)) return RenderSinglePolygon(i);
     GLuint primtype = rp->PrimType;
     u32 key = rp->RenderKey;
     int numpolys = 0;
@@ -789,9 +879,8 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
 
     GLboolean fogenable = (gpu3d.RenderDispCnt & (1<<7)) ? GL_TRUE : GL_FALSE;
 
-    // TODO: proper 'equal' depth test!
-    // (has margin of +-0x200 in Z-buffer mode, +-0xFF in W-buffer mode)
-    // for now we're using GL_LEQUAL to make it work to some extent
+    // Equality is a two-sided depth band in the fragment shader. Ordinary
+    // polygons retain the fixed-function less-than test.
 
     // pass 1: opaque pixels
 
@@ -813,7 +902,7 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
         if (rp->PolyData->Translucent) { i++; continue; }
 
         if (rp->PolyData->Attr & (1<<14))
-            glDepthFunc(GL_LEQUAL);
+            glDepthFunc(GL_ALWAYS);
         else
             glDepthFunc(GL_LESS);
 
@@ -890,9 +979,11 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
                     glColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
                     glDepthMask(GL_FALSE);
 
-                    glDepthFunc(GL_LESS);
+                    const bool equalDepth = (rp->PolyData->Attr & (1u << 14)) != 0;
+                    glDepthFunc(equalDepth ? GL_ALWAYS : GL_LESS);
                     glStencilFunc(GL_EQUAL, 0xFF, 0xFF);
-                    glStencilOp(GL_KEEP, GL_INVERT, GL_KEEP);
+                    if (equalDepth) glStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
+                    else glStencilOp(GL_KEEP, GL_INVERT, GL_KEEP);
                     glStencilMask(0x01);
 
                     i += RenderPolygonBatch(i);
@@ -905,7 +996,7 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
                     u32 polyid = (polyattr >> 24) & 0x3F;
 
                     if (polyattr & (1<<14))
-                        glDepthFunc(GL_LEQUAL);
+                        glDepthFunc(GL_ALWAYS);
                     else
                         glDepthFunc(GL_LESS);
 
@@ -996,9 +1087,11 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
                 glColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
                 glDepthMask(GL_FALSE);
 
-                glDepthFunc(GL_LESS);
+                const bool equalDepth = (rp->PolyData->Attr & (1u << 14)) != 0;
+                glDepthFunc(equalDepth ? GL_ALWAYS : GL_LESS);
                 glStencilFunc(GL_ALWAYS, 0x80, 0x80);
-                glStencilOp(GL_KEEP, GL_REPLACE, GL_KEEP);
+                if (equalDepth) glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                else glStencilOp(GL_KEEP, GL_REPLACE, GL_KEEP);
 
                 i += RenderPolygonBatch(i);
             }
@@ -1010,7 +1103,7 @@ void GLRenderer::RenderSceneChunk(const GPU3D& gpu3d, int y, int h)
                 u32 polyid = (polyattr >> 24) & 0x3F;
 
                 if (polyattr & (1<<14))
-                    glDepthFunc(GL_LEQUAL);
+                    glDepthFunc(GL_ALWAYS);
                 else
                     glDepthFunc(GL_LESS);
 
