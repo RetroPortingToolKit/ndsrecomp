@@ -152,6 +152,152 @@ void tests() {
             "reset reused a snapshot with repeated content versions");
 #endif
     require(glGetError() == GL_NO_ERROR, "GL error after fallback");
+
+    // Exercise the actual depth attachment, draw ordering and fragment shader
+    // at fixed16:9. One-sided LEQUAL accepts the far-nearer case and rejects
+    // the slightly-behind case, while DS equality accepts a two-sided band.
+    native->SetRenderWidth(342);
+    native->SetRenderSettings(2, true);
+    g.RenderDispCnt = 0;
+    g.RenderClearAttr1 = 31u << 16;
+    g.RenderClearAttr2 = 0x7FFF;
+    Vertex depthVertices[3]{};
+    const int depthXY[3][2] = {{40, 40}, {100, 40}, {40, 100}};
+    for (unsigned i = 0; i < 3; ++i) {
+        for (unsigned axis = 0; axis < 2; ++axis) {
+            depthVertices[i].FinalPosition[axis] = depthXY[i][axis];
+            depthVertices[i].HiresPosition[axis] = depthXY[i][axis] * 16;
+        }
+        depthVertices[i].FinalColor[0] = 510;
+    }
+    Polygon depthPolygons[3]{};
+    for (unsigned p = 0; p < 3; ++p) {
+        auto& poly = depthPolygons[p];
+        poly.NumVertices = 3;
+        poly.FacingView = true;
+        poly.Attr = ((p + 1u) << 24) | (31u << 16) | (p ? 1u << 14 : 0u);
+        for (unsigned v = 0; v < 3; ++v) {
+            poly.Vertices[v] = &depthVertices[v];
+            poly.FinalW[v] = 4096;
+        }
+        g.RenderPolygonRAM[p] = &poly;
+    }
+    std::vector<std::vector<u32>> copiedDepthImages;
+    unsigned depthPaths = 1;
+#ifdef NDS_NATIVE_GL_DEPTH_BARRIER_TEST
+    depthPaths = 2;
+#endif
+    for (unsigned path = 0; path < depthPaths; ++path) {
+#ifdef NDS_NATIVE_GL_DEPTH_BARRIER_TEST
+        if (path && !native->SetTextureBarrier(
+                reinterpret_cast<GLRenderer::TextureBarrierProc>(SDL_GL_GetProcAddress("glTextureBarrier")))) {
+            std::puts("texture barrier unavailable; copy fallback tested");
+            break;
+        }
+#endif
+        std::puts(path ? "depth path: texture barrier" : "depth path: image copy");
+        unsigned imageIndex = 0;
+        auto compareDepth = [&](const std::vector<u32>& image) {
+            if (!path) copiedDepthImages.push_back(image);
+            else require(image == copiedDepthImages.at(imageIndex), "barrier and copy depth images differ");
+            ++imageIndex;
+        };
+        for (bool wbuffer : {false, true}) {
+            const int margin = wbuffer ? 255 : 512;
+            for (auto& poly : depthPolygons) poly.WBuffer = wbuffer;
+            for (int delta : {-2000, -margin - 1, -margin, 0, margin, margin + 1}) {
+                for (unsigned p = 0; p < 2; ++p)
+                    std::fill_n(depthPolygons[p].FinalZ, 3, 32768 + (p ? delta : 0));
+                g.RenderNumPolygons = 2;
+                native->RenderFrame(gpu);
+                auto image = pixels(*native, 342);
+                compareDepth(image);
+                const auto visible = std::count_if(image.begin(), image.end(), [](u32 p) { return id(p) == 2; });
+                if ((visible > 100) != (std::abs(delta) <= margin)) {
+                    std::fprintf(stderr, "depth band W=%d delta=%d visible=%td\n", wbuffer, delta, visible);
+                    require(false, "equality depth band differs");
+                }
+            }
+            // Both equality polygons share a batch key and overlap. The second
+            // must observe the first polygon's newly written depth.
+            const int step = wbuffer ? 200 : 400;
+            for (unsigned p = 0; p < 3; ++p)
+                std::fill_n(depthPolygons[p].FinalZ, 3, 32768 + int(p) * step);
+            g.RenderNumPolygons = 3;
+            native->RenderFrame(gpu);
+            auto image = pixels(*native, 342);
+            compareDepth(image);
+            require(std::count_if(image.begin(), image.end(), [](u32 p) { return id(p) == 3; }) > 100,
+                    "overlapping equality polygons observed stale batch depth");
+
+            Vertex blueVertices[3];
+            std::copy_n(depthVertices, 3, blueVertices);
+            for (unsigned v = 0; v < 3; ++v) {
+                blueVertices[v].FinalColor[0] = 0;
+                blueVertices[v].FinalColor[2] = 510;
+                depthPolygons[1].Vertices[v] = &blueVertices[v];
+            }
+            depthPolygons[1].Translucent = true;
+            depthPolygons[1].Attr = (2u << 24) | (16u << 16) | (1u << 14);
+            for (unsigned clearAlpha : {0u, 31u}) {
+                g.RenderClearAttr1 = clearAlpha << 16;
+                g.RenderNumPolygons = 1;
+                native->RenderFrame(gpu);
+                const auto background = pixels(*native, 342);
+                for (int delta : {-margin - 1, -margin, margin, margin + 1}) {
+                    std::fill_n(depthPolygons[1].FinalZ, 3, 32768 + delta);
+                    g.RenderNumPolygons = 2;
+                    native->RenderFrame(gpu);
+                    image = pixels(*native, 342);
+                    compareDepth(image);
+                    unsigned changed = 0;
+                    for (unsigned i = 0; i < image.size(); ++i)
+                        changed += color(image[i]) != color(background[i]);
+                    require((changed > 100) == (std::abs(delta) <= margin),
+                            "translucent equality depth band differs");
+                }
+            }
+            // Equality shadow masks mark failing fragments, the opposite of
+            // opaque/translucent draws, without changing the original stencil
+            // polygon-ID rejection performed by the following shadow.
+            Polygon mask = depthPolygons[1];
+            mask.Attr = (31u << 16) | (1u << 14) | (3u << 4);
+            mask.IsShadowMask = true;
+            for (unsigned v = 0; v < 3; ++v) mask.Vertices[v] = &depthVertices[v];
+            depthPolygons[1].Attr = (2u << 24) | (16u << 16) | (3u << 4);
+            depthPolygons[1].IsShadow = true;
+            std::fill_n(depthPolygons[1].FinalZ, 3, 32768 - 1000);
+            g.RenderPolygonRAM[1] = &mask;
+            g.RenderPolygonRAM[2] = &depthPolygons[1];
+            for (unsigned clearAlpha : {0u, 31u}) {
+                g.RenderClearAttr1 = clearAlpha << 16;
+                g.RenderNumPolygons = 1;
+                native->RenderFrame(gpu);
+                const auto background = pixels(*native, 342);
+                for (int delta : {-2000, -margin, margin, margin + 1}) {
+                    std::fill_n(mask.FinalZ, 3, 32768 + delta);
+                    g.RenderNumPolygons = 3;
+                    native->RenderFrame(gpu);
+                    image = pixels(*native, 342);
+                    compareDepth(image);
+                    unsigned changed = 0;
+                    for (unsigned i = 0; i < image.size(); ++i)
+                        changed += color(image[i]) != color(background[i]);
+                    require((changed > 100) == (std::abs(delta) > margin),
+                            "shadow-mask equality depth failure differs");
+                }
+            }
+            g.RenderPolygonRAM[1] = &depthPolygons[1];
+            g.RenderPolygonRAM[2] = &depthPolygons[2];
+            depthPolygons[1].Translucent = false;
+            depthPolygons[1].IsShadow = false;
+            depthPolygons[1].Attr = (2u << 24) | (31u << 16) | (1u << 14);
+            for (unsigned v = 0; v < 3; ++v)
+                depthPolygons[1].Vertices[v] = &depthVertices[v];
+            g.RenderClearAttr1 = 31u << 16;
+        }
+    }
+    require(glGetError() == GL_NO_ERROR, "GL error after equality polygons");
     // Destroy GL objects before destroying the context (also exercises the
     // renderer destructor with both native and software jobs completed).
     g.SetCurrentRenderer(std::make_unique<SoftRenderer>());

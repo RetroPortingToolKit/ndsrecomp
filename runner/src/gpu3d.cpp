@@ -870,6 +870,13 @@ bool nds_gpu3d_use_compute_renderer() {
     }
     auto renderer = NdsAcceleratedRenderer::New();
     if (!renderer || compute_gl_stage_failed("initialization")) return false;
+#if defined(NDS_USE_NATIVE_GL)
+    const bool depth_barrier = renderer->SetTextureBarrier(
+        reinterpret_cast<melonDS::GLRenderer::TextureBarrierProc>(
+            nds_compute_host_gl_proc("glTextureBarrier")));
+    std::fprintf(stderr, "[gpu3d] depth equality: %s\n",
+                 depth_barrier ? "texture barrier" : "bounded image copy");
+#endif
 #if !defined(NDS_USE_NATIVE_GL)
     if (compute_native_capture_first()) {
         renderer->SetNativeCaptureCallbacks(compute_native_capture_required,

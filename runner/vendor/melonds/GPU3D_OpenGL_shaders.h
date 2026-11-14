@@ -1,5 +1,7 @@
 /*
     Copyright 2016-2024 melonDS team
+    Modified 2026-11-12 by ndsrecomp: two-sided Z/W depth-equality bands.
+    See patches/0025-native-gl-depth-equality.patch.
 
     This file is part of melonDS.
 
@@ -263,6 +265,21 @@ flat in ivec3 fPolygonAttr;
 
 out vec4 oColor;
 out vec4 oAttr;
+
+uniform sampler2D EqualDepthBuffer;
+
+void CheckEqualDepth(float incomingDepth, bool shadowMask)
+{
+    if ((fPolygonAttr.x & (1 << 14)) == 0) return;
+    float reference = texelFetch(EqualDepthBuffer, ivec2(gl_FragCoord.xy), 0).r;
+    int stored = int(round(reference * 16777215.0));
+    int incoming = int(round(clamp(incomingDepth, 0.0, 1.0) * 16777215.0));
+    int margin = (fPolygonAttr.x & (1 << 9)) != 0 ? 255 : 512;
+    bool pass = abs(stored - incoming) <= margin;
+    // A shadow mask marks depth failures. Its equality path updates stencil
+    // on surviving fragments; ordinary polygons keep passing fragments.
+    if (shadowMask ? pass : !pass) discard;
+}
 
 int TexcoordWrap(int c, int maxc, int mode)
 {
@@ -699,6 +716,7 @@ const char* kRenderFS_ZO = R"(
 
 void main()
 {
+    CheckEqualDepth(gl_FragCoord.z, false);
     vec4 col = FinalColor();
     if (col.a < 30.5/31) discard;
 
@@ -716,6 +734,7 @@ smooth in float fZ;
 
 void main()
 {
+    CheckEqualDepth(fZ, false);
     vec4 col = FinalColor();
     if (col.a < 30.5/31) discard;
 
@@ -732,6 +751,7 @@ const char* kRenderFS_ZE = R"(
 
 void main()
 {
+    CheckEqualDepth(gl_FragCoord.z, false);
     vec4 col = FinalColor();
     if (col.a < 30.5/31) discard;
 
@@ -746,6 +766,7 @@ smooth in float fZ;
 
 void main()
 {
+    CheckEqualDepth(fZ, false);
     vec4 col = FinalColor();
     if (col.a < 30.5/31) discard;
 
@@ -759,6 +780,7 @@ const char* kRenderFS_ZT = R"(
 
 void main()
 {
+    CheckEqualDepth(gl_FragCoord.z, false);
     vec4 col = FinalColor();
     if (col.a < 0.5/31) discard;
     if (col.a >= 30.5/31) discard;
@@ -775,6 +797,7 @@ smooth in float fZ;
 
 void main()
 {
+    CheckEqualDepth(fZ, false);
     vec4 col = FinalColor();
     if (col.a < 0.5/31) discard;
     if (col.a >= 30.5/31) discard;
@@ -790,6 +813,7 @@ const char* kRenderFS_ZSM = R"(
 
 void main()
 {
+    CheckEqualDepth(gl_FragCoord.z, true);
     oColor = vec4(0,0,0,1);
 }
 )";
@@ -800,6 +824,7 @@ smooth in float fZ;
 
 void main()
 {
+    CheckEqualDepth(fZ, true);
     oColor = vec4(0,0,0,1);
     gl_FragDepth = fZ;
 }
