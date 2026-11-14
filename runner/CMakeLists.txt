@@ -1306,6 +1306,13 @@ ndsrecomp_link_tomlpp(frontend_config_test)
     target_link_libraries(compute_capture_first_test PRIVATE SDL3::SDL3)
     add_test(NAME compute_capture_first_test COMMAND compute_capture_first_test)
     set_tests_properties(compute_capture_first_test PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(frontend_window_pair_test tests/frontend_window_pair_test.cpp)
+    target_include_directories(frontend_window_pair_test PRIVATE src)
+    target_compile_definitions(frontend_window_pair_test PRIVATE NDS_HAVE_SDL3=1)
+    target_link_libraries(frontend_window_pair_test PRIVATE SDL3::SDL3)
+    add_test(NAME frontend_window_pair_test COMMAND frontend_window_pair_test)
+    set_tests_properties(frontend_window_pair_test PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 
   add_executable(hle_mkds_test tests/hle_mkds_test.cpp src/hle_mkds.cpp)
