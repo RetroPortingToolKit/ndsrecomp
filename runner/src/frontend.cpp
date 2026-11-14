@@ -2568,7 +2568,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     RuntimeMenuState runtime_menu_state{&options, &running, false, &presentation, &perf_governor};
     static const RecompRuntimeUiItem runtime_menu_items[] = {
         {kRuntimeAutomaticQualityKey, "Graphics", "Automatic quality",
-         "Resolution and SSAA are targets when On. Off restores selected quality; it may run slower.",
+         "Off restores your selected quality.",
          RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr},
         {kRuntimeResolutionNowKey, "Graphics", "Resolution now",
          "Actual internal resolution, followed by your selected target.",
