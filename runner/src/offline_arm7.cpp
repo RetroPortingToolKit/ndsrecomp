@@ -172,8 +172,8 @@ bool power_request(const std::array<uint16_t,16>& c,uint64_t now){
     if(cmd==0x67)return reply(8,cmd,state.led,now);
     if(state.sleep)return reply(8,cmd,3,now);
     uint8_t previous;if(!pm_read(0,&previous))return false;
-    state.sleep=true;state.sleep_pm=previous;state.sleep_flags=c[1];
-    state.sleep_rcnt=nds_io_offline_sleep_enter(state.sleep_flags,c[2],now);
+    state.sleep=true;state.sleep_pm=previous;state.sleep_flags=arg;
+    state.sleep_rcnt=nds_io_offline_sleep_enter(state.sleep_flags,c[1],now);
     state.led=2;state.led_frame=0;led_mode(2);pm_mask(0,1);
     nds_offline_sound_sleep(true,now);nds_spu_write(0x04000504u,0,2);
     return true; // SDK sleep replies only after the selected wake source.
