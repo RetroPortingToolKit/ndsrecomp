@@ -2995,6 +2995,31 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
         // Gamecard: one word per data-ready request. GXFIFO: at most 112
         // units per FIFO-level request (melonDS DMA::Start IterCount cap).
         uint32_t request_units = gamecard ? 1u : gxfifo ? 112u : UINT32_MAX;
+#if defined(NDS_NATIVE_3D)
+        const bool native_geometry = cpu == 0 && width == 4u && !gamecard &&
+            d.cur_dst >= 0x04000400u && d.cur_dst < 0x04000440u && d.dst_inc == 0;
+        if (native_geometry) {
+            const uint64_t end = uint64_t{d.cur_src} + uint64_t{d.remaining} * 4u;
+            const bool dtcm = g_busf_dtcm_limit && d.cur_src < uint64_t{g_busf_dtcm_base} + g_busf_dtcm_limit && end > g_busf_dtcm_base;
+            if (d.src_inc == 1 && !(d.cur_src & 3) && d.cur_src >= 0x02000000u &&
+                end <= 0x03000000u && d.cur_src >= g_busf_itcm_limit && !dtcm &&
+                g_busf_main.data && uint64_t{d.cur_src & g_busf_main.mask} + uint64_t{d.remaining} * 4u <= uint64_t{g_busf_main.mask} + 1u) {
+                nds_gpu3d_command_batch(d.cur_src, d.remaining, 0, d.remaining, false);
+                d.cur_src += d.remaining * 4u;
+                d.remaining = 0;
+            } else {
+                // Keep actual mapped reads for unusual sources. Complete the
+                // whole operation without per-word DMA/FIFO cycle pacing.
+                while (d.remaining) {
+                    bus_write_u32(d.cur_dst, bus_read_u32(d.cur_src & ~3u));
+                    d.cur_src = static_cast<uint32_t>(int64_t{d.cur_src} + int64_t{d.src_inc} * 4);
+                    --d.remaining;
+                }
+                nds_gpu3d_check_fifo_irq();
+            }
+            d.burst_start = false;
+        }
+#endif
         while (d.remaining && g_runtime_cycles < target_cycles) {
 #if defined(NDS_GX_COMMAND_CACHE)
             // A native stream joins Main RAM directly to decoded GXFIFO

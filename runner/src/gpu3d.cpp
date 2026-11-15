@@ -32,6 +32,10 @@
 
 #include "NDS.h"
 #include "GPU3D_Soft.h"
+#if defined(NDS_NATIVE_3D)
+#include "native_3d.h"
+#include "native_3d_raster.h"
+#endif
 #if defined(NDS_GX_COMMAND_CACHE)
 #include "GPU3D_CommandBatch.h"
 #endif
@@ -50,6 +54,26 @@ using NdsAcceleratedRenderer = melonDS::ComputeRenderer;
 namespace {
 
 melonDS::NDS g_nds;
+#if defined(NDS_NATIVE_3D)
+nds_native_3d::Service g_native_3d;
+void native_3d_irq() {
+    if (g_native_3d.IRQAsserted()) nds_raise_irq(0, 1u << 21);
+}
+void native_3d_latch() {
+    auto& g = g_nds.GPU.GPU3D;
+    nds_native_3d_raster(g_native_3d.Display(), g, g.GetGuestWideProjection());
+    g.RenderDispCnt = g.DispCnt;
+    g.RenderAlphaRef = g.AlphaRef;
+    std::copy(std::begin(g.ToonTable), std::end(g.ToonTable), g.RenderToonTable);
+    std::copy(std::begin(g.EdgeTable), std::end(g.EdgeTable), g.RenderEdgeTable);
+    g.RenderFogColor = g.FogColor; g.RenderFogOffset = g.FogOffset;
+    g.RenderFogShift = (g.DispCnt >> 8) & 15;
+    g.RenderFogDensityTable[0] = g.FogDensityTable[0];
+    std::copy(std::begin(g.FogDensityTable), std::end(g.FogDensityTable), g.RenderFogDensityTable + 1);
+    g.RenderFogDensityTable[33] = g.FogDensityTable[31];
+    g.RenderClearAttr1 = g.ClearAttr1; g.RenderClearAttr2 = g.ClearAttr2;
+}
+#endif
 #if defined(NDS_USE_NATIVE_GL)
 // Survives host renderer/HD-scale reconstruction; only guest reset/load or a
 // new guest render job replaces it.
@@ -1087,12 +1111,26 @@ bool gpu3d_savestate_export(NdsGpu3dSaveState* out, std::string* error) {
     }
     const uint8_t* begin = static_cast<const uint8_t*>(state.Buffer());
     out->device.assign(begin, begin + state.Length());
+#if defined(NDS_NATIVE_3D)
+    out->native_geometry = g_native_3d.Save();
+#else
+    out->native_geometry.clear();
+#endif
     out->arm9_timestamp = g_nds.ARM9Timestamp;
     return true;
 }
 
 bool gpu3d_savestate_validate(const NdsGpu3dSaveState& in,
                               std::string* error) {
+#if defined(NDS_NATIVE_3D)
+    nds_native_3d::Service native;
+    if (!native.Load(in.native_geometry, error)) return false;
+#else
+    if (!in.native_geometry.empty()) {
+        if (error) *error = "native geometry state requires its matching build";
+        return false;
+    }
+#endif
     if (in.device.size() < 32u || in.device.size() > 32u * 1024u * 1024u) {
         if (error) *error = "savestate GPU3D payload size is invalid";
         return false;
@@ -1159,6 +1197,9 @@ bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
         return false;
     }
     g_nds.ARM9Timestamp = in.arm9_timestamp;
+#if defined(NDS_NATIVE_3D)
+    if (!g_native_3d.Load(in.native_geometry, error)) return false;
+#endif
 
     // Flat VRAM, texture cache entries, framebuffers and every GL object are
     // host products. Invalidate them and rebuild the current raster from the
@@ -1205,6 +1246,10 @@ bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
 }
 
 void nds_gpu3d_reset() {
+#if defined(NDS_NATIVE_3D)
+    g_native_3d.Reset();
+    g_native_3d.SetPresentation(g_nds.GPU.GPU3D.GetRenderWidth(), g_nds.GPU.GPU3D.GetGuestWideProjection());
+#endif
 #if defined(NDS_USE_NATIVE_GL)
     g_capture_reference.Reset();
 #endif
@@ -1242,6 +1287,16 @@ bool nds_gpu3d_reg_addr(uint32_t addr) {
 }
 
 uint32_t nds_gpu3d_read(uint32_t addr, uint32_t width) {
+#if defined(NDS_NATIVE_3D)
+    if (addr >= 0x04000600u && addr < 0x040006A4u && addr != 0x04000610u) {
+        NdsEmuScope region(NDS_EMU_GEOM);
+        const uint32_t aligned = addr & ~3u;
+        uint32_t value = g_native_3d.Read(aligned);
+        native_3d_irq();
+        value >>= (addr & 3u) * 8;
+        return width == 1 ? value & 255 : width == 2 ? value & 65535 : value;
+    }
+#endif
     // melonDS ARM9Timestamp is live during ARM9.Execute, and GXSTAT reads
     // sync the engine to it (GPU3D::Read32 case 0x600 calls Run()). These
     // register accesses only ever come from the ARM9's own slice, where
@@ -1260,6 +1315,26 @@ uint32_t nds_gpu3d_read(uint32_t addr, uint32_t width) {
 void nds_gpu3d_write(uint32_t addr, uint32_t value, uint32_t width) {
     if (addr == 0x04000440u && width == 4u && value == 0u)
         nds_title_patches_projection_begin();
+#if defined(NDS_NATIVE_3D)
+    if (addr >= 0x04000400u && addr < 0x04000600u) {
+        if (g_nds.GPU.GPU3D.GeometryEnabled && width == 4u) {
+            if (addr < 0x04000440u) g_native_3d.Packed(value);
+            else g_native_3d.Direct(static_cast<uint8_t>((addr - 0x04000400u) / 4), value);
+            if (addr >= 0x04000540u) {
+                NdsEmuScope region(NDS_EMU_GEOM);
+                g_native_3d.Flush(); native_3d_irq();
+            }
+        }
+        return;
+    }
+    if ((addr & ~3u) == 0x04000600u) {
+        const unsigned shift = (addr & 3u) * 8;
+        const uint32_t mask = width == 4 ? ~0u : width == 2 ? 65535u : 255u;
+        g_native_3d.AcknowledgeStatus(value << shift, mask << shift);
+        g_native_3d.Flush(); native_3d_irq();
+        return;
+    }
+#endif
     // Keep the engine's view of ARM9 time live for mid-slice writes too
     // (GXFIFO stall/IRQ/DMA decisions inside the vendored write paths).
     g_nds.ARM9Timestamp = g_runtime_cycles;
@@ -1283,7 +1358,17 @@ void nds_gpu3d_write(uint32_t addr, uint32_t value, uint32_t width) {
 
 uint32_t nds_gpu3d_command_batch(uint32_t source, uint32_t words,
                                uint32_t offset, uint32_t count, bool stop_on_stall) {
-#if defined(NDS_GX_COMMAND_CACHE)
+#if defined(NDS_NATIVE_3D)
+    if (g_nds.GPU.GPU3D.GeometryEnabled) {
+        const uint8_t* data = g_busf_main.data + (source & g_busf_main.mask) + offset * 4u;
+        // DMA ingress consumes one complete host job, with no FIFO request
+        // quotas, command-cycle debt or repeated geometry-engine runs.
+        g_native_3d.Packed(std::span<const uint32_t>(reinterpret_cast<const uint32_t*>(data), count));
+        NdsEmuScope region(NDS_EMU_GEOM);
+        g_native_3d.Flush(); native_3d_irq();
+    }
+    return count;
+#elif defined(NDS_GX_COMMAND_CACHE)
     using namespace melonDS::CommandBatch;
     if (!count) return 0;
     auto& gpu = g_nds.GPU.GPU3D;
@@ -1312,7 +1397,17 @@ uint32_t nds_gpu3d_command_batch(uint32_t source, uint32_t words,
 }
 
 const char* nds_gpu3d_command_batch_json() {
-#if defined(NDS_GX_COMMAND_CACHE)
+#if defined(NDS_NATIVE_3D)
+    static char text[512];
+    const auto& c = g_native_3d.Counters();
+    std::snprintf(text, sizeof(text),
+        "{\"service\":\"native-frame\",\"words\":%llu,\"commands\":%llu,\"jobs\":%llu,\"vertices\":%llu,\"polygons\":%llu,\"reads\":%llu,\"swaps\":%llu,\"overflows\":%llu}",
+        (unsigned long long)c.input_words, (unsigned long long)c.commands,
+        (unsigned long long)c.jobs, (unsigned long long)c.vertices,
+        (unsigned long long)c.polygons, (unsigned long long)c.read_barriers,
+        (unsigned long long)c.swaps, (unsigned long long)c.overflows);
+    return text;
+#elif defined(NDS_GX_COMMAND_CACHE)
     static char text[384];
     const auto c = g_command_cache.statistics;
     const auto p = g_nds.GPU.GPU3D.NativeProjectionCache.statistics;
@@ -1337,6 +1432,10 @@ void nds_gpu3d_set_power(uint16_t powcnt1) {
 }
 
 void nds_gpu3d_run(unsigned long long arm9_cycles) {
+#if defined(NDS_NATIVE_3D)
+    // Geometry runs at actual observation/job boundaries, never in lockstep.
+    (void)arm9_cycles;
+#else
     g_nds.ARM9Timestamp = arm9_cycles;
     auto& g3 = g_nds.GPU.GPU3D;
     const uint32_t stat_before = g3.GXStat;
@@ -1370,18 +1469,32 @@ void nds_gpu3d_run(unsigned long long arm9_cycles) {
         g_gx_run_trace_count, arm9_cycles,
         stat_before, g3.GXStat, cc_before, g3.CycleCount,
     };
+#endif
 }
 
 int32_t nds_gpu3d_cycles_to_run() {
+#if defined(NDS_NATIVE_3D)
+    return 0;
+#else
     return g_nds.GPU.GPU3D.CyclesToRunFor();
+#endif
 }
 
 void nds_gpu3d_check_fifo_dma() {
+#if defined(NDS_NATIVE_3D)
+    nds_dma_trigger(0, 7u);
+#else
     g_nds.GPU.GPU3D.CheckFIFODMA();
+#endif
 }
 
 void nds_gpu3d_check_fifo_irq() {
+#if defined(NDS_NATIVE_3D)
+    g_native_3d.Flush();
+    native_3d_irq();
+#else
     g_nds.GPU.GPU3D.CheckFIFOIRQ();
+#endif
 }
 
 void nds_gpu3d_vcount144() {
@@ -1403,7 +1516,13 @@ void nds_gpu3d_vcount144() {
 }
 
 void nds_gpu3d_vblank() {
+#if defined(NDS_NATIVE_3D)
+    NdsEmuScope region(NDS_EMU_GEOM);
+    if (g_native_3d.VBlank()) native_3d_latch();
+    native_3d_irq();
+#else
     g_nds.GPU.GPU3D.VBlank();
+#endif
 }
 
 void nds_gpu3d_vcount215() {
@@ -1419,7 +1538,12 @@ void nds_gpu3d_vcount215() {
         compute_finish_readback();
 #endif
     if (!profiling()) {
+#if defined(NDS_NATIVE_3D)
+        if (!g_nds.GPU.GPU3D.AbortFrame)
+            g_nds.GPU.GPU3D.GetCurrentRenderer().RenderFrame(g_nds.GPU);
+#else
         g_nds.GPU.GPU3D.VCount215(g_nds.GPU);
+#endif
 #if defined(NDS_USE_NATIVE_GL)
         latch_capture_reference();
 #endif
@@ -1432,7 +1556,12 @@ void nds_gpu3d_vcount215() {
         return;
     }
     const auto start = ProfileClock::now();
+#if defined(NDS_NATIVE_3D)
+    if (!g_nds.GPU.GPU3D.AbortFrame)
+        g_nds.GPU.GPU3D.GetCurrentRenderer().RenderFrame(g_nds.GPU);
+#else
     g_nds.GPU.GPU3D.VCount215(g_nds.GPU);
+#endif
 #if defined(NDS_USE_NATIVE_GL)
     latch_capture_reference();
 #endif
@@ -1518,6 +1647,9 @@ bool nds_gpu3d_set_output_width(uint16_t width) {
         width != g_nds.GPU.GPU3D.GetRenderWidth())
         return false;
     g_nds.GPU.GPU3D.SetRenderWidth(width);
+#if defined(NDS_NATIVE_3D)
+    g_native_3d.SetPresentation(width, g_nds.GPU.GPU3D.GetGuestWideProjection());
+#endif
     return true;
 }
 
@@ -1527,6 +1659,9 @@ uint16_t nds_gpu3d_output_width() {
 
 void nds_gpu3d_set_guest_wide_projection(bool enabled) {
     g_nds.GPU.GPU3D.SetGuestWideProjection(enabled);
+#if defined(NDS_NATIVE_3D)
+    g_native_3d.SetPresentation(g_nds.GPU.GPU3D.GetRenderWidth(), enabled);
+#endif
 }
 
 bool nds_gpu3d_guest_wide_projection() {

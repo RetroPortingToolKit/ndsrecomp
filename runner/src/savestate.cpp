@@ -857,6 +857,7 @@ bool decode_gpu2d(const std::vector<uint8_t>& payload,
 std::vector<uint8_t> encode_gpu3d(const NdsGpu3dSaveState& state) {
     std::vector<uint8_t> out;
     put_vec8(out, state.device);
+    put_vec8(out, state.native_geometry);
     put_u64(out, state.arm9_timestamp);
     return out;
 }
@@ -866,6 +867,7 @@ bool decode_gpu3d(const std::vector<uint8_t>& payload,
     size_t pos = 0;
     *state = NdsGpu3dSaveState{};
     return read_vec8(payload, pos, &state->device) &&
+        read_vec8(payload, pos, &state->native_geometry) &&
         read_u64(payload, pos, &state->arm9_timestamp) &&
         pos == payload.size();
 }

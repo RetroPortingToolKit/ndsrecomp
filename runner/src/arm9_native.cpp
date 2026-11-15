@@ -400,7 +400,11 @@ public:
         if(view)off=view.offset;
         const uint32_t* generation=w&&w->data&&w->gen? w->gen+(off>>12):nullptr;
         const bool ordinary_ram=bool(view)||ram(a,width);
+#if defined(NDS_NATIVE_3D)
+        const bool batch_gx=!ordinary_ram&&nds_native_gx_command(a,width);
+#else
         const bool batch_gx=!ordinary_ram&&nds_native_options().gx&&nds_native_gx_command(a,width);
+#endif
         const bool batch_data=!ordinary_ram&&nds_native_options().data&&nds_native_plain_video(a,width);
         if(!ordinary_ram) {
             if(census_enabled)census(write_census,access_key(a));

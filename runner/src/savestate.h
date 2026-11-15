@@ -273,6 +273,7 @@ struct NdsGpu2dSaveState {
 // guest VRAM and the restored render list.
 struct NdsGpu3dSaveState {
     std::vector<uint8_t> device;
+    std::vector<uint8_t> native_geometry;
     uint64_t arm9_timestamp = 0;
 };
 
