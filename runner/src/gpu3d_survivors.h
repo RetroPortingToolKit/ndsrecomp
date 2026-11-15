@@ -9,9 +9,11 @@ namespace nds_survivors {
 inline constexpr unsigned Rows=192, NativeWidth=256, MaxWidth=448, RowWords=12;
 enum Field : unsigned {
     Bldcnt=0, MasterBright=1, Eva=2, Evb=3, Evy=4, Priority3D=5,
-    RenderX=6, Screen=7, LayerWidth=8, Flags=9, SourceWidth=10, Reserved=11
+    RenderX=6, Screen=7, LayerWidth=8, Flags=9, SourceWidth=10,
+    Backdrop=11, Reserved=Backdrop
 };
-enum Flag : uint32_t { Needs3D=1, Visible3D=2, CenterNative=4, SkyboxFill=8 };
+enum Flag : uint32_t { Needs3D=1, Visible3D=2, CenterNative=4, SkyboxFill=8,
+    CompactObj=16 };
 // Four uints per native cell: top RGB6/meta, below RGB6/meta. Metadata is
 // target[0:5], BG0-hidden[6], effects[7], alpha[8:15], priority[16:23],
 // order[24:31]. CPU native and adaptive views share decoded BG inputs but
@@ -19,6 +21,11 @@ enum Flag : uint32_t { Needs3D=1, Visible3D=2, CenterNative=4, SkyboxFill=8 };
 // not recover an anchored native HUD by cropping the adaptive view.
 struct Frame {
     std::vector<uint32_t> native_layers,wide_layers;
+    // Independently selected OBJ/window views for CompactObj rows. One
+    // nds_gpu2d_pack_direct_pixel word per cell replaces two full layers;
+    // row Backdrop supplies their shared RGB6 background. Strides are 256
+    // and 448 respectively, with the same row ownership as the general views.
+    std::vector<uint32_t> native_objects,wide_objects;
     std::array<uint32_t,Rows*RowWords> rows{};
     std::array<uint16_t,2> widths{256,256};
     std::array<const uint32_t*,2> native_base{};
