@@ -351,10 +351,12 @@ uint32_t g_div_denom[2] = {};
 uint32_t g_div_quot[2] = {};
 uint32_t g_div_rem[2] = {};
 uint64_t g_div_deadline = UINT64_MAX;
+bool g_div_native_owned = false;
 uint16_t g_sqrtcnt = 0;
 uint32_t g_sqrt_val[2] = {};
 uint32_t g_sqrt_res = 0;
 uint64_t g_sqrt_deadline = UINT64_MAX;
+bool g_sqrt_native_owned = false;
 
 uint32_t card_block_words(uint32_t romctrl) {
     uint32_t n = (romctrl >> 24) & 7u;       // block-size field
@@ -401,14 +403,16 @@ void store_s64(uint32_t words[2], int64_t value) {
     words[1] = static_cast<uint32_t>(bits >> 32u);
 }
 
-void start_div() {
+void start_div(uint64_t timestamp, bool native_owned) {
     g_divcnt |= 0x8000u;
-    g_div_deadline = active_system_timestamp() +
+    g_div_deadline = timestamp +
                      ((g_divcnt & 0x3u) == 0u ? 18u : 34u);
-    nds_reschedule_slice(g_div_deadline);
+    g_div_native_owned = native_owned;
+    if (!native_owned) nds_reschedule_slice(g_div_deadline);
 }
 
 void finish_div() {
+    g_div_native_owned = false;
     g_divcnt &= ~0xC000u;
     switch (g_divcnt & 0x3u) {
         case 0: {
@@ -462,13 +466,15 @@ void finish_div() {
         g_divcnt |= 0x4000u;
 }
 
-void start_sqrt() {
+void start_sqrt(uint64_t timestamp, bool native_owned) {
     g_sqrtcnt |= 0x8000u;
-    g_sqrt_deadline = active_system_timestamp() + 13u;
-    nds_reschedule_slice(g_sqrt_deadline);
+    g_sqrt_deadline = timestamp + 13u;
+    g_sqrt_native_owned = native_owned;
+    if (!native_owned) nds_reschedule_slice(g_sqrt_deadline);
 }
 
 void finish_sqrt() {
+    g_sqrt_native_owned = false;
     g_sqrtcnt &= ~0x8000u;
     uint64_t val = (g_sqrtcnt & 1u) ? words_u64(g_sqrt_val)
                                      : uint64_t{g_sqrt_val[0]};
@@ -484,6 +490,17 @@ void finish_sqrt() {
         if (rem >= prod) { rem -= prod; ++res; }
     }
     g_sqrt_res = res;
+}
+
+void finish_math_at(uint64_t timestamp, bool native_only = false) {
+    if ((!native_only || g_div_native_owned) && g_div_deadline <= timestamp) {
+        g_div_deadline = UINT64_MAX;
+        finish_div();
+    }
+    if ((!native_only || g_sqrt_native_owned) && g_sqrt_deadline <= timestamp) {
+        g_sqrt_deadline = UINT64_MAX;
+        finish_sqrt();
+    }
 }
 
 uint32_t math_reg_read32(uint32_t addr) {
@@ -510,7 +527,9 @@ bool math_addr(uint32_t addr) {
            (addr >= 0x04000290u && addr < 0x040002C0u);
 }
 
-void math_reg_write(uint32_t addr, uint32_t value, uint32_t width) {
+void math_reg_write(uint32_t addr, uint32_t value, uint32_t width,
+                    uint64_t timestamp = active_system_timestamp(),
+                    bool native_owned = false) {
     const uint32_t base = addr & ~3u;
     const uint32_t shift = (addr & 3u) * 8u;
     const uint32_t raw_mask = width >= 4u ? 0xFFFFFFFFu
@@ -518,14 +537,14 @@ void math_reg_write(uint32_t addr, uint32_t value, uint32_t width) {
     const uint32_t bits = raw_mask << shift;
     auto merge = [&](uint32_t old) { return (old & ~bits) | ((value << shift) & bits); };
     switch (base) {
-        case 0x04000280u: g_divcnt = static_cast<uint16_t>(merge(g_divcnt)); start_div(); break;
-        case 0x04000290u: g_div_numer[0] = merge(g_div_numer[0]); start_div(); break;
-        case 0x04000294u: g_div_numer[1] = merge(g_div_numer[1]); start_div(); break;
-        case 0x04000298u: g_div_denom[0] = merge(g_div_denom[0]); start_div(); break;
-        case 0x0400029Cu: g_div_denom[1] = merge(g_div_denom[1]); start_div(); break;
-        case 0x040002B0u: g_sqrtcnt = static_cast<uint16_t>(merge(g_sqrtcnt)); start_sqrt(); break;
-        case 0x040002B8u: g_sqrt_val[0] = merge(g_sqrt_val[0]); start_sqrt(); break;
-        case 0x040002BCu: g_sqrt_val[1] = merge(g_sqrt_val[1]); start_sqrt(); break;
+        case 0x04000280u: g_divcnt = static_cast<uint16_t>(merge(g_divcnt)); start_div(timestamp,native_owned); break;
+        case 0x04000290u: g_div_numer[0] = merge(g_div_numer[0]); start_div(timestamp,native_owned); break;
+        case 0x04000294u: g_div_numer[1] = merge(g_div_numer[1]); start_div(timestamp,native_owned); break;
+        case 0x04000298u: g_div_denom[0] = merge(g_div_denom[0]); start_div(timestamp,native_owned); break;
+        case 0x0400029Cu: g_div_denom[1] = merge(g_div_denom[1]); start_div(timestamp,native_owned); break;
+        case 0x040002B0u: g_sqrtcnt = static_cast<uint16_t>(merge(g_sqrtcnt)); start_sqrt(timestamp,native_owned); break;
+        case 0x040002B8u: g_sqrt_val[0] = merge(g_sqrt_val[0]); start_sqrt(timestamp,native_owned); break;
+        case 0x040002BCu: g_sqrt_val[1] = merge(g_sqrt_val[1]); start_sqrt(timestamp,native_owned); break;
         default: break; // result registers are read-only
     }
 }
@@ -1782,6 +1801,30 @@ bool g_nds_insn_stop = false;
 // --rtc-host (see io.h): main.cpp sets this before the initial boot.
 bool g_nds_rtc_host = false;
 
+bool nds_io_native_math_address(uint32_t addr, uint32_t width) {
+    return (width==1u || width==2u || width==4u) &&
+        (addr&3u)+width<=4u && math_addr(addr) && math_addr(addr+width-1u);
+}
+
+bool nds_io_native_math_read(uint32_t addr, uint32_t width,
+                             uint64_t arm9_cycles, uint32_t* value) {
+    if (g_nds_active!=NDS_ARM9 || !value || !nds_io_native_math_address(addr,width))
+        return false;
+    finish_math_at(arm9_cycles>>1u);
+    *value=(math_reg_read32(addr&~3u)>>((addr&3u)*8u))&mask_for(width);
+    return true;
+}
+
+bool nds_io_native_math_write(uint32_t addr, uint32_t value, uint32_t width,
+                              uint64_t arm9_cycles) {
+    if (g_nds_active!=NDS_ARM9 || !nds_io_native_math_address(addr,width))
+        return false;
+    const uint64_t timestamp=arm9_cycles>>1u;
+    finish_math_at(timestamp);
+    math_reg_write(addr,value,width,timestamp,true);
+    return true;
+}
+
 void nds_io_reset() {
     for (int i = 0; i < 2; ++i) {
         g_ipcsync_out[i] = 0; g_postflg[i] = 0;
@@ -1820,12 +1863,12 @@ void nds_io_reset() {
     nds_cart_backup_reset_command(g_cart_backup);
     g_cart_ir_cmd = 0;   // melonDS CartRetailIR::Reset; the IR-ness itself
                          // is cartridge identity and survives reset
-    g_divcnt = 0; g_div_deadline = UINT64_MAX;
+    g_divcnt = 0; g_div_deadline = UINT64_MAX; g_div_native_owned = false;
     std::memset(g_div_numer, 0, sizeof(g_div_numer));
     std::memset(g_div_denom, 0, sizeof(g_div_denom));
     std::memset(g_div_quot, 0, sizeof(g_div_quot));
     std::memset(g_div_rem, 0, sizeof(g_div_rem));
-    g_sqrtcnt = 0; g_sqrt_res = 0; g_sqrt_deadline = UINT64_MAX;
+    g_sqrtcnt = 0; g_sqrt_res = 0; g_sqrt_deadline = UINT64_MAX; g_sqrt_native_owned = false;
     std::memset(g_sqrt_val, 0, sizeof(g_sqrt_val));
     for (auto& cpu : g_timer) for (auto& t : cpu) t = Timer{};
     g_timer_last[0] = g_timer_last[1] = 0;
@@ -2195,9 +2238,13 @@ uint32_t nds_card_debug_trace_copy(NdsCardTraceEntry* out,
 }
 
 uint64_t nds_next_system_event_time() {
+    // Native math has no IRQ/DMA side effects. Its exact result deadline is
+    // retained, but observation completes it lazily rather than ending a JIT
+    // run just to publish a register value. Other device deadlines stay live.
     return std::min(std::min(g_card_deadline, g_spi_deadline),
                     std::min(g_auxspi_deadline,
-                             std::min(g_div_deadline, g_sqrt_deadline)));
+                             std::min(g_div_native_owned?UINT64_MAX:g_div_deadline,
+                                      g_sqrt_native_owned?UINT64_MAX:g_sqrt_deadline)));
 }
 
 uint64_t nds_next_timer_overflow_time() {
@@ -2289,14 +2336,7 @@ void nds_run_system_events(uint64_t timestamp) {
                             g_card_irq_cpu == 0 ? 5u : 0x12u);
         }
     }
-    if (g_div_deadline <= timestamp) {
-        g_div_deadline = UINT64_MAX;
-        finish_div();
-    }
-    if (g_sqrt_deadline <= timestamp) {
-        g_sqrt_deadline = UINT64_MAX;
-        finish_sqrt();
-    }
+    finish_math_at(timestamp);
 }
 
 void nds_note_insn_retired(int cpu) {
@@ -2512,6 +2552,7 @@ void nds_dump_irq() {
 
 bool io_savestate_export(NdsIoCoreSaveState* out) {
     if (!out) return false;
+    finish_math_at(active_system_timestamp(),true);
     *out = NdsIoCoreSaveState{};
     for (int cpu = 0; cpu < 2; ++cpu) {
         out->ipcsync_out[cpu] = g_ipcsync_out[cpu];
@@ -2685,10 +2726,14 @@ bool io_savestate_import(const NdsIoCoreSaveState& in, std::string* error) {
     std::memcpy(g_div_quot, in.div_quot, sizeof(g_div_quot));
     std::memcpy(g_div_rem, in.div_rem, sizeof(g_div_rem));
     g_div_deadline = in.div_deadline;
+    // Ownership is host scheduling state, not part of the guest arithmetic
+    // payload. Restored pending operations conservatively rejoin scheduling.
+    g_div_native_owned = false;
     g_sqrtcnt = in.sqrtcnt;
     std::memcpy(g_sqrt_val, in.sqrt_value, sizeof(g_sqrt_val));
     g_sqrt_res = in.sqrt_result;
     g_sqrt_deadline = in.sqrt_deadline;
+    g_sqrt_native_owned = false;
 
     g_powercontrol7 = in.powercontrol7;
     g_keyinput = in.keyinput;
@@ -3313,6 +3358,7 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
         return cpu == 1 ? (nds_spu_read(addr, width) & m) : 0u;
     if (dma_reg_addr(addr)) return dma_reg_read(cpu, addr, width) & m;
     if (cpu == 0 && math_addr(addr)) {
+        finish_math_at(active_system_timestamp(),true);
         const uint32_t reg = math_reg_read32(addr & ~3u);
         return (reg >> ((addr & 3u) * 8u)) & m;
     }
@@ -3485,6 +3531,7 @@ void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {
         return;
     }
     if (cpu == 0 && math_addr(addr)) {
+        finish_math_at(active_system_timestamp(),true);
         math_reg_write(addr, value, width);
         return;
     }

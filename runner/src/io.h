@@ -13,6 +13,14 @@
 
 uint32_t nds_io_read(uint32_t addr, uint32_t width);
 void     nds_io_write(uint32_t addr, uint32_t value, uint32_t width);
+// ARM9 native service callers supply live, already-accounted CPU cycles.
+// This owns only DIV/SQRT: no generic IO fence, IRQ/DMA dispatch or clock
+// mutation. Unaccepted accesses return false without changing device state.
+bool nds_io_native_math_address(uint32_t addr, uint32_t width);
+bool nds_io_native_math_read(uint32_t addr, uint32_t width,
+                             uint64_t arm9_cycles, uint32_t* value);
+bool nds_io_native_math_write(uint32_t addr, uint32_t value, uint32_t width,
+                              uint64_t arm9_cycles);
 void     nds_io_reset();
 // Clear observer history without changing any guest-visible device state.
 void     nds_io_debug_history_reset();
