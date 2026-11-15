@@ -51,6 +51,8 @@ struct NdsSchedulerProfile {
     // Total rounds observed while profiling (exact, not sampled) — the
     // denominator for switches/round in the report.
     uint64_t rounds;
+    uint64_t arm7_wakes;
+    uint64_t offline_rounds;
 };
 
 // Opt-in coarse sampler used by the release profiler. It samples one complete

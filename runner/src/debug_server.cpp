@@ -1755,6 +1755,8 @@ std::string handle(const std::string& line) {
                "},\"sched\":{\"sampled_rounds\":" +
                std::to_string(sched.sampled_rounds) +
                ",\"rounds\":" + std::to_string(sched.rounds) +
+               ",\"arm7_wakes\":" + std::to_string(sched.arm7_wakes) +
+               ",\"offline_rounds\":" + std::to_string(sched.offline_rounds) +
                ",\"sampled_round_ns\":" + std::to_string(sched.sampled_round_ns) +
                ",\"next_event_ns\":" + std::to_string(sched.next_event_ns) +
                ",\"arm9_ns\":" + std::to_string(sched.arm9_ns) +

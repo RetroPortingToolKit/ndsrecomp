@@ -38,6 +38,8 @@ void     nds_set_debug_turbo(bool enabled);
 bool     nds_debug_turbo();
 uint64_t nds_next_system_event_time();
 uint64_t nds_next_timer_overflow_time();
+// Native offline services own ARM7 timers; only ARM9 timers constrain its CPU.
+uint64_t nds_next_timer_overflow_time_for_cpu(int cpu);
 // NOTE: there is deliberately no per-CPU variant. One existed (62dbbc7) for the
 // sole purpose of shortening the scheduler's ARM7 catch-up target to a halted
 // core's next timer overflow, which delivered that overflow's IRQ inside the
