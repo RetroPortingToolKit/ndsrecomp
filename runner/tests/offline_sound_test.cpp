@@ -27,6 +27,8 @@ namespace {
 std::array<uint8_t, 4 * 1024 * 1024> ram{};
 std::array<uint8_t, 96 * 1024> wram{};
 std::vector<uint32_t> replies;
+std::vector<uint64_t> reply_times;
+bool reply_room = true;
 unsigned checks = 0;
 void check(bool b) {
   ++checks;
@@ -73,6 +75,8 @@ void boot(bool mph = false, bool adopt = false) {
   ram.fill(0);
   wram.fill(0);
   replies.clear();
+  reply_times.clear();
+  reply_room = true;
   now = 0;
   nds_spu_reset();
   nds_spu_write(0x04000500, 0x807F, 2);
@@ -137,9 +141,12 @@ bool nds_io_offline_memory(uint32_t a, uint8_t *b, uint32_t n, bool write,
     std::memcpy(b, p, n);
   return true;
 }
-bool nds_io_offline_reply_capacity(uint32_t) { return true; }
-bool nds_io_offline_reply(uint32_t x, uint64_t) {
+bool nds_io_offline_reply_capacity(uint32_t) { return reply_room; }
+bool nds_io_offline_reply(uint32_t x, uint64_t at) {
+  if (!reply_room)
+    return false;
   replies.push_back(x);
+  reply_times.push_back(at);
   return true;
 }
 bool nds_io_offline_tick_deadline(uint64_t ticks, uint64_t now,
@@ -244,6 +251,27 @@ int main() {
     check(nds_offline_sound_snapshot(&after));
     check(before == after);
   }
+  // A full canonical reply FIFO must leave ARM9 free to drain it. Driver
+  // service can cross its own deadline while one alarm publication waits;
+  // draining publishes one pending callback at current time, never the past.
+  boot(false, true);
+  reply_room = false;
+  nds_offline_sound_advance(174592);
+  check(replies.empty());
+  check(nds_offline_sound_next_event(174592) > 174592);
+  nds_offline_sound_advance(200000);
+  check(replies.empty());
+  check(nds_offline_sound_next_event(200000) > 200000);
+  reply_room = true;
+  nds_offline_sound_advance(220000);
+  check(replies.size() == 1 && reply_times[0] == 220000);
+  check(nds_offline_sound_next_event(220000) == 220160);
+  nds_offline_sound_advance(220000);
+  check(replies.size() == 1);
+  nds_offline_sound_advance(220159);
+  check(replies.size() == 1);
+  nds_offline_sound_advance(220160);
+  check(replies.size() == 2 && reply_times[1] == 220160);
   boot();
   // Full SSEQ->bank->PSG voice path, then exact caller-visible packed writes.
   put<uint32_t>(0x02008038, 1);

@@ -1554,8 +1554,10 @@ uint64_t nds_offline_sound_next_event(uint64_t now) {
   if (!g.active || g.fault)
     return Never;
   uint64_t next = g.next;
+  const bool reply_room = nds_io_offline_reply_capacity(1);
   for (unsigned i = 0; i < 8; ++i)
-    next = std::min(next, g.alarm_deadlines[i]);
+    if (g.alarm_deadlines[i] > now || reply_room)
+      next = std::min(next, std::max(g.alarm_deadlines[i], now));
   if (capture_active())
     next = std::min(next, (now / 1024 + 1) * 1024);
   return next;
@@ -1566,8 +1568,11 @@ void nds_offline_sound_advance(uint64_t now) {
   g.in_advance = true;
   for (;;) {
     uint64_t next = g.next;
+    const bool reply_room = nds_io_offline_reply_capacity(1);
     for (unsigned i = 0; i < 8; ++i)
-      next = std::min(next, g.alarm_deadlines[i]);
+      if (g.alarm_deadlines[i] > now || reply_room)
+        next = std::min(
+            next, g.alarm_deadlines[i] <= g.now ? now : g.alarm_deadlines[i]);
     if (next > now)
       break;
     nds_tick_spu(next);
@@ -1577,18 +1582,25 @@ void nds_offline_sound_advance(uint64_t now) {
       g.next += DriverPeriod;
     }
     for (unsigned i = 0; i < 8; ++i)
-      if (g.alarm_deadlines[i] == next) {
+      if (g.alarm_deadlines[i] <= next) {
         if (!nds_io_offline_reply_capacity(1)) {
-          g.in_advance = false;
-          return;
+          // Keep the pending publication, but do not advertise it as an
+          // expired CPU stop while ARM9 must run to drain the hardware FIFO.
+          continue;
         }
         auto a = g.work.alarm(i);
-        nds_io_offline_reply(7u | ((i | (unsigned(a.byte(1)) << 8)) << 6),
-                             next);
+        if (!nds_io_offline_reply(7u | ((i | (unsigned(a.byte(1)) << 8)) << 6),
+                                  next))
+          continue;
         uint64_t period = a.get<uint64_t>(12);
-        if (period)
-          g.alarm_deadlines[i] += period * 64;
-        else {
+        if (period) {
+          // The SDK reinserts a late periodic OSAlarm at its first future
+          // phase after the callback returns. A blocked send is one callback,
+          // not one reply for every period missed while the FIFO was full.
+          const uint64_t cycles = period * 64;
+          g.alarm_deadlines[i] +=
+              ((next - g.alarm_deadlines[i]) / cycles + 1) * cycles;
+        } else {
           g.alarm_deadlines[i] = Never;
           a.set<uint32_t>(0x14, 0);
         }
