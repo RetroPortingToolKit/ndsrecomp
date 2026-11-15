@@ -1363,7 +1363,7 @@ uint32_t nds_gpu3d_command_batch(uint32_t source, uint32_t words,
         const uint8_t* data = g_busf_main.data + (source & g_busf_main.mask) + offset * 4u;
         // DMA ingress consumes one complete host job, with no FIFO request
         // quotas, command-cycle debt or repeated geometry-engine runs.
-        g_native_3d.Packed(std::span<const uint32_t>(reinterpret_cast<const uint32_t*>(data), count));
+        g_native_3d.Job(std::span<const uint32_t>(reinterpret_cast<const uint32_t*>(data), count));
         NdsEmuScope region(NDS_EMU_GEOM);
         g_native_3d.Flush(); native_3d_irq();
     }
@@ -1401,11 +1401,13 @@ const char* nds_gpu3d_command_batch_json() {
     static char text[512];
     const auto& c = g_native_3d.Counters();
     std::snprintf(text, sizeof(text),
-        "{\"service\":\"native-frame\",\"words\":%llu,\"commands\":%llu,\"jobs\":%llu,\"vertices\":%llu,\"polygons\":%llu,\"reads\":%llu,\"swaps\":%llu,\"overflows\":%llu}",
+        "{\"service\":\"native-frame\",\"words\":%llu,\"commands\":%llu,\"jobs\":%llu,\"vertices\":%llu,\"polygons\":%llu,\"reads\":%llu,\"swaps\":%llu,\"overflows\":%llu,\"cache_hits\":%llu,\"cache_builds\":%llu,\"reused_words\":%llu}",
         (unsigned long long)c.input_words, (unsigned long long)c.commands,
         (unsigned long long)c.jobs, (unsigned long long)c.vertices,
         (unsigned long long)c.polygons, (unsigned long long)c.read_barriers,
-        (unsigned long long)c.swaps, (unsigned long long)c.overflows);
+        (unsigned long long)c.swaps, (unsigned long long)c.overflows,
+        (unsigned long long)c.cache_hits, (unsigned long long)c.cache_builds,
+        (unsigned long long)c.reused_words);
     return text;
 #elif defined(NDS_GX_COMMAND_CACHE)
     static char text[384];

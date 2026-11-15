@@ -66,25 +66,50 @@ Vertex Intersection(const Vertex& a, const Vertex& b, int64_t da, int64_t db, ui
     out.viewport = a.viewport; out.perspective = a.perspective;
     return out;
 }
-std::vector<Vertex> Clip(std::span<const Vertex> input, uint64_t& identity, bool far_clip) {
-    std::vector<Vertex> points(input.begin(), input.end()), next;
-    next.reserve(10);
-    if (!far_clip && std::any_of(points.begin(), points.end(), [](const auto& v) { return v.clip[2] > v.clip[3]; }))
-        return {};
-    for (unsigned plane = 0; plane < 6 && !points.empty(); ++plane) {
-        next.clear();
-        Vertex prior = points.back();
+struct ClippedPolygon {
+    std::array<Vertex, 12> vertices{};
+    unsigned count{};
+    auto begin() { return vertices.begin(); }
+    auto end() { return vertices.begin() + count; }
+    auto begin() const { return vertices.begin(); }
+    auto end() const { return vertices.begin() + count; }
+    unsigned size() const { return count; }
+    bool empty() const { return count == 0; }
+    Vertex& operator[](unsigned i) { return vertices[i]; }
+};
+ClippedPolygon Clip(std::span<const Vertex> input, uint64_t& identity, bool far_clip) {
+    unsigned outside = 0, common = 63;
+    for (const auto& point : input) {
+        unsigned code = 0;
+        for (unsigned plane = 0; plane < 6; ++plane) code |= unsigned(Distance(point, plane) < 0) << plane;
+        outside |= code; common &= code;
+    }
+    if (common || (!far_clip && (outside & (1u << 5)))) return {};
+    ClippedPolygon first, second;
+    auto* points = &first; auto* next = &second;
+    std::copy(input.begin(), input.end(), points->vertices.begin());
+    points->count = static_cast<unsigned>(input.size());
+    if (!outside) return *points;
+    for (unsigned plane = 0; plane < 6 && !points->empty(); ++plane) {
+        if (!(outside & (1u << plane))) continue;
+        next->count = 0;
+        Vertex prior = (*points)[points->count - 1];
         int64_t dprior = Distance(prior, plane);
-        for (const Vertex& current : points) {
+        for (const Vertex& current : *points) {
             const int64_t dcurrent = Distance(current, plane);
-            if ((dprior < 0) != (dcurrent < 0))
-                next.push_back(Intersection(prior, current, dprior, dcurrent, identity++));
-            if (dcurrent >= 0) next.push_back(current);
+            if ((dprior < 0) != (dcurrent < 0)) {
+                if (next->count == next->vertices.size()) return {};
+                (*next)[next->count++] = Intersection(prior, current, dprior, dcurrent, identity++);
+            }
+            if (dcurrent >= 0) {
+                if (next->count == next->vertices.size()) return {};
+                (*next)[next->count++] = current;
+            }
             prior = current; dprior = dcurrent;
         }
-        points.swap(next);
+        std::swap(points, next);
     }
-    return points;
+    return *points;
 }
 }
 
@@ -98,8 +123,8 @@ void Service::Reset() {
     building_.vertices.reserve(kVertices); building_.polygons.reserve(kPolygons);
     operations_.clear(); operations_.reserve(32768);
     payload_.clear(); payload_.reserve(65536); consumed_ = 0;
-    indices_.clear(); indices_.reserve(kVertices);
     statistics_ = {};
+    jobs_.clear(); job_bytes_ = 0;
     clip_dirty_ = true;
 }
 unsigned Service::Parameters(uint8_t c) {
@@ -154,6 +179,45 @@ void Service::Packed(uint32_t word) {
     }
 }
 void Service::Packed(std::span<const uint32_t> words) { for (uint32_t word : words) Packed(word); }
+void Service::Job(std::span<const uint32_t> words) {
+    // Keep exact equality after hashing. An address or generation alone does
+    // not identify a model buffer that a guest regenerates or aliases.
+    if (words.empty()) return;
+    if (state_.packed_count || state_.parameter_count || words.size() > 16384 ||
+        operations_.size() + words.size() * 4 > kOperations) {
+        Packed(words); return;
+    }
+    uint64_t hash = 14695981039346656037ull;
+    for (uint32_t word : words) { hash ^= word; hash *= 1099511628211ull; }
+    for (const auto& job : jobs_) if (job.hash == hash && job.words.size() == words.size() &&
+        std::equal(words.begin(), words.end(), job.words.begin())) {
+        const auto offset = static_cast<uint32_t>(payload_.size());
+        payload_.insert(payload_.end(), job.parameters.begin(), job.parameters.end());
+        for (auto op : job.operations) { op.offset += offset; operations_.push_back(op); }
+        state_.parameters = job.last_parameters; state_.active_command = job.last_command;
+        statistics_.input_words += words.size(); statistics_.reused_words += words.size();
+        ++statistics_.cache_hits;
+        return;
+    }
+    const size_t first = operations_.size(), parameters = payload_.size();
+    Packed(words);
+    if (state_.packed_count || state_.parameter_count) return;
+    CompiledJob job;
+    job.hash = hash; job.words.assign(words.begin(), words.end());
+    job.parameters.assign(payload_.begin() + parameters, payload_.end());
+    job.operations.assign(operations_.begin() + first, operations_.end());
+    for (auto& op : job.operations) op.offset -= static_cast<uint32_t>(parameters);
+    job.last_parameters = state_.parameters; job.last_command = state_.active_command;
+    auto cost = [](const CompiledJob& value) {
+        return (value.words.size() + value.parameters.size()) * sizeof(uint32_t) + value.operations.size() * sizeof(OperationEntry);
+    };
+    const size_t bytes = cost(job);
+    while (!jobs_.empty() && (jobs_.size() >= 64 || job_bytes_ + bytes > 4 * 1024 * 1024)) {
+        job_bytes_ -= cost(jobs_.front()); jobs_.erase(jobs_.begin());
+    }
+    job_bytes_ += bytes;
+    jobs_.push_back(std::move(job)); ++statistics_.cache_builds;
+}
 Matrix Service::ClipMatrix() const {
     if (clip_dirty_) { clip_cache_ = Multiply(state_.position, state_.projection); clip_dirty_ = false; }
     return clip_cache_;
@@ -262,7 +326,7 @@ void Service::SubmitPolygon(std::span<const Vertex> vertices) {
     const unsigned face_bit = front ? 7 : 6;
     if (area != 0 && !(state_.active_attributes & (1u << face_bit))) { ++statistics_.culled; return; }
     size_t needed = 0;
-    for (const auto& point : points) needed += !indices_.contains(point.identity);
+    for (const auto& point : points) needed += point.output_index == UINT16_MAX;
     if (building_.polygons.size() >= kPolygons || building_.vertices.size() + needed > kVertices) {
         state_.overflow = 1; ++statistics_.overflows; return;
     }
@@ -272,11 +336,18 @@ void Service::SubmitPolygon(std::span<const Vertex> vertices) {
     out.palette = state_.palette; out.viewport = state_.viewport;
     out.perspective = state_.projection[3] || state_.projection[7] || state_.projection[11];
     for (unsigned i = 0; i < points.size(); ++i) {
-        const auto found = indices_.find(points[i].identity);
-        if (found == indices_.end()) {
+        uint16_t& index = points[i].output_index;
+        if (index == UINT16_MAX) {
             const auto at = static_cast<uint16_t>(building_.vertices.size());
-            indices_.emplace(points[i].identity, at); building_.vertices.push_back(points[i]); out.indices[i] = at;
-        } else out.indices[i] = found->second;
+            index = at; building_.vertices.push_back(points[i]);
+            // Only the current triangle/quad strip can reference this input
+            // again. Keep its index on those four vertices, with no frame-wide
+            // hash or identity-sized allocation.
+            for (unsigned corner = 0; corner < state_.primitive_count; ++corner)
+                if (state_.primitive[corner].identity == points[i].identity)
+                    state_.primitive[corner].output_index = at;
+        }
+        out.indices[i] = index;
     }
     statistics_.vertices += needed; ++statistics_.polygons;
     if (points.size() != vertices.size()) ++statistics_.clipped;
@@ -349,10 +420,12 @@ void Service::Execute(uint8_t c, std::span<const uint32_t> p) {
     case 0x40: s.primitive_type = p[0] & 3; s.primitive_count = s.strip_count = 0; s.active_attributes = s.attributes; break;
     case 0x41: break; // Hardware END does not interrupt a strip.
     case 0x50:
-        pending_ = std::move(building_); pending_.swap_attributes = s.swap_attributes;
+        std::swap(pending_, building_); pending_.swap_attributes = s.swap_attributes;
         s.swap_attributes = p[0] & 3;
-        building_ = {}; building_.vertices.reserve(kVertices); building_.polygons.reserve(kPolygons);
-        indices_.clear(); pending_swap_ = true; ++statistics_.swaps; break;
+        building_.vertices.clear(); building_.polygons.clear();
+        building_.vertices.reserve(kVertices); building_.polygons.reserve(kPolygons);
+        s.next_identity = 0; s.primitive_count = s.strip_count = 0;
+        pending_swap_ = true; ++statistics_.swaps; break;
     case 0x60: s.viewport = p[0]; break;
     case 0x70: {
         std::array<Vertex, 8> box{};
@@ -400,7 +473,8 @@ void Service::Flush() { Drain(false); }
 bool Service::VBlank() {
     Drain(false);
     if (!pending_swap_) return false;
-    display_ = std::move(pending_); pending_ = {}; pending_swap_ = false;
+    std::swap(display_, pending_);
+    pending_.vertices.clear(); pending_.polygons.clear(); pending_swap_ = false;
     return true;
 }
 void Service::AcknowledgeStatus(uint32_t value, uint32_t mask) {
@@ -498,9 +572,14 @@ bool Service::Load(std::span<const uint8_t> bytes, std::string* error) {
                 throw std::runtime_error("invalid native geometry operation span");
         if (s.parameter_count && (s.active_command > 255 || s.parameter_count >= Parameters(static_cast<uint8_t>(s.active_command))))
             throw std::runtime_error("invalid native geometry partial command");
-        for (unsigned i = 0; i < restored.building_.vertices.size(); ++i)
-            if (!restored.indices_.emplace(restored.building_.vertices[i].identity, static_cast<uint16_t>(i)).second)
-                throw std::runtime_error("duplicate native vertex identity");
+        if (s.primitive_count >= ((s.primitive_type & 1) ? 4u : 3u))
+            throw std::runtime_error("invalid native partial primitive size");
+        for (unsigned i = 0; i < s.primitive_count; ++i)
+            if (s.primitive[i].identity >= s.next_identity ||
+                (s.primitive[i].output_index != UINT16_MAX &&
+                 (s.primitive[i].output_index >= restored.building_.vertices.size() ||
+                  restored.building_.vertices[s.primitive[i].output_index].identity != s.primitive[i].identity)))
+                throw std::runtime_error("invalid native partial primitive identity");
         restored.pending_swap_ = pending != 0; restored.consumed_ = consumed;
         if (s.output_width < 256 || s.output_width > 448 || (s.output_width & 1) ||
             s.guest_wide_projection > 1 || s.box_result > 1 || s.stack_error > 1 ||

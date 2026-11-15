@@ -1,4 +1,7 @@
 #include "native_3d.h"
+#include <algorithm>
+#include <cstddef>
+#include <cstring>
 #include <cstdio>
 #include <initializer_list>
 #include <stdexcept>
@@ -124,10 +127,44 @@ void JobBoundariesAndPresentation() {
     Op(wide,0x70,{XY(5000,-100),XY(-100,500),XY(200,200)});
     Check(!(wide.Read(0x04000600)&2),"guest-wide projection must not widen culling twice");
 }
+void PartialStripStateSafety() {
+    Service strip;Begin(strip,2);V(strip,-1234,-1024);V(strip,1234,-1024);strip.Flush();
+    const auto state=strip.Save();Service restored;std::string error;
+    Check(restored.Load(state,&error),"partial native strip restores");
+    auto malformed=state;
+    const std::array<int32_t,4> first{-1234,-1024,0,4096};
+    const auto* begin=reinterpret_cast<const uint8_t*>(first.data());
+    auto found=std::search(malformed.begin(),malformed.end(),begin,begin+sizeof(first));
+    Check(found!=malformed.end(),"partial vertex is present in current state");
+    const size_t identity=static_cast<size_t>(found-malformed.begin())+offsetof(nds_native_3d::Vertex,identity);
+    Check(identity+sizeof(uint64_t)<=malformed.size(),"partial identity lies inside state");
+    std::memset(malformed.data()+identity,255,sizeof(uint64_t));
+    Check(!restored.Load(malformed,&error),"corrupt partial vertex identity is rejected before continuation");
+    V(restored,-1234,1024);V(restored,1234,1024);Publish(restored);
+    Check(restored.Display().polygons.size()==2&&restored.Display().vertices.size()==4,"restored partial strip shares vertices safely");
+}
+void CompiledDisplayLists() {
+    Service s;Begin(s);
+    const std::array<uint32_t,7> list{0x00232323,XY(-1024,-1024),0,XY(1024,-1024),0,XY(0,1024),0};
+    s.Job(list);Publish(s);
+    Check(s.Counters().cache_builds==1,"complete list is lowered once");
+    Op(s,0x10,{1});Op(s,0x1C,{512,0,0});Begin(s);
+    s.Job(list);Publish(s);
+    Check(s.Counters().cache_hits==1&&s.Display().vertices[0].clip[0]==-512,"compiled list replays against current matrices");
+    const auto bytes=s.Save();Service restored;std::string error;
+    Check(restored.Load(bytes,&error),"compiled-list state loads without host cache");
+    Begin(restored);restored.Job(list);Publish(restored);
+    Check(restored.Counters().cache_hits==0&&restored.Counters().cache_builds==1,"restore rebuilds disposable decode cache");
+    Service partial;Begin(partial);
+    partial.Job({list.data(),2});
+    Check(partial.Counters().cache_builds==0,"partial parameter boundary cannot become a cached packet");
+    partial.Job({list.data()+2,list.size()-2});Publish(partial);
+    Check(partial.Display().polygons.size()==1&&partial.Counters().cache_hits==0,"uncached continuation completes exactly once");
+}
 }
 int main() {
     try {
-        GeometryAndObservation();MatricesAndResults();ClippingAndStrips();PackedAndCurrentState();BoxAndPositionSideEffect();JobBoundariesAndPresentation();
+        GeometryAndObservation();MatricesAndResults();ClippingAndStrips();PackedAndCurrentState();BoxAndPositionSideEffect();JobBoundariesAndPresentation();PartialStripStateSafety();CompiledDisplayLists();
         std::puts("native geometry command jobs, matrices, clipping, strips, observations and current states passed");
         return 0;
     } catch(const std::exception& error) {std::fprintf(stderr,"%s\n",error.what());return 1;}
