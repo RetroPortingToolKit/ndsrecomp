@@ -17,6 +17,7 @@ bool nds_offline_sound_can_receive(uint32_t,bool);
 bool nds_offline_sound_receive(uint32_t,bool,uint64_t);
 uint64_t nds_offline_sound_next_event(uint64_t);
 void nds_offline_sound_advance(uint64_t);
+void nds_offline_sound_sleep(bool,uint64_t);
 void nds_offline_sound_reset();
 bool nds_offline_sound_snapshot(std::vector<uint8_t>*);
 bool nds_offline_sound_validate(const std::vector<uint8_t>&,std::string*);
@@ -173,7 +174,7 @@ bool power_request(const std::array<uint16_t,16>& c,uint64_t now){
     uint8_t previous;if(!pm_read(0,&previous))return false;
     state.sleep=true;state.sleep_pm=previous;state.sleep_flags=c[1];
     state.led=2;state.led_frame=0;led_mode(2);pm_mask(0,1);
-    nds_offline_sound_advance(now);nds_spu_write(0x04000504u,0,2);
+    nds_offline_sound_sleep(true,now);nds_spu_write(0x04000504u,0,2);
     return true; // SDK sleep replies only after the selected wake source.
 }
 uint32_t mic_period(uint32_t value){if(value>=0x04000000u)return 0;if(!value)return 65536;const unsigned shift=value<0x10000?0:value<0x400000?6:value<0x1000000?8:10;return (value>>shift)<<shift;}
@@ -234,8 +235,25 @@ bool nds_offline_arm7_try_takeover(uint64_t now,std::string* error){
     if(next.filter>255||next.led>15||next.led_actual>3)return fail(error,"ARM7 driver parameters are outside the native contract");
     uint8_t patterns[144];if(!memory(a.patterns,patterns,sizeof(patterns),false))return fail(error,"ARM7 power patterns unavailable");
     for(unsigned i=0;i<12;++i)for(unsigned j=0;j<3;++j){const auto* b=patterns+i*12+j*4;next.patterns[i][j]=uint32_t(b[0])|(uint32_t(b[1])<<8)|(uint32_t(b[2])<<16)|(uint32_t(b[3])<<24);}
-    next.touch_auto=touch==2;next.samples=next.packets[1][0]&255;next.phase=next.packets[1][1];
-    if(next.touch_auto&&(!next.samples||next.samples>4||next.phase>=263))return fail(error,"ARM7 touch schedule is invalid");
+    next.touch_auto=touch==2;
+    if(next.touch_auto){
+        // The last PXI packet may be a filter request. Adopt the live SDK
+        // VAlarms rather than treating that packet as the autosample setup.
+        std::array<unsigned,4> lines{};
+        for(unsigned i=0;i<4;++i){
+            const uint32_t alarm=a.touch+0x2C+i*0x28,handler=load32(alarm);
+            if(!handler)continue;
+            const uint32_t position=load32(alarm+0x10);
+            if(i!=next.samples||handler!=(game==1?0x03801774u:0x03804BB8u)||load32(alarm+4)!=i||
+               load32(alarm+0x1C)!=1||load32(alarm+0x24)||(position>>16)!=10||(position&65535)>=263)
+                return fail(error,"ARM7 touch VAlarm is not at a known idle schedule");
+            lines[next.samples++]=position&65535;
+        }
+        if(!next.samples)return fail(error,"ARM7 touch schedule is empty");
+        next.phase=lines[0];
+        for(unsigned i=1;i<next.samples;++i)if(lines[i]!=(i*263/next.samples+next.phase)%263)
+            return fail(error,"ARM7 touch schedule is inconsistent");
+    }
     next.mic_auto=mic==2;
     if(next.mic_auto){next.mic_flags=load32(a.mic+0x24)&0xFFFF;next.mic_base=load32(a.mic+0x28);next.mic_pos=load32(a.mic+0x2C);next.mic_size=load32(a.mic+0x30);const uint32_t reload=load32(a.mic+0x34);const unsigned shifts[4]={0,6,8,10};next.mic_period=(65536-(reload&65535))<<shifts[(reload>>16)&3];if(!next.mic_size||next.mic_pos>=next.mic_size||!ram(next.mic_base,next.mic_size))return fail(error,"ARM7 microphone schedule is invalid");next.mic_next=now+next.mic_period;}
     uint64_t driver_tick;
@@ -256,7 +274,7 @@ bool nds_offline_arm7_preflight(uint32_t word){
     const auto c=preview(tag,payload);return command(tag,c[0]>>8);
 }
 bool nds_offline_arm7_receive(uint32_t word,uint64_t now){
-    if(!nds_offline_arm7_preflight(word))return false;
+    if(state.sleep||!nds_offline_arm7_preflight(word))return false;
     const unsigned tag=word&31;const bool error=word&32;const uint32_t payload=word>>6;
     if(tag==7&&!nds_offline_sound_can_receive(payload,error))return false;
     const bool completes=tag==5||(slot(tag)>=0&&(payload&0x01000000u));
@@ -278,6 +296,8 @@ bool nds_offline_arm7_receive(uint32_t word,uint64_t now){
 }
 uint64_t nds_offline_arm7_next_event(uint64_t now){
     if(!state.active||state.reset_pending||nds_offline_card_terminated()||nds_powered_off())return Never;
+    // PM_Sleep masks every callback IRQ except the selected wake sources.
+    if(state.sleep)return (state.sleep_flags&2)?nds_io_offline_rtc_next_event(now):Never;
     uint64_t next=state.led_next;
     const bool reply_room=nds_io_offline_reply_capacity(1);
     auto event=[&](uint64_t at){if(at>now||reply_room)next=std::min(next,at);};
@@ -288,6 +308,33 @@ uint64_t nds_offline_arm7_next_event(uint64_t now){
 void nds_offline_arm7_advance(uint64_t now){
     if(!state.active||state.reset_pending||nds_offline_card_terminated()||nds_powered_off())return;
     if(nds_io_offline_rtc_next_event(now)<=now)nds_tick_rtc(now);
+    if(state.sleep){
+        uint32_t mask=0;
+        if(state.sleep_flags&1)mask|=0x1000;
+        if(state.sleep_flags&2)mask|=0x80;
+        if(state.sleep_flags&4)mask|=0x400000;
+        if(state.sleep_flags&8)mask|=0x100000;
+        if(state.sleep_flags&0x10)mask|=0x2000;
+        if(!(nds_io_offline_wake_flags()&mask)||!nds_io_offline_reply_capacity(1)){
+            nds_offline_sound_advance(now); // Hardware SPU only while software sleeps.
+            return;
+        }
+        pm_write(0,uint8_t(state.sleep_pm));
+        power_switch((state.sleep_flags&0x20)?6:7);power_switch((state.sleep_flags&0x40)?4:5);
+        pm_mask(1,0);nds_spu_write(0x04000504u,512,2);
+        state.sleep=false;nds_io_offline_reply(wire(8,0),now);
+        // Restoring the SDK IRQ mask dispatches one pending callback, not every
+        // missed timer edge. VAlarms outside their ten-line tolerance are skipped.
+        for(auto& at:state.touch_next)if(at!=Never&&at<=now){
+            const unsigned line=unsigned((at%Frame)/Line);
+            const unsigned late=(unsigned((now%Frame)/Line)+263-line)%263;
+            if(late<=10){const uint64_t delta=uint64_t(late)*Line+(now%Line);at=now-delta;}
+            else at=next_line(now,line);
+        }
+        if(state.mic_next!=Never&&state.mic_next<=now)state.mic_next=now-(now-state.mic_next)%state.mic_period;
+        if(state.led_next!=Never&&state.led_next<=now)state.led_next=now-(now-state.led_next)%Frame;
+        nds_offline_sound_sleep(false,now);
+    }
     for(unsigned count=0;count<4;++count){
         unsigned i=state.touch_pending?state.touch_pending-1:unsigned(std::min_element(state.touch_next.begin(),state.touch_next.end())-state.touch_next.begin());
         if(state.touch_next[i]>now)break;
@@ -313,7 +360,6 @@ void nds_offline_arm7_advance(uint64_t now){
     }
     const uint32_t irq=nds_io_offline_wake_flags();
     if(irq&0x80)rtc_interrupt(now);
-    if(state.sleep){uint32_t mask=0;if(state.sleep_flags&1)mask|=0x1000;if(state.sleep_flags&2)mask|=0x80;if(state.sleep_flags&4)mask|=0x400000;if(state.sleep_flags&8)mask|=0x100000;if(state.sleep_flags&0x10)mask|=0x2000;if((irq&mask)&&nds_io_offline_reply_capacity(1)){pm_write(0,uint8_t(state.sleep_pm));power_switch((state.sleep_flags&0x20)?6:7);power_switch((state.sleep_flags&0x40)?4:5);pm_mask(1,0);nds_offline_sound_advance(now);nds_spu_write(0x04000504u,512,2);state.sleep=false;nds_io_offline_reply(wire(8,0),now);}}
     uint32_t word;for(unsigned i=0;i<16&&nds_io_offline_peek(&word);++i)if(!nds_offline_arm7_receive(word,now))break;
     if(!state.reset_pending&&!nds_offline_card_terminated())nds_offline_sound_advance(now);
 }
