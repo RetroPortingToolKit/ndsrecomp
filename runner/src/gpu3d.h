@@ -5,6 +5,7 @@
 namespace nds_native_3d { struct Mesh; }
 void nds_gpu3d_native_operation(uint8_t command, std::span<const uint32_t> parameters);
 void nds_gpu3d_native_mesh(const nds_native_3d::Mesh& mesh);
+bool nds_gpu3d_has_native_geometry();
 
 // Bridge to the vendored melonDS GPU3D geometry/rasterizer device model
 // (runner/vendor/melonds/, GPL-3.0-or-later — see THIRD_PARTY_ATTRIBUTION.md).

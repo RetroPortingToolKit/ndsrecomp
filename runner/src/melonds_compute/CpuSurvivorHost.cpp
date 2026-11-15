@@ -6,7 +6,20 @@
 #include <cstdlib>
 #include <cstring>
 
-bool nds_survivor_host_requested(){const char* p=std::getenv("NDS_3D_SURVIVORS");return p&&std::strcmp(p,"1")==0;}
+#if defined(_WIN32) && defined(NDS_HAVE_COMPUTE_RENDERER) && defined(NDS_HAVE_SDL3)
+#include "../execution_model.h"
+#include "../gpu3d.h"
+#endif
+
+bool nds_survivor_host_requested(){
+    if(const char* p=std::getenv("NDS_3D_SURVIVORS");p&&*p)
+        return std::strcmp(p,"1")==0;
+#if defined(_WIN32) && defined(NDS_HAVE_COMPUTE_RENDERER) && defined(NDS_HAVE_SDL3)
+    return nds_gpu3d_has_native_geometry()&&nds_performance_execution();
+#else
+    return false;
+#endif
+}
 
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
 #include "ComputeHost.h"

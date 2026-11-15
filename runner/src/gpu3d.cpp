@@ -749,6 +749,14 @@ const char* nds_gpu3d_renderer_policy_name(
     }
 }
 
+bool nds_gpu3d_has_native_geometry() {
+#if defined(NDS_NATIVE_3D)
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool nds_gpu3d_renderer_prefers_compute() {
     const NdsGpu3dRendererPolicy policy = nds_gpu3d_renderer_policy();
     return policy != NdsGpu3dRendererPolicy::Soft &&
