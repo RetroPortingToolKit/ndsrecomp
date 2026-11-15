@@ -40,7 +40,7 @@ bool active=false,interop=false;
 SDL_Renderer* bottomRenderer{};
 std::array<D3D11InteropTarget,2> bottomTargets;
 int bottomWidth{},bottomHeight{};unsigned bottomIndex{};
-GLuint programs[2]{},vao{},rowsBuffer{},layerTexture{},fallbackTexture{},overlayTextures[2]{},readTexture{},readFbo{};
+GLuint programs[2]{},vao{},rowsBuffer{},layerTexture{},objectTexture{},fallbackTexture{},overlayTextures[2]{},readTexture{},readFbo{};
 uint64_t frames{},copies{},observerReads{},uploadedId{},uploadedEpoch{};
 uint32_t uploadedBuffer{};bool uploadedNative{};
 struct Cache {uint64_t id{},epoch{};uint32_t buffer{};int screen{-1};bool adaptive{};uint16_t width{};std::vector<uint32_t> pixels;};
@@ -95,9 +95,22 @@ Source* findSource(const Frame& f){Source& s=sources[f.buffer&1u];return s.ident
 bool upload(const Frame& f,bool native){
     const uint64_t epoch=generation.load();
     if(uploadedId==f.identity&&uploadedBuffer==f.buffer&&uploadedEpoch==epoch&&uploadedNative==native)return true;
-    const auto& data=native?f.native_layers:f.wide_layers;unsigned stride=native?256:448;
-    if(data.size()<size_t(stride)*192*4)return false;
-    bind(0,layerTexture);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA32UI,stride,192,0,GL_RGBA_INTEGER,GL_UNSIGNED_INT,data.data());parameters();
+    const auto& data=native?f.native_layers:f.wide_layers;
+    const auto& objects=native?f.native_objects:f.wide_objects;
+    const unsigned stride=native?256:448;
+    bool general=false,compact=false;
+    if(!f.capture)for(unsigned y=0;y<std::min<unsigned>(f.lines,192);++y){
+        const uint32_t flags=f.row(y)[nds_survivors::Flags];
+        if((flags&nds_survivors::Needs3D)==0)continue;
+        if(flags&nds_survivors::CompactObj)compact=true;else general=true;
+    }
+    if(general&&data.size()<size_t(stride)*192*4)return false;
+    if(compact&&objects.size()<size_t(stride)*192)return false;
+    // Compact-only frames never upload the full two-layer representation.
+    // Inactive samplers still receive a complete, valid integer texture.
+    const uint32_t zero[4]{};
+    bind(0,layerTexture);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA32UI,general?stride:1,general?192:1,0,GL_RGBA_INTEGER,GL_UNSIGNED_INT,general?data.data():zero);parameters();
+    bind(6,objectTexture);glTexImage2D(GL_TEXTURE_2D,0,GL_R32UI,compact?stride:1,compact?192:1,0,GL_RED_INTEGER,GL_UNSIGNED_INT,compact?objects.data():zero);parameters();
     glBindBuffer(GL_SHADER_STORAGE_BUFFER,rowsBuffer);glBufferData(GL_SHADER_STORAGE_BUFFER,sizeof(f.rows),f.rows.data(),GL_STREAM_DRAW);
     uploadedId=f.identity;uploadedBuffer=f.buffer;uploadedEpoch=epoch;uploadedNative=native;return true;
 }
@@ -106,7 +119,7 @@ bool draw(const Frame& f,int screen,bool native,bool lowres,Source* source,GLuin
     bool gpu=!f.capture&&f.needs_gpu[screen];if(gpu&&!source)return false;
     const unsigned width=native?256:std::clamp<unsigned>(f.widths[screen],256,448);
     if(!f.native_base[screen]||!upload(f,native))return false;
-    bind(0,layerTexture);bind(1,fallbackTexture);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,256,192,0,GL_BGRA,GL_UNSIGNED_BYTE,f.native_base[screen]);parameters();
+    bind(0,layerTexture);bind(6,objectTexture);bind(1,fallbackTexture);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,256,192,0,GL_BGRA,GL_UNSIGNED_BYTE,f.native_base[screen]);parameters();
     if(black&&white)for(unsigned i=0;i<2;++i){bind(2+i,overlayTextures[i]);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,width,192,0,GL_BGRA,GL_UNSIGNED_BYTE,i?white:black);parameters();}
     bind(4,source?source->native:0);bind(5,source?source->hi:0);glBindBufferBase(GL_SHADER_STORAGE_BUFFER,2,rowsBuffer);
     glBindFramebuffer(GL_FRAMEBUFFER,fbo);glViewport(vx,vy,vw,vh);glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glDisable(GL_SCISSOR_TEST);glDisable(GL_DITHER);glUseProgram(programs[noFlip?1:0]);glBindVertexArray(vao);
@@ -133,7 +146,7 @@ bool nds_survivor_host_start(SDL_Renderer* renderer){
     if(active)return renderer==bottomRenderer;
     if(!nds_survivor_host_requested()||!nds_compute_host_active()||!nds_compute_host_make_current())return false;
     programs[0]=link(nds_compute_present::kPresentVertex);programs[1]=link(nds_survivor_present::kNoFlipVertex);if(!programs[0]||!programs[1]){nds_survivor_host_stop();return false;}
-    glGenVertexArrays(1,&vao);glGenBuffers(1,&rowsBuffer);glGenTextures(1,&layerTexture);glGenTextures(1,&fallbackTexture);glGenTextures(2,overlayTextures);glGenTextures(1,&readTexture);glGenFramebuffers(1,&readFbo);
+    glGenVertexArrays(1,&vao);glGenBuffers(1,&rowsBuffer);glGenTextures(1,&layerTexture);glGenTextures(1,&objectTexture);glGenTextures(1,&fallbackTexture);glGenTextures(2,overlayTextures);glGenTextures(1,&readTexture);glGenFramebuffers(1,&readFbo);
     bottomRenderer=renderer;interop=false;
     if(renderer){std::string error;if(!bottomTargets[0].create(renderer,256,192,&error)||!bottomTargets[0].lock(&error)||!bottomTargets[0].unlock(&error)){std::fprintf(stderr,"survivor interop unavailable: %s\n",error.c_str());nds_survivor_host_stop();return false;}bottomWidth=256;bottomHeight=192;interop=true;}
     active=true;frames=copies=observerReads=0;nds_gpu2d_set_hd_emit(false);nds_gpu2d_set_direct_present(false);nds_gpu2d_set_survivors(true);return true;
@@ -145,9 +158,9 @@ void nds_survivor_host_stop(){
         if(!releaseBottomTargets())return;
         for(auto& s:sources)release(s);
         release(scratch);
-        glDeleteProgram(programs[0]);glDeleteProgram(programs[1]);glDeleteVertexArrays(1,&vao);glDeleteBuffers(1,&rowsBuffer);glDeleteTextures(1,&layerTexture);glDeleteTextures(1,&fallbackTexture);glDeleteTextures(2,overlayTextures);glDeleteTextures(1,&readTexture);glDeleteFramebuffers(1,&readFbo);
+        glDeleteProgram(programs[0]);glDeleteProgram(programs[1]);glDeleteVertexArrays(1,&vao);glDeleteBuffers(1,&rowsBuffer);glDeleteTextures(1,&layerTexture);glDeleteTextures(1,&objectTexture);glDeleteTextures(1,&fallbackTexture);glDeleteTextures(2,overlayTextures);glDeleteTextures(1,&readTexture);glDeleteFramebuffers(1,&readFbo);
     }
-    programs[0]=programs[1]=vao=rowsBuffer=layerTexture=fallbackTexture=readTexture=readFbo=0;overlayTextures[0]=overlayTextures[1]=0;bottomRenderer=nullptr;bottomWidth=bottomHeight=0;bottomIndex=0;uploadedId=uploadedEpoch=0;for(auto& screens:caches)for(auto& cache:screens)cache={};generation.fetch_add(1);
+    programs[0]=programs[1]=vao=rowsBuffer=layerTexture=objectTexture=fallbackTexture=readTexture=readFbo=0;overlayTextures[0]=overlayTextures[1]=0;bottomRenderer=nullptr;bottomWidth=bottomHeight=0;bottomIndex=0;uploadedId=uploadedEpoch=0;for(auto& screens:caches)for(auto& cache:screens)cache={};generation.fetch_add(1);
 }
 void nds_survivor_host_capture(){
     if(!active)return;

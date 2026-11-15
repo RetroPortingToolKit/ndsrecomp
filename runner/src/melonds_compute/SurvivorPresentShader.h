@@ -4,7 +4,8 @@
 #include "../gpu3d_survivors.h"
 #include <string>
 namespace nds_survivor_present {
-static_assert(nds_survivors::RowWords==12 && nds_survivors::Flags==9);
+static_assert(nds_survivors::RowWords==12 && nds_survivors::Flags==9 &&
+              nds_survivors::Backdrop==11 && nds_survivors::CompactObj==16);
 inline constexpr const char* kNoFlipVertex=R"GLSL(
 #version 430 core
 out vec2 uv;
@@ -18,6 +19,7 @@ layout(binding=2) uniform sampler2D overlayBlack;
 layout(binding=3) uniform sampler2D overlayWhite;
 layout(binding=4) uniform usampler2D tex3dNative;
 layout(binding=5) uniform sampler2D tex3dHi;
+layout(binding=6) uniform usampler2D objects;
 layout(std430,binding=2) readonly buffer FrameRows {uint rows[];};
 layout(location=0) uniform uint screen;
 layout(location=1) uniform uint width;
@@ -30,7 +32,7 @@ layout(location=7) uniform uint nativeView;
 layout(location=8) uniform uint rowLimit;
 in vec2 uv;out vec4 outColor;
 const uint Bldcnt=0u,MasterBright=1u,Eva=2u,Evb=3u,Evy=4u,Priority3D=5u;
-const uint RenderX=6u,Screen=7u,LayerWidth=8u,Flags=9u;
+const uint RenderX=6u,Screen=7u,LayerWidth=8u,Flags=9u,Backdrop=11u;
 uint rb;
 uint r(uint field){return rows[rb+field];}
 struct Layer {uvec3 color;uint target,alpha,alpha5,priority,order;bool valid;};
@@ -55,6 +57,18 @@ vec3 outputRgb8(uvec3 c){return vec3((c<<2u)|(c>>4u))/255.0;}
 Layer frameTop,frameBelow;
 bool hidden3d,effects,skyHit;
 uvec4 skySample;
+void selectCompact(ivec2 cell){
+    uint color=r(Backdrop),word=texelFetch(objects,cell,0).r;
+    frameTop=Layer(uvec3(color,color>>8u,color>>16u)&uvec3(63u),32u,0u,0u,4u,5u,true);
+    frameBelow=frameTop;
+    hidden3d=(word&64u)!=0u||(r(Flags)&2u)==0u;
+    effects=(word&16384u)==0u;
+    uint alpha=word>>24u;
+    if(alpha!=0u){
+        frameTop=Layer(uvec3(word,word>>8u,word>>16u)&uvec3(63u),16u,
+            alpha==17u?0u:alpha,0u,(word>>22u)&3u,0u,true);
+    }
+}
 int scroll(){int x=int(r(RenderX)&511u);return x>=256?x-512:x;}
 // Clip the original hardware viewport before source centering.
 int sourceX(int x){
@@ -98,7 +112,9 @@ void main(){
     if(rowGpu){
         bool margin=nativeView==0u&&(r(Flags)&4u)!=0u&&(p.x<(int(width)-256)/2||p.x>=(int(width)+256)/2);
         if(margin)c=outputRgb8(master(uvec3(0u)));
-        else{uvec4 d=texelFetch(layers,p,0);frameTop=unpackLayer(d.xy);frameBelow=unpackLayer(d.zw);hidden3d=(d.y&64u)!=0u||(r(Flags)&2u)==0u;effects=(d.y&128u)!=0u;
+        else{
+            if((r(Flags)&16u)!=0u)selectCompact(p);
+            else{uvec4 d=texelFetch(layers,p,0);frameTop=unpackLayer(d.xy);frameBelow=unpackLayer(d.zw);hidden3d=(d.y&64u)!=0u||(r(Flags)&2u)==0u;effects=(d.y&128u)!=0u;}
             int logical=p.x-(int(width)-int(source3DWidth))/2;skyHit=!hidden3d&&skyRepair(logical,p.y,skySample);
             if(resolveSamples<2u||source3DScale<=1u||hidden3d)c=sampleLcd(f,p);
             else if(resolveSamples==2u)c=(sampleLcd(f-0.25*(dx+dy),p)+sampleLcd(f+0.25*(dx+dy),p))*0.5;
