@@ -207,8 +207,8 @@ int main() {
     for (unsigned i = 0; i < 64; ++i)
       put<int8_t>(0x02004000 + i, int(i * 7) - 100);
     commands({{0, 29, 0x02006000, 0, 0, 0},
-              {0, 14, 0, 0x02004000, (127u << 24) | 16,
-               (1u << 26) | (64u << 16) | 512},
+              {0, 14, 512u << 16, 0x02004000, (127u << 24) | 16,
+               (1u << 26) | (64u << 16)},
               {0, 12, 1, 0, 0, 0}});
     check(nds_spu_read(0x04000400, 4) == 0x8840007Fu);
     check(nds_offline_sound_source_overlap(ptr(0x02404000, 1), 1));
@@ -220,6 +220,9 @@ int main() {
                       [](int16_t x) { return x != 0; }));
     NdsSpuSaveState hardware;
     check(spu_savestate_export(&hardware));
+    check(hardware.channel[0].reload == 65536 - 512);
+    check(hardware.channel[0].loop == 0);
+    check(hardware.channel[0].length == 16 * 4);
     std::vector<uint8_t> state;
     check(nds_offline_sound_snapshot(&state));
     std::string error;
@@ -250,6 +253,46 @@ int main() {
     check(!nds_offline_sound_preflight(0x02001000, false));
     check(nds_offline_sound_snapshot(&after));
     check(before == after);
+
+    // The streaming command packs period in arg0 high16 and loop-start in
+    // arg3 low16. Exercise the stereo PCM16 setup across two full loops,
+    // comparing its samples with the same explicit hardware register writes.
+    boot(mph);
+    for (unsigned i = 0; i < 1024; ++i) {
+      put<int16_t>(0x021DA420 + i * 2, int(i) * 24 - 12288);
+      put<int16_t>(0x021DAC20 + i * 2, 10000 - int(i) * 19);
+    }
+    nds_spu_write(0x04000500, 0xB97F, 2);
+    commands({{0, 14, 0x02000001, 0x021DA420, 0x7F000200, 0x05000000},
+              {0, 14, 0x02000003, 0x021DAC20, 0x7F000200, 0x057F0000},
+              {0, 12, 0xA, 0, 0, 0}});
+    check(spu_savestate_export(&hardware));
+    for (unsigned i : {1u, 3u}) {
+      check(hardware.channel[i].reload == 0xFE00);
+      check(hardware.channel[i].loop == 0);
+      check(hardware.channel[i].length == 2048);
+    }
+    check(hardware.capture[0].reload == 0xFE00);
+    check(hardware.capture[1].reload == 0xFE00);
+    now = 2304 * 1024;
+    nds_offline_sound_advance(now);
+    const auto streamed = pcm(0, 2304);
+    auto levels = streamed;
+    std::sort(levels.begin(), levels.end());
+    check(std::unique(levels.begin(), levels.end()) - levels.begin() > 256);
+    nds_spu_reset();
+    nds_spu_write(0x04000500, 0xB97F, 2);
+    nds_spu_write(0x04000504, 512, 2);
+    for (unsigned i : {1u, 3u}) {
+      const uint32_t reg = 0x04000400 + i * 16;
+      nds_spu_write(reg + 4, i == 1 ? 0x021DA420 : 0x021DAC20, 4);
+      nds_spu_write(reg + 8, 0xFE00, 2);
+      nds_spu_write(reg + 10, 0, 2);
+      nds_spu_write(reg + 12, 512, 4);
+      nds_spu_write(reg, i == 1 ? 0xA800007F : 0xA87F007F, 4);
+    }
+    nds_tick_spu(now);
+    check(pcm(0, 2304) == streamed);
   }
   // A full canonical reply FIFO must leave ARM9 free to drain it. Driver
   // service can cross its own deadline while one alarm publication waits;

@@ -1209,8 +1209,8 @@ void command(const uint32_t *q) {
     status();
     break;
   case 14:
-    setup_pcm(a & 65535, b & 0x07FFFFFFu, (d >> 24) & 3, (d >> 26) & 3, a >> 16,
-              c & 0x3FFFFF, (c >> 24) & 127, (c >> 22) & 3, d & 65535,
+    setup_pcm(a & 65535, b & 0x07FFFFFFu, (d >> 24) & 3, (d >> 26) & 3, d & 65535,
+              c & 0x3FFFFF, (c >> 24) & 127, (c >> 22) & 3, a >> 16,
               (d >> 16) & 127);
     break;
   case 15:
