@@ -1827,6 +1827,41 @@ bool nds_io_offline_peek(uint32_t* word) {
     *word=g_fifo[0][g_fifo_head[0]];return true;
 }
 uint32_t nds_io_offline_wake_flags() {return g_if[1];}
+bool nds_io_offline_card_idle() {
+    return !(g_romctrl&0x80000000u)&&!(g_auxspicnt&0x80u)&&!g_auxspi_hold;
+}
+bool nds_io_offline_card_spi(const uint8_t* tx,uint8_t* rx,uint32_t size,uint64_t now) {
+    if(!tx||!size||size>0x800004u||!nds_io_offline_card_idle())return false;
+    OfflineArm7Context context(now);
+    // A complete SDK operation owns chip select. Reuse the canonical cartridge
+    // protocol and its original dirty/persistence hook; no second save image.
+    for(uint32_t i=0;i<size;++i){g_auxspi_data=cart_spi_write(tx[i],i,i+1==size);if(rx)rx[i]=g_auxspi_data;}
+    g_auxspicnt=0;g_auxspi_hold=false;g_auxspi_pos=0;g_auxspi_deadline=UINT64_MAX;
+    return true;
+}
+bool nds_io_offline_card_read(uint8_t command,uint32_t address,uint8_t* bytes,uint32_t size,uint64_t now) {
+    if((command!=0xB7&&command!=0xB8)||(!bytes&&size)||size>0x800000u||!nds_io_offline_card_idle())return false;
+    OfflineArm7Context context(now);
+    uint8_t control_bytes[4]{};nds_io_offline_memory(0x027FFE60u,control_bytes,4,false,now);
+    const uint32_t control=load_le32(control_bytes);
+    while(size){
+        const uint32_t offset=command==0xB7?(address&511u):0u;
+        const uint32_t amount=std::min(size,(command==0xB7?512u:4u)-offset);
+        std::memset(g_card_command,0,sizeof(g_card_command));g_card_command[0]=command;
+        if(command==0xB7)for(unsigned i=0;i<4;++i)g_card_command[i+1]=uint8_t((address&~511u)>>(24-8*i));
+        g_card_transfer_len=command==0xB7?512u:4u;
+        card_prepare_response(); // Same normal/KEY1/raw and ROM-wrap authority as MMIO.
+        std::memcpy(bytes,g_card_response.data()+offset,amount);
+        g_card_transfer_pos=g_card_transfer_len;
+        g_romctrl=(control&~0x07000000u)|(command==0xB7?0x21000000u:0x27000000u);
+        if(command==0xB8)g_romctrl&=~0x1FFFu;
+        g_romctrl&=~0x80800000u;
+        g_auxspicnt=0xC000;g_card_irq_cpu=1;g_card_deadline=UINT64_MAX;g_card_end_event=false;
+        nds_raise_irq(1,1u<<19);
+        address+=amount;bytes+=amount;size-=amount;
+    }
+    return true;
+}
 uint16_t nds_io_offline_sleep_enter(uint32_t flags,uint16_t keys,uint64_t now) {
     OfflineArm7Context context(now);nds_tick_rtc(now);
     const uint16_t previous=g_rcnt;
