@@ -3,6 +3,7 @@
 #include "emu_profile.h"
 #include "offline_arm7_card.h"
 #include "io.h"
+#include "state.h"
 #include "spu.h"
 #include "sha1.h"
 #include <algorithm>
@@ -44,6 +45,7 @@ struct State {
     uint32_t samples=0,phase=0,filter=20,led=1,led_frame=0,led_actual=1;
     uint32_t mic_flags=0,mic_base=0,mic_size=0,mic_pos=0,mic_period=1,mic_half=0;
     uint32_t sleep_flags=0,sleep_pm=0,sleep_rcnt=0;
+    uint32_t wireless_phase=0,wireless_source=0,wireless_size=0;
     uint32_t touch_pending=0,touch_raw=0;
     uint64_t led_next=Never,mic_next=Never;
     std::array<uint64_t,4> touch_next{Never,Never,Never,Never};
@@ -89,6 +91,57 @@ bool power_switch(unsigned op){
     if(op<4||op>15)return false;
     if(op==14)return pm_mask(0x40,1);
     return (op&1)?pm_mask(0,masks[op-4]):pm_mask(masks[op-4],0);
+}
+bool wireless_image(uint32_t source,uint32_t size){return size<=0x40000u&&(!source||ram(source,(size+3u)&~3u));}
+bool wireless_status(uint32_t* address){
+    // WL_GetWork returns06019088; its +154C points at the optional WM context.
+    uint32_t context=bus_device_read32(7,0x0601A5D4u);
+    if(!context){*address=0;return true;}
+    const bool readable=ram(context,4)||(context>=0x037F8000u&&context<=0x0380FFFCu)||(context>=0x06000000u&&context<=0x0603FFFCu);
+    if(!readable)return false;
+    const uint32_t status=bus_device_read32(7,context);
+    if(status&&((status&3u)||!ram(status,2)))return false;
+    *address=status;return true;
+}
+bool wireless_thread_idle(){
+    uint32_t thread=load32(0x03807704u);
+    for(unsigned i=0;thread&&i<128;++i){
+        if(thread==0x0380A34Cu){const auto value=load32(thread+0x48);return value!=0&&value!=1&&value!=UINT32_MAX;}
+        if(!ram(thread,0x50)&&!(thread>=0x037F8000u&&thread<=0x0380FFB0u))return false;
+        thread=load32(thread+0x4C);
+    }
+    return thread==0;
+}
+bool wireless_adopt(State& next){
+    if(game==2)return load32(0x03808518u)==0&&!(load32(0x027FFF8Cu)&0x8000u);
+    if(game!=1||load32(0x038078F8u)!=0x038065E8u||!wireless_thread_idle())return false;
+    std::array<uint8_t,0x68> code{};
+    if(!memory(0x038065E8u,code.data(),code.size(),false)||gba::sha1(code.data(),code.size()).hex()!="0e41fd7f2ee15a7327eaec4298f35cc92e7ecdc9")return false;
+    next.wireless_phase=load32(0x0380A33Cu)&255u;next.wireless_source=load32(0x0380A340u);next.wireless_size=load32(0x0380A348u);
+    uint32_t status=0;
+    return (next.wireless_phase==1||next.wireless_phase==3)&&wireless_image(next.wireless_source,next.wireless_size)&&
+        (next.wireless_phase!=3||wireless_status(&status));
+}
+bool wireless_preflight(uint32_t payload){
+    if(game==2)return true; // Verified absent PXI slot: generic unregistered-channel result.
+    if(payload!=0x20000u||state.wireless_phase!=3)return true;
+    uint32_t status=0;return wireless_status(&status);
+}
+bool wireless_request(uint32_t payload,bool error,uint64_t now){
+    if(game==2)return error||nds_io_offline_reply(wire(15,payload)|0x20u,now);
+    uint32_t result=payload;
+    if(payload==0x10000u&&state.wireless_phase==1){
+        if(state.wireless_source&&!nds_io_offline_wireless_vram(state.wireless_source,state.wireless_size,false,now))return false;
+        nds_io_offline_wireless_power(true,now);state.wireless_phase=3;
+    }else if(payload==0x20000u&&state.wireless_phase==3){
+        uint32_t status=0;if(!wireless_status(&status))return false;
+        if(status&&!store(status,0,2,now))return false;
+        nds_io_offline_wireless_power(false,now);power_switch(1);
+        if(state.wireless_source&&!nds_io_offline_wireless_vram(0,state.wireless_size,true,now))return false;
+        state.wireless_phase=1;
+    }else result|=(payload==0x10000u||payload==0x20000u)?5u:7u;
+    if(!store(0x0380A33Cu,state.wireless_phase,1,now))return false;
+    return nds_io_offline_reply(wire(15,result),now);
 }
 bool touch_request(const std::array<uint16_t,16>& c,uint64_t now){
     const unsigned cmd=c[0]>>8,arg=c[0]&255;
@@ -231,6 +284,7 @@ bool nds_offline_arm7_try_takeover(uint64_t now,std::string* error){
     uint32_t pending;if(nds_io_offline_peek(&pending))return fail(error,"Retail ARM7 bootstrap has pending FIFO requests");
     for(const auto& p:proofs[game-1]){std::vector<uint8_t> bytes(p.size);if(!memory(p.pc,bytes.data(),p.size,false)||gba::sha1(bytes.data(),bytes.size()).hex()!=p.hash)return fail(error,"Retail ARM7 peripheral code proof failed");}
     State next;
+    if(!wireless_adopt(next))return fail(error,"ARM7 wireless lifecycle is not at a known idle boundary");
     const uint32_t buffers[4]={a.firmware,a.touch,a.power,a.mic};
     for(unsigned i=0;i<4;++i){uint8_t bytes[32];if(!memory(buffers[i],bytes,32,false))return fail(error,"ARM7 packet state unavailable");for(unsigned j=0;j<16;++j)next.packets[i][j]=uint16_t(bytes[j*2])|(uint16_t(bytes[j*2+1])<<8);}
     const uint32_t touch=load32(a.touch+0x20),mic=load32(a.mic+0x20);
@@ -272,6 +326,7 @@ bool nds_offline_arm7_preflight(uint32_t word){
     const unsigned tag=word&31;const bool error=word&32;const uint32_t payload=word>>6;
     if(tag==0)return true;
     if(tag==7)return nds_offline_sound_preflight(payload,error);
+    if(tag==15)return wireless_preflight(payload);
     if(tag==11||tag==13||tag==14)return nds_offline_card_preflight(tag,payload,error);
     if(tag==12)return error||((payload>>8)&127)==0x10;
     if(tag==5)return error||command(tag,(payload>>8)&127);
@@ -284,6 +339,7 @@ bool nds_offline_arm7_receive(uint32_t word,uint64_t now){
     NdsEmuScope service_time(NDS_EMU_ARM7_SERVICE);
     const unsigned tag=word&31;const bool error=word&32;const uint32_t payload=word>>6;
     if(tag==7&&!nds_offline_sound_can_receive(payload,error))return false;
+    if(tag==15&&(game==1||!error)&&(!nds_io_offline_reply_capacity(1)||(game==1&&!nds_io_offline_spi_idle())))return false;
     if((tag==11||tag==13||tag==14)&&!nds_offline_card_can_receive(tag,payload,error))return false;
     const bool completes=tag==5||(slot(tag)>=0&&(payload&0x01000000u));
     if(completes&&!error&&(!nds_io_offline_reply_capacity(1)||!nds_io_offline_spi_idle()))return false;
@@ -291,6 +347,7 @@ bool nds_offline_arm7_receive(uint32_t word,uint64_t now){
     nds_io_offline_irq_clear(0x40000u);
     if(!tag)return true;
     if(tag==7)return nds_offline_sound_receive(payload,error,now);
+    if(tag==15)return wireless_request(payload,error,now);
     if(tag==11||tag==13||tag==14)return nds_offline_card_receive(tag,payload,error,now);
     if(error)return true;
     if(tag==12){state.reset_pending=true;return true;}
@@ -385,19 +442,21 @@ struct Reader {
     bool blob(std::vector<uint8_t>* out){const uint32_t size=word();if(!valid||size>0x800000||size>in.size()-std::min(at,in.size()))return false;out->assign(in.begin()+at,in.begin()+at+size);at+=size;return true;}
 };
 bool decode(const std::vector<uint8_t>& in,State* out,std::vector<uint8_t>* sound,std::vector<uint8_t>* card,std::string* error){
-    Reader r{in};if(r.word()!=0x3746464Fu||r.word()!=2||r.word()!=game)return fail(error,"Offline ARM7 state identity is invalid");
+    Reader r{in};if(r.word()!=0x3746464Fu||r.word()!=3||r.word()!=game)return fail(error,"Offline ARM7 state identity is invalid");
     State next;
     uint32_t booleans[5];for(auto& value:booleans)value=r.word();
     for(auto value:booleans)if(value>1)return fail(error,"Offline ARM7 state has invalid flags");
     next.active=booleans[0];next.touch_auto=booleans[1];next.mic_auto=booleans[2];next.sleep=booleans[3];next.reset_pending=booleans[4];
     for(auto& packet:next.packets)for(auto& value:packet){const auto cell=r.word();if(cell>65535)return fail(error,"Offline ARM7 packet cell is invalid");value=uint16_t(cell);}
-    uint32_t* fields[]={&next.samples,&next.phase,&next.filter,&next.led,&next.led_frame,&next.led_actual,&next.mic_flags,&next.mic_base,&next.mic_size,&next.mic_pos,&next.mic_period,&next.mic_half,&next.sleep_flags,&next.sleep_pm,&next.sleep_rcnt,&next.touch_pending,&next.touch_raw};
+    uint32_t* fields[]={&next.samples,&next.phase,&next.filter,&next.led,&next.led_frame,&next.led_actual,&next.mic_flags,&next.mic_base,&next.mic_size,&next.mic_pos,&next.mic_period,&next.mic_half,&next.sleep_flags,&next.sleep_pm,&next.sleep_rcnt,&next.wireless_phase,&next.wireless_source,&next.wireless_size,&next.touch_pending,&next.touch_raw};
     for(auto* field:fields)*field=r.word();
     next.led_next=r.wide();next.mic_next=r.wide();
     for(auto& at:next.touch_next)at=r.wide();
     for(auto& pattern:next.patterns)for(auto& value:pattern)value=r.word();
     if(!r.valid||(!game&&next.active)||next.samples>4||next.phase>=263||next.filter>255||next.led>15||next.led_actual>3||next.mic_flags>255||next.mic_half>65535||next.sleep_pm>255||next.sleep_rcnt>65535||next.touch_pending>next.samples||
        (next.touch_auto&&!next.samples)||(next.mic_auto&&(!next.mic_period||!next.mic_size||next.mic_pos>=next.mic_size||!ram(next.mic_base,next.mic_size))))return fail(error,"Offline ARM7 driver state is invalid");
+    if((game!=1&&(next.wireless_phase||next.wireless_source||next.wireless_size))||
+       (game==1&&next.active&&next.wireless_phase!=1&&next.wireless_phase!=3)||!wireless_image(next.wireless_source,next.wireless_size))return fail(error,"Offline ARM7 wireless lifecycle state is invalid");
     for(unsigned i=0;i<4;++i)if((!next.touch_auto||i>=next.samples)&&next.touch_next[i]!=Never)return fail(error,"Offline ARM7 touch deadline is invalid");
     if(!next.mic_auto&&next.mic_next!=Never)return fail(error,"Offline ARM7 microphone deadline is invalid");
     if(!r.blob(sound)||!r.blob(card)||r.at!=in.size())return fail(error,"Offline ARM7 state size is invalid");
@@ -408,10 +467,10 @@ bool decode(const std::vector<uint8_t>& in,State* out,std::vector<uint8_t>* soun
 bool nds_offline_arm7_snapshot(std::vector<uint8_t>* out,std::string* error){
     if(!out)return fail(error,"Offline ARM7 snapshot output is null");
     std::vector<uint8_t> sound,card;if(!nds_offline_sound_snapshot(&sound)||!nds_offline_card_snapshot(&card))return fail(error,"Offline ARM7 component snapshot failed");
-    std::vector<uint8_t> bytes;put32(bytes,0x3746464F);put32(bytes,2);put32(bytes,game);
+    std::vector<uint8_t> bytes;put32(bytes,0x3746464F);put32(bytes,3);put32(bytes,game);
     for(bool value:{state.active,state.touch_auto,state.mic_auto,state.sleep,state.reset_pending})put32(bytes,value);
     for(const auto& packet:state.packets)for(auto value:packet)put32(bytes,value);
-    for(auto value:{state.samples,state.phase,state.filter,state.led,state.led_frame,state.led_actual,state.mic_flags,state.mic_base,state.mic_size,state.mic_pos,state.mic_period,state.mic_half,state.sleep_flags,state.sleep_pm,state.sleep_rcnt,state.touch_pending,state.touch_raw})put32(bytes,value);
+    for(auto value:{state.samples,state.phase,state.filter,state.led,state.led_frame,state.led_actual,state.mic_flags,state.mic_base,state.mic_size,state.mic_pos,state.mic_period,state.mic_half,state.sleep_flags,state.sleep_pm,state.sleep_rcnt,state.wireless_phase,state.wireless_source,state.wireless_size,state.touch_pending,state.touch_raw})put32(bytes,value);
     put64(bytes,state.led_next);put64(bytes,state.mic_next);for(auto at:state.touch_next)put64(bytes,at);
     for(const auto& pattern:state.patterns)for(auto value:pattern)put32(bytes,value);
     put32(bytes,uint32_t(sound.size()));bytes.insert(bytes.end(),sound.begin(),sound.end());put32(bytes,uint32_t(card.size()));bytes.insert(bytes.end(),card.begin(),card.end());

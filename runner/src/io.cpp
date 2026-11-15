@@ -1827,6 +1827,20 @@ bool nds_io_offline_peek(uint32_t* word) {
     *word=g_fifo[0][g_fifo_head[0]];return true;
 }
 uint32_t nds_io_offline_wake_flags() {return g_if[1];}
+void nds_io_offline_wireless_power(bool enabled,uint64_t now) {
+    if(enabled){g_powercontrol7|=2u;nds_wifi_reset();}
+    else g_powercontrol7&=~2u;
+    nds_wifi_set_power_control(enabled,now); // Preserve the independent SPU bit.
+}
+bool nds_io_offline_wireless_vram(uint32_t source,uint32_t size,bool clear,uint64_t now) {
+    if(size>0x40000u)return false;
+    size=(size+3u)&~3u;
+    std::vector<uint8_t> bytes;
+    if(!clear){bytes.resize(size);if(size&&!bus_debug_copy(7,source,bytes.data(),size))return false;}
+    OfflineArm7Context context(now);
+    for(uint32_t at=0;at<size;at+=4)bus_device_write32(7,0x06000000u+at,clear?0u:load_le32(bytes.data()+at),now);
+    return true;
+}
 bool nds_io_offline_card_idle() {
     return !(g_romctrl&0x80000000u)&&!(g_auxspicnt&0x80u)&&!g_auxspi_hold;
 }
@@ -1902,7 +1916,8 @@ bool nds_io_offline_memory(uint32_t addr, uint8_t* bytes, uint32_t size,
                             bool write, uint64_t now) {
     const bool main=addr>=0x02000000u && addr<0x02800000u && size<=0x02800000u-addr;
     const bool arm7_read=!write && addr>=0x037F8000u && addr<0x03810000u && size<=0x03810000u-addr;
-    if (!bytes || !size || (!main&&!arm7_read)) return false;
+    const bool arm7_state=write&&addr>=0x03800000u&&addr<0x03810000u&&size<=0x03810000u-addr;
+    if (!bytes || !size || (!main&&!arm7_read&&!arm7_state)) return false;
     if (!write) return bus_debug_copy(7,addr,bytes,size);
     OfflineArm7Context context(now);
     while (size && (addr&3u)) {bus_write_u8(addr++,*bytes++);--size;}
