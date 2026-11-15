@@ -28,6 +28,9 @@ bool nds_io_offline_spi_idle();
 bool nds_io_offline_spi(uint32_t device, const uint8_t* tx, uint8_t* rx,
                          uint32_t size);
 bool nds_io_offline_rtc(uint8_t reg, bool write, uint8_t* bytes, uint32_t size);
+uint64_t nds_io_offline_rtc_next_event(uint64_t now);
+void nds_io_offline_set_tick_epoch_address(uint32_t address);
+bool nds_io_offline_tick_deadline(uint64_t absolute_os_tick,uint64_t now,uint64_t* deadline);
 uint32_t nds_io_offline_touch();
 bool nds_io_offline_reply_capacity(uint32_t count);
 bool nds_io_offline_reply(uint32_t word, uint64_t now);

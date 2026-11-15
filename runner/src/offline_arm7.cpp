@@ -13,6 +13,7 @@ bool nds_offline_sound_ready();
 bool nds_offline_sound_configure(const char*);
 bool nds_offline_sound_takeover(uint64_t,uint64_t);
 bool nds_offline_sound_preflight(uint32_t,bool);
+bool nds_offline_sound_can_receive(uint32_t,bool);
 bool nds_offline_sound_receive(uint32_t,bool,uint64_t);
 uint64_t nds_offline_sound_next_event(uint64_t);
 void nds_offline_sound_advance(uint64_t);
@@ -176,10 +177,10 @@ bool power_request(const std::array<uint16_t,16>& c,uint64_t now){
     return true; // SDK sleep replies only after the selected wake source.
 }
 uint32_t mic_period(uint32_t value){if(value>=0x04000000u)return 0;if(!value)return 65536;const unsigned shift=value<0x10000?0:value<0x400000?6:value<0x1000000?8:10;return (value>>shift)<<shift;}
-uint16_t mic_sample(){const uint16_t value=(state.mic_flags&1)?0xFFF0:0xFF;return value^((state.mic_flags&2)?((state.mic_flags&1)?0x8000:0x80):0);}
+uint16_t mic_sample(uint32_t flags){const uint16_t value=(flags&1)?0xFFF0:0xFF;return value^((flags&2)?((flags&1)?0x8000:0x80):0);}
 bool microphone_request(const std::array<uint16_t,16>& c,uint64_t now){
     const unsigned cmd=c[0]>>8,arg=c[0]&255;
-    if(cmd==0x40){state.mic_flags=arg;const auto sample=mic_sample();if(!store(0x027FFF94,sample,2,now)||!store(0x027FFF90,0x027FFF94,4,now))return false;return reply(9,cmd,0,now);}
+    if(cmd==0x40){const auto sample=mic_sample(arg);if(!store(0x027FFF94,sample,2,now)||!store(0x027FFF90,0x027FFF94,4,now))return false;return reply(9,cmd,0,now);}
     if(cmd==0x41){if(state.mic_auto)return reply(9,cmd,3,now);const uint32_t base=pair(c,1,2),size=pair(c,3,4),period=mic_period(pair(c,5,6));if(!period||!size||!ram(base,size)||base+size>0x02400000u||((arg&1)&&((base|size)&1)))return reply(9,cmd,2,now);state.mic_auto=true;state.mic_flags=arg;state.mic_base=base;state.mic_size=size;state.mic_pos=0;state.mic_period=period;state.mic_next=now+period;store(0x027FFF90,0,4,now);store(0x027FFF94,0,2,now);return reply(9,cmd,0,now);}
     if(!state.mic_auto)return reply(9,cmd,3,now);
     if(cmd==0x42){state.mic_auto=false;state.mic_next=Never;return reply(9,cmd,0,now);}
@@ -197,24 +198,16 @@ bool rtc_interrupt(uint64_t now){
     nds_io_offline_irq_clear(0x80);return true;
 }
 bool sound_deadline(uint64_t now,uint64_t* deadline){
-    nds_tick_timers(1,now);
-    NdsTimerDebugState timers[4]{};nds_timer_debug_state(1,timers);
-    const auto& timer=timers[0];
-    if(timer.ctrl!=0xC1u||timer.reload||timer.accum>=64)return false;
-    const uint32_t overflow_addr=game==1?0x03807888u:0x038084A8u;
-    uint64_t overflow=uint64_t(load32(overflow_addr))|(uint64_t(load32(overflow_addr+4))<<32);
-    if((nds_io_offline_wake_flags()&8u)&&!(timer.counter&0x8000u))++overflow;
-    const uint64_t ticks=((overflow&0x0000FFFFFFFFFFFFull)<<16)|timer.counter;
     const uint32_t alarm=game==1?0x038079D4u:0x038085F4u;
     const uint64_t fire=uint64_t(load32(alarm+0xC))|(uint64_t(load32(alarm+0x10))<<32);
     const uint64_t period=uint64_t(load32(alarm+0x1C))|(uint64_t(load32(alarm+0x20))<<32);
-    if(period!=2728u||fire<=ticks||fire-ticks>(UINT64_MAX-now)/64u)return false;
-    *deadline=now+(fire-ticks)*64u-timer.accum;return true;
+    return period==2728u&&nds_io_offline_tick_deadline(fire,now,deadline)&&*deadline>now;
 }
 }
 
 bool nds_offline_arm7_configure(const std::string& sha,bool offline,std::string* error){
     game=offline?(sha=="691e00d9a5dd80b04f80cc7559503e8b06848785"?1:sha=="90164d1ac127ee5f9815ea4ae7de798c7b5fc629"?2:0):0;
+    nds_io_offline_set_tick_epoch_address(game==1?0x03807888u:game==2?0x038084A8u:0u);
     nds_offline_card_configure(sha);nds_offline_sound_configure(sha.c_str());nds_offline_arm7_reset();
     return game?true:fail(error,"Offline ARM7 services require a supported retail image and offline networking");
 }
@@ -265,6 +258,7 @@ bool nds_offline_arm7_preflight(uint32_t word){
 bool nds_offline_arm7_receive(uint32_t word,uint64_t now){
     if(!nds_offline_arm7_preflight(word))return false;
     const unsigned tag=word&31;const bool error=word&32;const uint32_t payload=word>>6;
+    if(tag==7&&!nds_offline_sound_can_receive(payload,error))return false;
     const bool completes=tag==5||(slot(tag)>=0&&(payload&0x01000000u));
     if(completes&&!error&&(!nds_io_offline_reply_capacity(1)||!nds_io_offline_spi_idle()))return false;
     if(!nds_io_offline_receive_word(word,now))return false;
@@ -288,10 +282,12 @@ uint64_t nds_offline_arm7_next_event(uint64_t now){
     const bool reply_room=nds_io_offline_reply_capacity(1);
     auto event=[&](uint64_t at){if(at>now||reply_room)next=std::min(next,at);};
     event(state.mic_next);for(auto at:state.touch_next)event(at);
+    if(reply_room||!(nds_io_offline_wake_flags()&0x80u))event(nds_io_offline_rtc_next_event(now));
     next=std::min(next,nds_offline_sound_next_event(now));return next;
 }
 void nds_offline_arm7_advance(uint64_t now){
     if(!state.active||state.reset_pending||nds_offline_card_terminated()||nds_powered_off())return;
+    if(nds_io_offline_rtc_next_event(now)<=now)nds_tick_rtc(now);
     for(unsigned count=0;count<4;++count){
         unsigned i=state.touch_pending?state.touch_pending-1:unsigned(std::min_element(state.touch_next.begin(),state.touch_next.end())-state.touch_next.begin());
         if(state.touch_next[i]>now)break;
@@ -304,7 +300,7 @@ void nds_offline_arm7_advance(uint64_t now){
     if(state.mic_auto&&state.mic_next<=now){
         const unsigned bytes=(state.mic_flags&1)?2:1;
         if(state.mic_pos+bytes>=state.mic_size&&!nds_io_offline_reply_capacity(1))return;
-        const uint16_t sample=mic_sample();
+        const uint16_t sample=mic_sample(state.mic_flags);
         if(bytes==2||state.mic_pos&1){const uint32_t at=state.mic_base+state.mic_pos-(bytes==1);const uint16_t value=bytes==2?sample:uint16_t(state.mic_half|(sample<<8));store(at,value,2,now);store(0x027FFF90,at,4,now);store(0x027FFF94,value,2,now);}else state.mic_half=sample;
         state.mic_pos+=bytes;state.mic_next+=state.mic_period;
         if(state.mic_pos>=state.mic_size){if(!nds_io_offline_reply_capacity(1))return;reply(9,0x51,0,now);state.mic_pos=0;if(!(state.mic_flags&0x10)){state.mic_auto=false;state.mic_next=Never;}}

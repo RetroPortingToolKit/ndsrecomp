@@ -1808,6 +1808,7 @@ struct OfflineArm7Context {
     explicit OfflineArm7Context(uint64_t now) {g_nds_active=NDS_ARM7;g_runtime_cycles=now;}
     ~OfflineArm7Context() {g_nds_active=cpu;g_runtime_cycles=cycles;}
 };
+uint32_t g_offline_tick_epoch_address=0; // fixed host profile, survives device reset
 }
 
 bool nds_io_offline_reply_capacity(uint32_t count) {
@@ -1827,6 +1828,30 @@ bool nds_io_offline_peek(uint32_t* word) {
 }
 uint32_t nds_io_offline_wake_flags() {return g_if[1];}
 void nds_io_offline_irq_clear(uint32_t bits) {nds_clear_irq(1,bits);}
+void nds_io_offline_set_tick_epoch_address(uint32_t address) {g_offline_tick_epoch_address=address;}
+bool nds_io_offline_tick_deadline(uint64_t absolute_os_tick,uint64_t now,uint64_t* deadline) {
+    if(!deadline||!g_offline_tick_epoch_address||now<g_timer_last[1])return false;
+    nds_tick_timers(1,now);
+    const Timer& timer=g_timer[1][0];
+    if(timer.ctrl!=0xC1u||timer.reload||timer.accum>=64u)return false;
+    uint8_t bytes[8];
+    if(!nds_io_offline_memory(g_offline_tick_epoch_address,bytes,8,false,now))return false;
+    uint64_t overflow=0;for(unsigned i=0;i<8;++i)overflow|=uint64_t(bytes[i])<<(i*8);
+    if((g_if[1]&8u)&&!(timer.counter&0x8000u))++overflow;
+    const uint64_t tick=((overflow&0x0000FFFFFFFFFFFFull)<<16)|timer.counter;
+    if(absolute_os_tick>=tick){
+        const uint64_t delta=absolute_os_tick-tick;
+        if(delta>(UINT64_MAX-now)/64u)return false;
+        const uint64_t at=now+delta*64u;
+        if(at<timer.accum)return false;
+        *deadline=at-timer.accum;
+    }else{
+        const uint64_t delta=tick-absolute_os_tick;
+        if(now<timer.accum||delta>(now-timer.accum)/64u)return false;
+        *deadline=now-delta*64u-timer.accum;
+    }
+    return true;
+}
 bool nds_io_offline_memory(uint32_t addr, uint8_t* bytes, uint32_t size,
                             bool write, uint64_t now) {
     const bool main=addr>=0x02000000u && addr<0x02800000u && size<=0x02800000u-addr;
@@ -1884,6 +1909,31 @@ bool nds_io_offline_rtc(uint8_t reg, bool write, uint8_t* bytes, uint32_t size) 
 uint32_t nds_io_offline_touch() {
     return (g_keyinput&(1u<<22))?0x06000000u:
         (uint32_t(g_tsc_x)&0xFFFu)|((uint32_t(g_tsc_y)&0xFFFu)<<12u)|0x01000000u;
+}
+
+uint64_t nds_io_offline_rtc_next_event(uint64_t now) {
+    if ((g_rcnt&0xC100u)!=0x8100u) return UINT64_MAX;
+    const uint32_t phase=g_rtc_clock_count&0x7FFFu;
+    const unsigned seconds=std::min(59u,unsigned((g_rtc_datetime[6]>>4)*10u+(g_rtc_datetime[6]&15u)));
+    const uint32_t minute=(60u-seconds)*32768u-phase;
+    uint32_t delta=(g_rtc_status2&0x40u)?minute:UINT32_MAX;
+    switch (g_rtc_status2&15u) {
+        case 0: break;
+        case 1:case 5:
+            if(g_rtc_alarm1[2]&31u) delta=std::min(delta,1024u-(g_rtc_clock_count&1023u));
+            break;
+        case 2:case 4:case 6: delta=std::min(delta,minute);break;
+        case 3: delta=std::min(delta,(seconds<30u?(30u-seconds)*32768u-phase:minute));break;
+        case 7: delta=std::min(delta,seconds==0u&&phase<256u?256u-phase:minute);break;
+        default: delta=1;break;
+    }
+    if(delta==UINT32_MAX) return UINT64_MAX;
+    if(g_rtc_processed_ticks>UINT64_MAX-delta)return UINT64_MAX;
+    const uint64_t ordinal=g_rtc_processed_ticks+delta;
+    constexpr uint64_t numerator=33513982u,denominator=32768u;
+    if(ordinal/denominator>UINT64_MAX/numerator) return UINT64_MAX;
+    const uint64_t at=(ordinal/denominator)*numerator+((ordinal%denominator)*numerator)/denominator;
+    return std::max(now,at);
 }
 
 bool nds_io_native_math_address(uint32_t addr, uint32_t width) {
