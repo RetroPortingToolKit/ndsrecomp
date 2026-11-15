@@ -53,6 +53,16 @@ bool ram(uint32_t address, uint32_t size) {
     return true;
 }
 
+bool overlaps(uint32_t a, uint32_t size, uint32_t b, uint32_t other) {
+    uint32_t x = 0, y = 0;
+    const auto* first = nds_busf_classify(a, &x);
+    const auto* second = nds_busf_classify(b, &y);
+    if (!first || !second || !first->data || !second->data) return true;
+    const auto p = reinterpret_cast<uintptr_t>(first->data + x);
+    const auto q = reinterpret_cast<uintptr_t>(second->data + y);
+    return p < q + other && q < p + size;
+}
+
 bool read_string(uint32_t address, std::string& result, size_t maximum) {
     result.clear();
     for (size_t i = 0; i <= maximum; ++i) {
@@ -72,17 +82,41 @@ bool ordinary_root() {
         bus_read_u32(current_directory + 4) || bus_read_u32(current_directory + 8))
         return false;
     constexpr std::pair<uint32_t, uint32_t> identity[] = {
-        {0, 0x006D6F72u}, {0x1C, 3}, {0x28, 0},
-        {0x2C, 0x173000u}, {0x30, 0x56D8u},
-        {0x34, 0x163000u}, {0x38, 0xFE40u},
-        {0x3C, 0x173000u}, {0x40, 0x163000u}, {0x44, 0},
+        {0, 0x006D6F72u}, {0x28, 0},
+        {0x30, 0x56D8u}, {0x38, 0xFE40u},
+        {0x3C, 0x173000u}, {0x40, 0x163000u},
         {0x48, 0x0208CC94u}, {0x4C, 0x0208CC8Cu},
         {0x50, 0x0208CC94u}, {0x54, 0x0208CBFCu}, {0x58, 0x602u},
     };
     for (const auto& [offset, value] : identity)
         if (bus_read_u32(rom_archive + offset) != value) return false;
+    const uint32_t flags = bus_read_u32(rom_archive + 0x1Cu);
+    if (flags == 3) {
+        if (bus_read_u32(rom_archive + 0x2Cu) != 0x173000u ||
+            bus_read_u32(rom_archive + 0x34u) != 0x163000u ||
+            bus_read_u32(rom_archive + 0x44u)) return false;
+    } else if (flags == 7) {
+        // FS_LoadArchiveTables replaces the logical table bases with RAM,
+        // retaining the physical ROM bases. Prove the actual cached content;
+        // treating changed/custom tables as the cartridge root is unsafe.
+        const uint32_t cache = bus_read_u32(rom_archive + 0x44u);
+        if (!cache || !ram(cache, 4)) return false;
+        for (const auto& [slot, offset, size] : {
+                std::array<uint32_t, 3>{0x2Cu, 0x173000u, 0x56D8u},
+                std::array<uint32_t, 3>{0x34u, 0x163000u, 0xFE40u}}) {
+            const uint32_t address = bus_read_u32(rom_archive + slot);
+            FileView bytes;
+            uint32_t at = 0;
+            if (!ram(address, size) || !service.view(offset, size, &bytes) ||
+                !bytes.data || bytes.offset != offset || bytes.size != size)
+                return false;
+            const auto* window = nds_busf_classify(address, &at);
+            if (std::memcmp(window->data + at, bytes.data, size)) return false;
+        }
+    } else return false;
     // No queued/current archive operation is borrowed by this service.
-    for (uint32_t offset : {4u, 8u, 0xCu, 0x10u, 0x14u, 0x18u, 0x20u, 0x24u})
+    // +4/+8 are registered-archive next/previous links, not pending work.
+    for (uint32_t offset : {0xCu, 0x10u, 0x14u, 0x18u, 0x20u, 0x24u})
         if (bus_read_u32(rom_archive + offset)) return false;
     return true;
 }
@@ -131,12 +165,23 @@ bool manager(uint32_t& pointer) {
 // successful no-op; the request does not allocate or publish another copy.
 bool find_archive(uint32_t manager_pointer, const std::string& name, bool& found) {
     found = false;
+    // The SDK's bounded comparison uses its live ASCII case map, including
+    // when an already mounted name differs only in capitalization.
+    constexpr uint32_t case_map = 0x020B3654u;
+    if (!ram(case_map, 128)) return false;
+    const auto fold = [](uint8_t value) {
+        return value < 128 ? bus_read_u8(case_map + value) : value;
+    };
     uint32_t cursor = bus_read_u32(manager_pointer + 0x14u);
     for (unsigned i = 0; cursor && i < 256; ++i) {
         if ((cursor & 3u) || !ram(cursor, 0x28)) return false;
         std::string existing;
         if (!read_string(cursor, existing, 31)) return false;
-        if (existing == name) { found = true; return true; }
+        if (existing.size() == name.size() &&
+            std::equal(existing.begin(), existing.end(), name.begin(),
+                [&](char a, char b) { return fold(uint8_t(a)) == fold(uint8_t(b)); })) {
+            found = true; return true;
+        }
         const uint32_t next = bus_read_u32(cursor + 0x20u);
         if (next == cursor) return false;
         cursor = next;
@@ -170,7 +215,12 @@ void begin(uint32_t kind) {
     }
     const uint32_t sp = g_cpu.R[13];
     if ((sp & 7u) || sp < frame_size || !ram(sp - frame_size, frame_size) ||
-        (kind == File && argument >= sp - frame_size && argument < sp)) {
+        overlaps(sp - frame_size, frame_size, file_entry, file_proof.size()) ||
+        overlaps(sp - frame_size, frame_size, archive_entry, archive_proof.size()) ||
+        overlaps(sp - frame_size, frame_size, allocator, allocator_proof.size()) ||
+        overlaps(sp - frame_size, frame_size, mount, mount_proof.size()) ||
+        overlaps(sp - frame_size, frame_size, argument,
+                 kind == File ? 4u : uint32_t(name.size() + 1u))) {
         fallback(); return;
     }
     const std::array<uint32_t, 8> frame{frame_magic, kind, file.offset, file.size,
@@ -200,6 +250,13 @@ void complete(uint32_t kind) {
     // This PC is also a legitimate original continuation. A native-owned
     // frame must be proved before replacing it, including after save/load.
     if (frame[Magic] != frame_magic || frame[Kind] != kind) { fallback(); return; }
+    if ((kind == File && ((frame[Argument] & 3u) ||
+            !ram(frame[Argument], 4) || frame[Manager])) ||
+        (kind == Archive && ((frame[Manager] & 3u) ||
+            !ram(frame[Manager], 0x7Cu) ||
+            bus_read_u32(archive_manager_slot) != frame[Manager]))) {
+        nds_halt("MPH assets: invalid native frame ownership"); return;
+    }
     FileView file;
     uint32_t size = 0;
     if (!service.view(frame[Offset], frame[Length], &file) || !file.data ||
@@ -219,7 +276,7 @@ void complete(uint32_t kind) {
         nds_halt("MPH assets: guest allocation failed"); return;
     }
     const uint32_t destination = allocation + (kind == Archive ? 0x28u : 0u);
-    if (!ram(destination, size) || (kind == File && !ram(frame[Argument], 4))) {
+    if (!ram(allocation, size + (kind == Archive ? 0x28u : 0u))) {
         nds_halt("MPH assets: invalid guest allocation"); return;
     }
     std::vector<uint8_t> decoded;
