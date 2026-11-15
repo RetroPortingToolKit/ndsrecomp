@@ -1774,6 +1774,7 @@ int main(int argc, char** argv) {
     const bool offline_requested=nds_performance_execution() &&
         (!offline_setting || std::strcmp(offline_setting,"0")!=0) &&
         !resolved_network.enabled && !resolved_network.wfc_enabled &&
+        !resolved_network.local_wireless_enabled &&
         resolved_network.backend != NdsNetBackendKind::Replay;
     if (!nds_offline_arm7_configure(rom_sha1,offline_requested,&execution_error) && offline_requested) {
         std::fprintf(stderr, "refusing to start offline services: %s\n", execution_error.c_str());
