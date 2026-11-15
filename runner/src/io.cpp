@@ -1844,6 +1844,12 @@ bool nds_io_offline_wireless_vram(uint32_t source,uint32_t size,bool clear,uint6
 bool nds_io_offline_card_idle() {
     return !(g_romctrl&0x80000000u)&&!(g_auxspicnt&0x80u)&&!g_auxspi_hold;
 }
+bool nds_io_asset_cartridge(const uint8_t** bytes,uint32_t* size) {
+    if(!bytes||!size||g_card_rom.empty()||g_card_rom.size()>UINT32_MAX||
+       g_card_mode!=CardCommandMode::Normal||!nds_io_offline_card_idle()||
+       g_card_deadline!=UINT64_MAX)return false;
+    *bytes=g_card_rom.data();*size=uint32_t(g_card_rom.size());return true;
+}
 bool nds_io_offline_card_spi(const uint8_t* tx,uint8_t* rx,uint32_t size,uint64_t now) {
     if(!tx||!size||size>0x800004u||!nds_io_offline_card_idle())return false;
     OfflineArm7Context context(now);

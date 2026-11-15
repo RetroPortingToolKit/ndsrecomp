@@ -1427,6 +1427,10 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_link_libraries(hle_mkds_model_test PRIVATE nds_support)
   add_test(NAME hle_mkds_model_test COMMAND hle_mkds_model_test)
 
+  add_executable(native_asset_data_test tests/native_asset_data_test.cpp src/native_asset_data.cpp)
+  target_include_directories(native_asset_data_test PRIVATE src)
+  add_test(NAME native_asset_data_test COMMAND native_asset_data_test)
+
   add_executable(hle_mkds_stream_test tests/hle_mkds_stream_test.cpp src/hle_mkds_stream.cpp
       src/hle_mkds_card_pio.cpp)
   target_compile_definitions(hle_mkds_stream_test PRIVATE NDS_RUNTIME_ABI_SHIMS=1)
