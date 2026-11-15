@@ -22,6 +22,10 @@ public:
     uint32_t framebuffer() const;
     bool unlock(std::string* error = nullptr);
     SDL_Texture* texture() const;
+    // Before an SDL D3D9 reset, call this on ALL targets for that renderer
+    // before any SDL render/flush/destroy call. It releases external default-
+    // pool references without entering SDL; reset() can then destroy targets.
+    bool prepare_reset(std::string* error = nullptr);
     void reset();
 
 private:

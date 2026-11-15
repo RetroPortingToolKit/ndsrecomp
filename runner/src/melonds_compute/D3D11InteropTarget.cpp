@@ -66,6 +66,7 @@ D3D11InteropTarget::~D3D11InteropTarget() { reset(); }
 
 bool D3D11InteropTarget::create(SDL_Renderer* renderer, int width, int height, std::string* error) {
     reset();
+    if (impl_) return fail(error, "Previous Direct3D interop registration could not be released");
     if (!renderer || width <= 0 || height <= 0) return fail(error, "Invalid Direct3D interop target size or renderer");
     if (!SDL_GL_GetCurrentContext() || !GLAD_GL_VERSION_4_3)
         return fail(error, "Direct3D interop requires the current OpenGL 4.3 producer context");
@@ -185,24 +186,42 @@ bool D3D11InteropTarget::unlock(std::string* error) {
 uint32_t D3D11InteropTarget::framebuffer() const { return impl_ ? impl_->framebuffer : 0; }
 SDL_Texture* D3D11InteropTarget::texture() const { return impl_ ? impl_->target : nullptr; }
 
-void D3D11InteropTarget::reset() {
-    if (!impl_) return;
+bool D3D11InteropTarget::prepare_reset(std::string* error) {
+    if (!impl_) return true;
     auto& state = *impl_;
-    auto report = [](const char* operation) { std::fprintf(stderr, "[gpu3d] %s\n", win_error(operation).c_str()); };
-    if (state.locked && !unlock()) report("interop cleanup unlock");
-    if (state.renderer && !SDL_FlushRenderer(state.renderer))
-        std::fprintf(stderr, "[gpu3d] interop cleanup SDL flush failed: %s\n", SDL_GetError());
+    // SDL flushes can activate a pending D3D9 resize/reset. No SDL entry is
+    // safe until every registered target has released its external refs.
+    if (state.locked && !unlock(error)) return false;
     if (state.object && state.unregister_object && !state.unregister_object(state.device, state.object))
-        report("wglDXUnregisterObjectNV");
+        return fail(error, win_error("wglDXUnregisterObjectNV"));
+    state.object = nullptr;
     if (state.framebuffer) glDeleteFramebuffers(1, &state.framebuffer);
+    state.framebuffer = 0;
     if (state.renderbuffer) {
         if (state.texture_object) glDeleteTextures(1,&state.renderbuffer);
         else glDeleteRenderbuffers(1,&state.renderbuffer);
     }
-    if (state.device && state.close && !state.close(state.device)) report("wglDXCloseDeviceNV");
+    state.renderbuffer = 0;
+    if (state.device && state.close && !state.close(state.device))
+        return fail(error, win_error("wglDXCloseDeviceNV"));
+    state.device = nullptr;
     if (state.parent9) state.parent9->Release();
+    state.parent9 = nullptr;
     if (state.surface9) state.surface9->Release();
+    state.surface9 = nullptr;
     if (state.device9) state.device9->Release();
+    state.device9 = nullptr;
+    return true;
+}
+
+void D3D11InteropTarget::reset() {
+    if (!impl_) return;
+    std::string error;
+    if (!prepare_reset(&error)) {
+        std::fprintf(stderr, "[gpu3d] interop cleanup failed: %s\n", error.c_str());
+        return;
+    }
+    auto& state = *impl_;
     if (state.target) SDL_DestroyTexture(state.target);
     impl_.reset();
 }
@@ -219,5 +238,6 @@ bool D3D11InteropTarget::lock(std::string* error) { return create(nullptr, 0, 0,
 bool D3D11InteropTarget::unlock(std::string* error) { return create(nullptr, 0, 0, error); }
 uint32_t D3D11InteropTarget::framebuffer() const { return 0; }
 SDL_Texture* D3D11InteropTarget::texture() const { return nullptr; }
+bool D3D11InteropTarget::prepare_reset(std::string*) { return true; }
 void D3D11InteropTarget::reset() {}
 #endif
