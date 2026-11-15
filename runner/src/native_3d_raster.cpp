@@ -5,6 +5,19 @@
 #include <bit>
 #include <climits>
 
+void nds_native_3d_latch_registers(melonDS::GPU3D& g) {
+    g.RenderDispCnt = g.DispCnt;
+    g.RenderAlphaRef = g.AlphaRef;
+    std::copy(std::begin(g.ToonTable), std::end(g.ToonTable), g.RenderToonTable);
+    std::copy(std::begin(g.EdgeTable), std::end(g.EdgeTable), g.RenderEdgeTable);
+    g.RenderFogColor = g.FogColor; g.RenderFogOffset = g.FogOffset << 9;
+    g.RenderFogShift = (g.DispCnt >> 8) & 15;
+    g.RenderFogDensityTable[0] = g.FogDensityTable[0];
+    std::copy(std::begin(g.FogDensityTable), std::end(g.FogDensityTable), g.RenderFogDensityTable + 1);
+    g.RenderFogDensityTable[33] = g.FogDensityTable[31];
+    g.RenderClearAttr1 = g.ClearAttr1; g.RenderClearAttr2 = g.ClearAttr2;
+}
+
 void nds_native_3d_raster(const nds_native_3d::Frame& frame,
                           melonDS::GPU3D& g, bool guest_wide) {
     // Use the raster's owned second bank so its pointer-index serializer stays

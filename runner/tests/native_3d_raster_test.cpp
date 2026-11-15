@@ -37,6 +37,10 @@ int main() {
             for(unsigned c=0;c<3;++c)compare("colour",a.Vertices[i]->FinalColor[c],b.Vertices[i]->FinalColor[c]);
         }
         if(!equal)throw std::runtime_error("native triangle raster ABI mismatch");
+        n.GetCurrentRenderer().RenderFrame(native->GPU);
+        n.GetCurrentRenderer().VCount144(native->GPU);
+        if((n.GetCurrentRenderer().GetLine(96)[128]&63)!=63)
+            throw std::runtime_error("portable raster must draw native triangle packets");
         // Collapsed clip coordinates are accepted without a host divide fault.
         auto collapsed=service.Display();for(auto& v:collapsed.vertices)v.clip={0,0,0,0};
         nds_native_3d_raster(collapsed,n,false);
@@ -53,6 +57,19 @@ int main() {
         compare("normalized W",wa.FinalW[0],wb.FinalW[0]);
         compare("W depth",wa.FinalZ[0],wb.FinalZ[0]);
         if(!equal)throw std::runtime_error("native W-buffer raster ABI mismatch");
+        for(const auto [address,value] : {std::pair{0x04000060u,0x678u},std::pair{0x04000340u,17u},
+            std::pair{0x04000350u,0x1F001234u},std::pair{0x04000354u,0x7ABCu},
+            std::pair{0x04000358u,0x001F03E0u},std::pair{0x0400035Cu,0x1234u},
+            std::pair{0x04000360u,0x08040201u},std::pair{0x0400037Cu,0x7F604020u}}) {
+            r.Write32(address,value);n.Write32(address,value);
+        }
+        op(0x50,{0});r.VBlank();service.VBlank();nds_native_3d_latch_registers(n);
+        compare("fog offset latch",r.RenderFogOffset,n.RenderFogOffset);
+        compare("fog shift latch",r.RenderFogShift,n.RenderFogShift);
+        compare("clear depth latch",r.RenderClearAttr2,n.RenderClearAttr2);
+        compare("alpha latch",r.RenderAlphaRef,n.RenderAlphaRef);
+        for(unsigned i=0;i<34;++i)compare("fog density latch",r.RenderFogDensityTable[i],n.RenderFogDensityTable[i]);
+        if(!equal)throw std::runtime_error("native render-state latch mismatch");
         std::puts("native triangle raster ABI and collapsed projection passed");
         return 0;
     }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

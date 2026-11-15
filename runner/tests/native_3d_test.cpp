@@ -160,6 +160,19 @@ void CompiledDisplayLists() {
     Check(partial.Counters().cache_builds==0,"partial parameter boundary cannot become a cached packet");
     partial.Job({list.data()+2,list.size()-2});Publish(partial);
     Check(partial.Display().polygons.size()==1&&partial.Counters().cache_hits==0,"uncached continuation completes exactly once");
+    Service cached, raw;
+    Begin(cached);Begin(raw);cached.Job(list);raw.Packed(list);
+    Op(cached,0x50,{0});Op(raw,0x50,{0});cached.Flush();raw.Flush();
+    Begin(cached);Begin(raw);cached.Job(list);raw.Packed(list);
+    Op(cached,0x50,{0});Op(raw,0x50,{0});
+    Check(cached.Counters().cache_hits==1,"queued list uses existing compiled job");
+    Check(cached.Read(0x04000604)==raw.Read(0x04000604),"cache cannot execute through pending swap");
+    Check(cached.VBlank()&&raw.VBlank(),"first queued frame publishes once");
+    cached.Flush();raw.Flush();
+    Check(cached.PendingSwap()&&raw.PendingSwap(),"second submitted job waits for its own VBlank");
+    Check(cached.VBlank()&&raw.VBlank(),"second queued frame publishes once");
+    Check(cached.Counters().commands==raw.Counters().commands&&cached.Counters().polygons==2&&
+          cached.Counters().vertices==6,"cached and uncached jobs execute exactly once across swaps");
 }
 }
 int main() {

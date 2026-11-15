@@ -6,3 +6,4 @@ namespace melonDS { class GPU3D; }
 // owned by Service; renderer state/tables remain owned by the bridge.
 void nds_native_3d_raster(const nds_native_3d::Frame& frame,
                           melonDS::GPU3D& raster, bool guest_wide);
+void nds_native_3d_latch_registers(melonDS::GPU3D& raster);
