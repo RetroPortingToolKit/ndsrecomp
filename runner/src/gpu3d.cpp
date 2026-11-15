@@ -360,6 +360,21 @@ void compute_submit_readback() {
     g_compute_readback_pending = true;
 }
 
+// Publish the native display job while CPU simulation can still overlap it.
+// Readback used to provide this kick implicitly; GPU-only presentation must
+// not leave the whole raster command chain buffered until the final swap.
+void compute_publish_display_frame() {
+    if (!g_compute_rendered_frame) return;
+    const bool needs_cpu = nds_gpu2d_requires_3d_readback() ||
+                           g_display_readback_latency;
+    if (needs_cpu) {
+        if (compute_readback_overlap() || g_display_readback_latency)
+            compute_submit_readback();
+    } else {
+        glFlush();
+    }
+}
+
 void compute_finish_readback() {
     if (nds_cpu_render_on_worker()) {
         nds_cpu_render_main([] { compute_finish_readback(); }); return;
@@ -1412,11 +1427,7 @@ void nds_gpu3d_vcount215() {
         if (g_nds.GPU.GPU3D.IsRendererAccelerated() &&
             !g_compute_readback_pending)
             g_compute_rendered_frame = true;
-        if (g_compute_rendered_frame &&
-            (compute_readback_overlap() || g_display_readback_latency) &&
-            (nds_gpu2d_requires_3d_readback() ||
-             g_display_readback_latency))
-            compute_submit_readback();
+        compute_publish_display_frame();
 #endif
         return;
     }
@@ -1433,10 +1444,7 @@ void nds_gpu3d_vcount215() {
     profile_add(g_gpu3d_profile.vcount215_ns, start);
     ++g_gpu3d_profile.vcount215_calls;
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
-    if (g_compute_rendered_frame &&
-        (compute_readback_overlap() || g_display_readback_latency) &&
-        (nds_gpu2d_requires_3d_readback() || g_display_readback_latency))
-        compute_submit_readback();
+    compute_publish_display_frame();
 #endif
 }
 
