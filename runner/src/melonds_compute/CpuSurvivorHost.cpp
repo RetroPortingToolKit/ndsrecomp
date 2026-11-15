@@ -46,6 +46,17 @@ uint32_t uploadedBuffer{};bool uploadedNative{};
 struct Cache {uint64_t id{},epoch{};uint32_t buffer{};int screen{-1};bool adaptive{};uint16_t width{};std::vector<uint32_t> pixels;};
 Cache caches[2][2];
 
+bool releaseBottomTargets(){
+    // SDL texture destruction can flush a pending D3D9 resize/reset. Drop
+    // every external registration/reference before calling SDL for any one.
+    bool ready=true;std::string error;
+    for(auto& target:bottomTargets)if(!target.prepare_reset(&error))ready=false;
+    if(!ready){std::fprintf(stderr,"[gpu3d] interop reset detach failed: %s\n",error.c_str());return false;}
+    for(auto& target:bottomTargets)target.reset();
+    bottomWidth=bottomHeight=0;bottomIndex=0;
+    return true;
+}
+
 struct State {
     GLint fbo{},readFbo{},program{},array{},viewport[4]{},pack{},unpack{},packing[8]{};
     static constexpr GLenum names[]={GL_PACK_ALIGNMENT,GL_PACK_ROW_LENGTH,GL_PACK_SKIP_ROWS,GL_PACK_SKIP_PIXELS,GL_UNPACK_ALIGNMENT,GL_UNPACK_ROW_LENGTH,GL_UNPACK_SKIP_ROWS,GL_UNPACK_SKIP_PIXELS};
@@ -131,7 +142,7 @@ void nds_survivor_host_stop(){
     if(active)nds_gpu2d_set_survivors(false);
     active=false;interop=false;
     if(nds_compute_host_active()&&nds_compute_host_make_current()){
-        for(auto& target:bottomTargets)target.reset();
+        if(!releaseBottomTargets())return;
         for(auto& s:sources)release(s);
         release(scratch);
         glDeleteProgram(programs[0]);glDeleteProgram(programs[1]);glDeleteVertexArrays(1,&vao);glDeleteBuffers(1,&rowsBuffer);glDeleteTextures(1,&layerTexture);glDeleteTextures(1,&fallbackTexture);glDeleteTextures(2,overlayTextures);glDeleteTextures(1,&readTexture);glDeleteFramebuffers(1,&readFbo);
@@ -146,6 +157,9 @@ void nds_survivor_host_capture(){
     if(captureSource(sources[f->buffer&1u],*f))++frames;
 }
 void nds_survivor_host_invalidate(){generation.fetch_add(1);}
+bool nds_survivor_host_reset_bottom(){
+    return !active||(nds_compute_host_make_current()&&releaseBottomTargets());
+}
 const uint32_t* nds_survivor_host_read(const Frame* f,int screen,bool adaptive,uint16_t* width){
     if(nds_cpu_render_on_worker()){const uint32_t* p{};nds_cpu_render_main([&]{p=readFrame(f,screen,adaptive,width);});return p;}return readFrame(f,screen,adaptive,width);
 }
@@ -183,7 +197,7 @@ bool nds_survivor_host_present_top(SDL_Window* window,const Frame* f,const uint3
 SDL_Texture* nds_survivor_host_present_bottom(const Frame* f,int w,int h,const uint32_t* black,const uint32_t* white,unsigned aa,NdsComputePresentTicks* ticks){
     if(!active||!interop||!f||w<=0||h<=0||!nds_compute_host_make_current())return nullptr;
     State state;const auto begin=SDL_GetPerformanceCounter();std::string error;
-    if(w!=bottomWidth||h!=bottomHeight){for(auto& t:bottomTargets)t.reset();bottomWidth=w;bottomHeight=h;}
+    if(w!=bottomWidth||h!=bottomHeight){if(!releaseBottomTargets())return nullptr;bottomWidth=w;bottomHeight=h;}
     auto& target=bottomTargets[bottomIndex++&1u];if(!target.texture()&&!target.create(bottomRenderer,w,h,&error))return nullptr;if(!target.lock(&error))return nullptr;
     bool ok=draw(*f,1,false,false,findSource(*f),target.framebuffer(),w,h,true,black,white,aa);if(!target.unlock(&error))ok=false;if(ticks)ticks->draw+=SDL_GetPerformanceCounter()-begin;return ok?target.texture():nullptr;
 }
@@ -195,6 +209,7 @@ bool nds_survivor_host_enabled(){return false;}
 void nds_survivor_host_stop(){}
 void nds_survivor_host_capture(){}
 void nds_survivor_host_invalidate(){}
+bool nds_survivor_host_reset_bottom(){return true;}
 bool nds_survivor_host_snapshot(NdsGpu2dSaveState*){return true;}
 const uint32_t* nds_survivor_host_read(const nds_survivors::Frame*,int,bool,uint16_t*){return nullptr;}
 const uint32_t* nds_survivor_host_observe(int,bool,uint16_t*){return nullptr;}

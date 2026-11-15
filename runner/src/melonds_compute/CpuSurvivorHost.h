@@ -14,6 +14,8 @@ bool nds_survivor_host_enabled();
 void nds_survivor_host_stop();
 void nds_survivor_host_capture();
 void nds_survivor_host_invalidate();
+// Detach every shared target before SDL can process a pending renderer reset.
+bool nds_survivor_host_reset_bottom();
 // Snapshot callers first drain CPU scanline jobs. Ordinary capture never
 // joins them. The host redirects GL work from the producer to its main owner.
 bool nds_survivor_host_snapshot(NdsGpu2dSaveState*);

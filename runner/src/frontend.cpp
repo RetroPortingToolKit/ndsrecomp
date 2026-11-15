@@ -3394,6 +3394,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         }
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
+#if defined(NDS_HAVE_COMPUTE_RENDERER) && defined(NDS_HAVE_SDL3)
+            // SDL's D3D9 watcher marks resize pending; the next renderer call
+            // executes its reset. Release all shared native references first,
+            // even if the fitted viewport's dimensions happen not to change.
+            const bool bottom_resize=event.type==SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED&&
+                event.window.windowID==presentation.window_ids[1];
+            const bool bottom_reset=(event.type==SDL_EVENT_RENDER_TARGETS_RESET||
+                event.type==SDL_EVENT_RENDER_DEVICE_RESET)&&
+                event.render.windowID==presentation.window_ids[1];
+            if((bottom_resize||bottom_reset)&&!nds_survivor_host_reset_bottom()) {
+                compute_failed=true;running=false;break;
+            }
+#endif
             convert_mouse_event_to_logical_coordinates(event, presentation);
             if (event.type == SDL_QUIT) {
                 release_relative_mouse();
@@ -4288,7 +4301,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
             bottom_pixels=survivor_frame->native_base[1];
             top_width=survivor_frame->widths[0];bottom_width=survivor_frame->widths[1];
             direct_present=true;
-            if(frame_digest_enabled()||g_black_band.armed) {
+            if(frame_digest_enabled()||g_black_band.enabled) {
                 native_top=nds_survivor_host_read(survivor_frame,0,false,nullptr);
                 if(frame_digest_enabled()) {
                     top_pixels=native_top;
