@@ -2116,11 +2116,21 @@ std::string handle(const std::string& line) {
     }
 
     if (cmd == "presented_framebuffer") {
-#if defined(NDS_HAVE_COMPUTE_RENDERER)
         std::vector<uint32_t> pixels;
         unsigned width = 0, height = 0;
-        if (!nds_compute_host_read_presented(pixels, width, height))
-            return "{\"error\":\"no readable visible compute presentation\"}";
+        const std::string surface = json_str(line, "surface", "game");
+        if (surface == "menu") {
+            if (!nds_frontend_read_runtime_menu(pixels, &width, &height))
+                return "{\"error\":\"no rendered runtime menu on this thread\"}";
+        } else {
+            if (surface != "game") return "{\"error\":\"unknown presentation surface\"}";
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+            if (!nds_compute_host_read_presented(pixels, width, height))
+                return "{\"error\":\"no readable visible compute presentation\"}";
+#else
+            return "{\"error\":\"compute presentation not compiled\"}";
+#endif
+        }
         std::string rgb;
         rgb.reserve(pixels.size() * 6);
         for (uint32_t p : pixels) {
@@ -2130,9 +2140,6 @@ std::string handle(const std::string& line) {
         }
         return "{\"w\":" + std::to_string(width) + ",\"h\":" +
             std::to_string(height) + ",\"rgb\":\"" + rgb + "\"}";
-#else
-        return "{\"error\":\"compute presentation not compiled\"}";
-#endif
     }
     if (cmd == "framebuffer") {
         const std::string engine = json_str(line, "engine", "A");
