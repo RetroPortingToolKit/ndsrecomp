@@ -284,6 +284,7 @@ bool nds_offline_arm7_receive(uint32_t word,uint64_t now){
     NdsEmuScope service_time(NDS_EMU_ARM7_SERVICE);
     const unsigned tag=word&31;const bool error=word&32;const uint32_t payload=word>>6;
     if(tag==7&&!nds_offline_sound_can_receive(payload,error))return false;
+    if((tag==11||tag==13||tag==14)&&!nds_offline_card_can_receive(tag,payload,error))return false;
     const bool completes=tag==5||(slot(tag)>=0&&(payload&0x01000000u));
     if(completes&&!error&&(!nds_io_offline_reply_capacity(1)||!nds_io_offline_spi_idle()))return false;
     if(!nds_io_offline_receive_word(word,now))return false;
@@ -310,7 +311,8 @@ uint64_t nds_offline_arm7_next_event(uint64_t now){
     auto event=[&](uint64_t at){if(at>now||reply_room)next=std::min(next,at);};
     event(state.mic_next);for(auto at:state.touch_next)event(at);
     if(reply_room||!(nds_io_offline_wake_flags()&0x80u))event(nds_io_offline_rtc_next_event(now));
-    next=std::min(next,nds_offline_sound_next_event(now));return next;
+    next=std::min(next,nds_offline_sound_next_event(now));
+    next=std::min(next,nds_offline_card_next_event(now));return next;
 }
 void nds_offline_arm7_advance(uint64_t now){
     if(!state.active||state.reset_pending||nds_offline_card_terminated()||nds_powered_off())return;
@@ -368,6 +370,7 @@ void nds_offline_arm7_advance(uint64_t now){
     }
     const uint32_t irq=nds_io_offline_wake_flags();
     if(irq&0x80)rtc_interrupt(now);
+    nds_offline_card_advance(now);
     uint32_t word;for(unsigned i=0;i<16&&nds_io_offline_peek(&word);++i)if(!nds_offline_arm7_receive(word,now))break;
     if(!state.reset_pending&&!nds_offline_card_terminated())nds_offline_sound_advance(now);
 }
