@@ -1770,9 +1770,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 #if defined(NDS_OFFLINE_ARM7)
-    if (!nds_offline_arm7_configure(rom_sha1,
-            !resolved_network.enabled && !resolved_network.wfc_enabled &&
-            resolved_network.backend != NdsNetBackendKind::Replay, &execution_error)) {
+    const char* offline_setting=std::getenv("NDS_OFFLINE_ARM7");
+    const bool offline_requested=nds_performance_execution() &&
+        (!offline_setting || std::strcmp(offline_setting,"0")!=0) &&
+        !resolved_network.enabled && !resolved_network.wfc_enabled &&
+        resolved_network.backend != NdsNetBackendKind::Replay;
+    if (!nds_offline_arm7_configure(rom_sha1,offline_requested,&execution_error) && offline_requested) {
         std::fprintf(stderr, "refusing to start offline services: %s\n", execution_error.c_str());
         return 1;
     }
@@ -2133,7 +2136,7 @@ int main(int argc, char** argv) {
         bus_load_arm7_bios(a7.data(), (uint32_t)a7.size());
         cp15_reset();
         nds_io_reset();
-        nds_io_load_firmware(fw.data(), (uint32_t)fw.size());
+        nds_io_reset_firmware(fw.data(), (uint32_t)fw.size());
         if (!rom.empty() && !nds_io_load_cartridge(
                 rom.data(), static_cast<uint32_t>(rom.size()),
                 a7.data(), static_cast<uint32_t>(a7.size()))) {
@@ -2316,8 +2319,8 @@ int main(int argc, char** argv) {
             inputs.rom_size = static_cast<uint32_t>(rom.size());
             inputs.secure_area =
                 has_secure_area ? secure_area.data() : nullptr;
-            inputs.firmware = fw.data();
-            inputs.firmware_size = static_cast<uint32_t>(fw.size());
+            inputs.firmware = nds_firmware_bytes();
+            inputs.firmware_size = nds_firmware_size();
             inputs.cart_chip_id = nds_cart_chip_id();
             // FreeBIOS has no Nintendo logo, so direct boot copies the
             // cartridge's into the ARM9 BIOS image (DS<->GBA comm reads it).

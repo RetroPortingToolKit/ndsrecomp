@@ -131,11 +131,11 @@ uint32_t bus_device_read32(int cpu, uint32_t a) {
     std::memcpy(&x, p, 4);
   return x;
 }
-void bus_device_write32(int cpu, uint32_t a, uint32_t x) {
+void bus_device_write32(int cpu, uint32_t a, uint32_t x, uint64_t) {
   assert(cpu == 7);
   put(a, x);
 }
-void bus_device_write16(int cpu, uint32_t a, uint16_t x) {
+void bus_device_write16(int cpu, uint32_t a, uint16_t x, uint64_t) {
   assert(cpu == 7);
   put(a, x);
 }

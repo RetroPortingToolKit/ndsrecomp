@@ -2037,6 +2037,13 @@ bool nds_io_replace_firmware(const uint8_t* p, uint32_t n) {
     return nds_io_flush_firmware_save();
 }
 
+void nds_io_reset_firmware(const uint8_t* p, uint32_t n) {
+    if (g_fw.empty()) { nds_io_load_firmware(p,n); return; }
+    // Flash contents/dirty state and historical-session detachment survive a
+    // console reset, just as the inserted cartridge's native backup does.
+    nds_wifi_load_firmware(g_fw.data(),static_cast<uint32_t>(g_fw.size()));
+}
+
 void nds_io_set_firmware_save_path(const char* path) {
     g_fw_save_path = path ? path : "";
 }

@@ -491,6 +491,7 @@ void nds_spu_reset() {
     g_cnt = 0; g_master_volume = 0; g_bias = 0; g_mix_count = 0;
     g_output.fill(0); g_output_read = g_output_write = g_output_count = 0;
     g_debug_output_produced = 0;
+    g_presentation_epoch.fetch_add(1u, std::memory_order_release);
 }
 
 void nds_spu_stop() {

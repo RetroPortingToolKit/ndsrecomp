@@ -17,6 +17,9 @@
 #include <thread>
 
 #include "scheduler.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 #include "savestate.h"
 #include "state.h"
 #include "execution_model.h"
@@ -491,8 +494,24 @@ uint32_t spsr_for_mode(const ArmCpuState& c, uint32_t mode) {
 
 std::string handle(const std::string& line) {
     std::string cmd = json_str(line, "cmd");
+#if defined(NDS_OFFLINE_ARM7)
+    if (!g_play_mode && nds_offline_arm7_reset_pending() && g_reset_fn && cmd!="offline_arm7") {
+        nds_savestate_wait_for_pending_save();
+        g_reset_fn();
+    }
+#endif
 
     if (cmd == "ping") return "{\"pong\":true}";
+    if (cmd == "offline_arm7") {
+#if defined(NDS_OFFLINE_ARM7)
+        return std::string("{\"available\":true,\"selected\":")+
+            (nds_offline_arm7_selected()?"true":"false")+
+            ",\"active\":"+(nds_offline_arm7_active()?"true":"false")+
+            ",\"reset_pending\":"+(nds_offline_arm7_reset_pending()?"true":"false")+"}";
+#else
+        return "{\"available\":false,\"selected\":false,\"active\":false}";
+#endif
+    }
 
     if (cmd == "reset") {
         if (!g_reset_fn) return "{\"error\":\"reset unsupported\"}";
@@ -2399,6 +2418,14 @@ bool debug_pump_start(uint16_t port) {
 }
 
 void debug_pump() {
+#if defined(NDS_OFFLINE_ARM7)
+    // Frontend calls this between completed CPU frames, also without a TCP
+    // listener. Reuse the full boot transaction rather than resetting IO alone.
+    if (nds_offline_arm7_reset_pending() && g_reset_fn) {
+        nds_savestate_wait_for_pending_save();
+        g_reset_fn();
+    }
+#endif
     if (g_pump_listener == INVALID_SOCKET) return;
     std::unique_lock<std::mutex> lock(g_pump_mutex, std::try_to_lock);
     if (!lock.owns_lock() || g_pump_state != PumpIo::Req) return;

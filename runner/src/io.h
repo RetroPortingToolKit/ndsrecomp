@@ -345,6 +345,8 @@ void     nds_tick_display(unsigned long long system_cycles);
 void     nds_tick_rtc(unsigned long long system_cycles);
 void     nds_dump_irq();
 void     nds_io_load_firmware(const uint8_t* p, uint32_t n);
+// Initial load or reset with the current mutable flash and persistence policy.
+void     nds_io_reset_firmware(const uint8_t* p, uint32_t n);
 bool     nds_io_replace_firmware(const uint8_t* p, uint32_t n);
 // Optional mutable firmware backing file. Guest SPI writes are committed
 // atomically at transaction boundaries and retried on every orderly exit,
