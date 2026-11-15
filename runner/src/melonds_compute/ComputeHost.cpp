@@ -18,6 +18,7 @@
 #include "gpu3d.h"
 #include "TextureUpscale.h"
 #include "PresentShaders.h"
+#include "CpuSurvivorHost.h"
 
 namespace
 {
@@ -35,6 +36,7 @@ GLuint g_raster_texture[2] = {};
 GLuint g_hd_top_texture[2] = {};
 GLuint g_hd_below_texture[2] = {};
 int g_texture_width = 0;
+int g_presented_width = 0;
 unsigned g_present_buffer = 0;
 
 // GL identity, captured once the context is current. Fixed buffers rather
@@ -250,6 +252,7 @@ void release_host_objects()
 {
     if (g_context && g_window) {
         sdl_make_current(g_window, g_context);
+        nds_survivor_host_stop();
         stop_presenter();
     }
     if (g_context) nds_texture_upscale_shutdown();
@@ -258,6 +261,7 @@ void release_host_objects()
     if (g_owns_video) SDL_QuitSubSystem(SDL_INIT_VIDEO);
     g_window = nullptr;
     g_context = nullptr;
+    g_presented_width = 0;
     g_owns_video = false;
     g_owns_window = false;
     g_active = false;
@@ -272,6 +276,7 @@ bool nds_compute_host_start(SDL_Window* presentation_window)
     if (g_active) return true;
     const bool required = policy == NdsGpu3dRendererPolicy::Compute;
     auto fail_or_fallback = [&](const char* reason) {
+        nds_survivor_host_stop();
         nds_gpu3d_restore_soft_renderer();
         release_host_objects();
         if (required) return false;
@@ -350,6 +355,11 @@ bool nds_compute_host_make_current()
     return !g_active || sdl_make_current(g_window, g_context);
 }
 
+void nds_compute_host_note_presented_width(uint16_t width)
+{
+    g_presented_width=width;
+}
+
 bool nds_compute_host_has_visible_context()
 {
     return g_active && g_visible;
@@ -359,11 +369,12 @@ bool nds_compute_host_read_presented(std::vector<uint32_t>& pixels,
                                       unsigned& width, unsigned& height)
 {
     width = height = 0;
-    if (!g_active || !g_visible || !g_texture_width ||
+    const auto content_width=g_presented_width?g_presented_width:g_texture_width;
+    if (!g_active || !g_visible || !content_width ||
         !sdl_make_current(g_window, g_context)) return false;
     int dw = 0, dh = 0;
     sdl_get_drawable_size(g_window, &dw, &dh);
-    const auto v = fit_present_viewport(dw, dh, g_texture_width, 192);
+    const auto v = fit_present_viewport(dw, dh, content_width, 192);
     if (dw <= 0 || dh <= 0 || uint64_t(v.width) * v.height > 16000000u)
         return false;
     GLint old_fbo, old_pack, old_alignment, old_length, old_rows, old_pixels;
@@ -554,6 +565,7 @@ bool nds_compute_host_present_top(const unsigned int* fallback_pixels,
 #endif
     ticks->swap += SDL_GetPerformanceCounter() - start;
     if (!swapped) return false;
+    g_presented_width=width;
     const auto diagnostic_error = ticks->diagnostic ? SDL_GetPerformanceCounter() : 0;
     const bool ok = glGetError() == GL_NO_ERROR;
     if (ticks->diagnostic)
@@ -568,6 +580,7 @@ void nds_compute_host_stop()
         return;
     }
     sdl_make_current(g_window, g_context);
+    nds_survivor_host_stop();
     nds_gpu3d_restore_soft_renderer();
     release_host_objects();
 }

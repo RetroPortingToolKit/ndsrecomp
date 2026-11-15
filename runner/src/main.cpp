@@ -67,6 +67,8 @@
 #include "title_patches.h"
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
 #include "melonds_compute/ComputeHost.h"
+#include "melonds_compute/CpuSurvivorHost.h"
+#include "gpu3d_survivors.h"
 #endif
 
 // Generated per-CPU dispatch tables (C linkage).
@@ -2365,6 +2367,14 @@ int main(int argc, char** argv) {
     if (!interactive)
         nds_texture_upscale_set_factor(frontend_options.texture_upscale);
     if (!interactive && !nds_compute_host_start()) return 1;
+    if (!interactive && nds_survivor_host_requested() && nds_compute_host_active()) {
+        const auto adaptive=frontend_options.adaptive_screens&frontend_options.adaptive_supported;
+        nds_gpu2d_set_survivor_widths(
+            (adaptive & NDS_ADAPTIVE_TOP)?frontend_options.adaptive_max_width[0]:256,
+            (adaptive & NDS_ADAPTIVE_BOTTOM)?frontend_options.adaptive_max_width[1]:256);
+        if(!nds_survivor_host_start())
+            std::fprintf(stderr,"[gpu3d] CPU survivor presentation unavailable; using existing renderer\n");
+    }
 #endif
 
     if (interactive) {

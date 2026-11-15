@@ -38,6 +38,8 @@
 #include "title_patches.h"
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
 #include "melonds_compute/ComputeHost.h"
+#include "melonds_compute/CpuSurvivorHost.h"
+#include "gpu3d_survivors.h"
 #endif
 
 namespace {
@@ -814,6 +816,12 @@ bool sdl_push_event(SDL_Event& event) {
 
 bool sdl_init_frontend() {
 #if defined(NDS_HAVE_SDL3)
+#if defined(_WIN32) && defined(NDS_HAVE_COMPUTE_RENDERER)
+    // D3D9Ex target textures can be shared with the current GL context. SDL
+    // reads this hint while initializing video, before creating a renderer.
+    if(nds_survivor_host_requested())
+        SDL_SetHint(SDL_HINT_WINDOWS_USE_D3D9EX,"1");
+#endif
     return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                     SDL_INIT_GAMECONTROLLER);
 #else
@@ -1436,6 +1444,14 @@ uint32_t fullscreen_flags(NdsFullscreenMode mode) {
 #endif
 
 void destroy_presentation(FrontendPresentation& presentation) {
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    // Interop resources borrow the SDL renderer. Release them while both
+    // that renderer and the producer GL context still exist, including errors.
+    if(nds_survivor_host_enabled()) {
+        nds_compute_host_make_current();
+        nds_survivor_host_stop();
+    }
+#endif
     for (SDL_Texture*& texture : presentation.sample_targets) {
         if (texture) SDL_DestroyTexture(texture);
         texture = nullptr;
@@ -1458,7 +1474,7 @@ void destroy_presentation(FrontendPresentation& presentation) {
     presentation.windows[1] = nullptr;
 }
 
-SDL_Renderer* create_renderer(SDL_Window* window) {
+SDL_Renderer* create_renderer(SDL_Window* window,bool survivor_target=false) {
 #if defined(NDS_HAVE_SDL3)
     // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
     // render drivers direct3d11 first; SDL2 ordered direct3d (D3D9) first, and
@@ -1480,6 +1496,12 @@ SDL_Renderer* create_renderer(SDL_Window* window) {
     // own choice wherever it does not exist (Linux, macOS), then to software.
     // NDS_SDL_RENDER_DRIVER forces a specific driver for diagnosis.
     SDL_Renderer* renderer = nullptr;
+#if defined(_WIN32)
+    if(survivor_target)
+        SDL_SetHint(SDL_HINT_RENDER_DIRECT3D_THREADSAFE,"1");
+#else
+    (void)survivor_target;
+#endif
     if (const char* forced = std::getenv("NDS_SDL_RENDER_DRIVER")) {
         if (forced[0] != '\0') {
             renderer = SDL_CreateRenderer(window, forced);
@@ -1499,6 +1521,7 @@ SDL_Renderer* create_renderer(SDL_Window* window) {
                      name ? name : "(unknown)");
     }
 #else
+    (void)survivor_target;
     SDL_Renderer* renderer = SDL_CreateRenderer(
         window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
     if (!renderer)
@@ -1755,7 +1778,7 @@ bool create_presentation(const NdsFrontendOptions& options,
         options.internal_resolution > 1u;
     presentation.gl_top = presentation.separate &&
         allow_gl_top &&
-        direct_top_requested &&
+        (direct_top_requested || nds_survivor_host_requested()) &&
         nds_gpu3d_renderer_prefers_compute() &&
         direct_enabled;
 #endif
@@ -1860,7 +1883,11 @@ bool create_presentation(const NdsFrontendOptions& options,
             return false;
         }
         presentation.renderers[1] =
-            create_renderer(presentation.windows[1]);
+            create_renderer(presentation.windows[1]
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+                ,presentation.gl_top&&nds_survivor_host_requested()
+#endif
+            );
         if (!presentation.renderers[1]) {
             std::fprintf(stderr, "[sdl] bottom renderer failed: %s\n",
                          SDL_GetError());
@@ -1998,7 +2025,11 @@ bool apply_performance_governor_stage(
     nds_gpu3d_set_display_readback_latency(stage >= 1u);
     presentation.sample_scale =
         stage >= 2u ? 1 : presentation.configured_sample_scale;
-    nds_gpu2d_set_hd_emit(target_scale > 1u && presentation.gl_top);
+    nds_gpu2d_set_hd_emit(target_scale > 1u && presentation.gl_top
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+                        && !nds_survivor_host_enabled()
+#endif
+    );
     return true;
 }
 
@@ -2033,6 +2064,16 @@ struct OwnedPresentationFrame {
         valid=false; gl={}; pcm.clear();
         powered_off=nds_powered_off();
         if (powered_off || nds_gpu3d_compute_runtime_failed()) return;
+        if(nds_survivor_host_enabled() &&
+           (gl.survivors=nds_gpu2d_survivor_current())) {
+            for(unsigned screen=0;screen<2;++screen) {
+                widths[screen]=gl.survivors->widths[screen];
+                const auto* base=gl.survivors->native_base[screen];
+                pixels[screen].assign(base,base+256u*192u);
+            }
+            native_top.clear();direct=true;adaptive_ticks=0;
+            gl.scale=nds_gpu3d_internal_scale();
+        } else {
         const auto* native=nds_gpu2d_framebuffer(0);
         native_top.assign(native,native+256u*192u);
         const uint32_t* top=native;
@@ -2071,6 +2112,7 @@ struct OwnedPresentationFrame {
         gl.native_texture=nds_gpu3d_compute_output_texture();
         gl.hires_texture=nds_gpu3d_compute_output_texture_hires();
         gl.scale=nds_gpu3d_internal_scale();
+        }
         std::array<int16_t,2048> samples{};
         for (uint32_t frames; (frames=nds_spu_read_output(samples.data(),1024));) {
             if (pcm.size()+frames*2u>65536u)
@@ -2099,6 +2141,78 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
 #endif
                                   ) {
     PresentationTicks ticks{};
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    const auto* survivors=owned?owned->survivors:
+        nds_survivor_host_enabled()?nds_gpu2d_survivor_current():nullptr;
+    if(presentation.gl_top&&nds_survivor_host_enabled()&&survivors) {
+        const bool menu=runtime_ui&&(recomp_runtime_ui_is_open(runtime_ui)||
+                                    recomp_runtime_ui_toast_visible(runtime_ui));
+        auto overlay=[&](unsigned screen,std::vector<uint32_t>& black,std::vector<uint32_t>& white) {
+            if(!menu)return;
+            const unsigned w=survivors->widths[screen];
+            black.assign(w*192,0xFF000000u);white.assign(w*192,0xFFFFFFFFu);
+            for(auto* pixels:{black.data(),white.data()})
+                recomp_runtime_ui_render_argb8888(runtime_ui,pixels,w,192,w*4);
+        };
+        std::vector<uint32_t> black,white;
+        overlay(0,black,white);
+        NdsComputePresentTicks top{};
+        if(!nds_survivor_host_present_top(presentation.windows[0],survivors,
+            black.empty()?nullptr:black.data(),white.empty()?nullptr:white.data(),
+            presentation.antialiasing,&top)){ticks.ok=false;return ticks;}
+        ticks.upload+=top.upload;ticks.draw+=top.draw;ticks.swap+=top.swap;
+
+        auto* renderer=presentation.renderers[1];
+        const unsigned w=survivors->widths[1];
+        const SDL_Rect destination{0,0,int(w),192};
+        SDL_Texture* gpu_bottom=nullptr;
+        if(survivors->needs_gpu[1]&&!survivors->capture) {
+            int dw{},dh{};
+#if defined(NDS_HAVE_SDL3)
+            SDL_GetCurrentRenderOutputSize(renderer,&dw,&dh);
+#else
+            SDL_GetRendererOutputSize(renderer,&dw,&dh);
+#endif
+            int vw=std::max(dw,1),vh=std::max(1,int(int64_t(vw)*192/w));
+            if(vh>dh){vh=std::max(dh,1);vw=std::max(1,int(int64_t(vh)*w/192));}
+            black.clear();white.clear();overlay(1,black,white);
+            NdsComputePresentTicks bottom{};
+            gpu_bottom=nds_survivor_host_present_bottom(survivors,vw,vh,
+                black.empty()?nullptr:black.data(),white.empty()?nullptr:white.data(),
+                presentation.antialiasing,&bottom);
+            if(!gpu_bottom){ticks.ok=false;return ticks;}
+            ticks.upload+=bottom.upload;ticks.draw+=bottom.draw;ticks.swap+=bottom.swap;
+        } else {
+            // The legacy SDL image remains native 2D data. A wider logical
+            // LCD centers it without invoking the 3D image observer.
+            std::vector<uint32_t> centered;
+            const uint32_t* pixels=survivors->native_base[1];
+            if(w!=256) {
+                centered.assign(w*192,0xFF000000u);
+                for(unsigned y=0;y<192;++y)
+                    std::copy_n(pixels+y*256,256,centered.data()+y*w+(w-256)/2);
+                pixels=centered.data();
+            }
+            pixels=runtime_menu_overlay(runtime_ui,pixels,w,192);
+            const auto start=SDL_GetPerformanceCounter();
+            SDL_UpdateTexture(presentation.textures[1],nullptr,pixels,w*4);
+            ticks.upload+=SDL_GetPerformanceCounter()-start;
+        }
+        auto start=SDL_GetPerformanceCounter();
+        SDL_SetRenderDrawColor(renderer,20,20,20,255);SDL_RenderClear(renderer);
+        if(gpu_bottom)render_texture(renderer,gpu_bottom,&destination);
+        else render_screen(presentation,1,destination);
+        if(virtual_stylus_visible) {
+            const SDL_Rect touch{int(w-256)/2,0,256,192};
+            draw_virtual_stylus(renderer,touch,virtual_stylus_x,virtual_stylus_y);
+        }
+        draw_savestate_notice(renderer,destination,savestate_notice);
+        ticks.draw+=SDL_GetPerformanceCounter()-start;
+        start=SDL_GetPerformanceCounter();SDL_RenderPresent(renderer);
+        ticks.swap+=SDL_GetPerformanceCounter()-start;
+        return ticks;
+    }
+#endif
     if (presentation.gl_top) {
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
         NdsGpu2dDirectFrame direct_frame{};
@@ -2318,8 +2432,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
             return 1;
         }
     }
+    if(presentation.gl_top&&nds_survivor_host_requested()&&nds_compute_host_active()) {
+        nds_gpu2d_set_survivor_widths(
+            presentation.screen_widths[0],presentation.screen_widths[1]);
+        if(!nds_survivor_host_start(presentation.renderers[1]))
+            std::fprintf(stderr,"[gpu3d] CPU survivor presentation unavailable; using existing renderer\n");
+    }
     nds_gpu2d_set_direct_present(
-        nds_compute_host_has_visible_context());
+        nds_compute_host_has_visible_context()&&!nds_survivor_host_enabled());
     const char* window_direct = std::getenv("NDS_COMPUTE_WINDOW_DIRECT");
     bool qualified_hd_windows = false;
 #if defined(NDS_MKDS_PERFORMANCE) && !defined(NDS_MPH_PERFORMANCE)
@@ -4031,6 +4151,12 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         // Quit/control requests are resolved while the producer is joined.
         // Never start another guest transaction after SDL_QUIT/window close.
         if (!running) break;
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+        if(nds_survivor_host_enabled()) {
+            nds_gpu2d_set_survivor_widths(
+                presentation.screen_widths[0],presentation.screen_widths[1]);
+        }
+#endif
         const uint64_t phase0 = SDL_GetPerformanceCounter();
         uint64_t latency_cycles_emu = latency_trace ? nds_frontend_latency::cycles() : 0;
         uint64_t worker_emu_begin=phase0, worker_emu_end=phase0;
@@ -4155,7 +4281,24 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         const uint64_t adaptive_start=SDL_GetPerformanceCounter();
         bool direct_present=false;
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
-        if (cpu_handoff) {
+        const auto* survivor_frame=cpu_handoff?presented->gl.survivors:
+            nds_survivor_host_enabled()?nds_gpu2d_survivor_current():nullptr;
+        if(survivor_frame) {
+            native_top=survivor_frame->native_base[0];top_pixels=native_top;
+            bottom_pixels=survivor_frame->native_base[1];
+            top_width=survivor_frame->widths[0];bottom_width=survivor_frame->widths[1];
+            direct_present=true;
+            if(frame_digest_enabled()||g_black_band.armed) {
+                native_top=nds_survivor_host_read(survivor_frame,0,false,nullptr);
+                if(frame_digest_enabled()) {
+                    top_pixels=native_top;
+                    bottom_pixels=nds_survivor_host_read(survivor_frame,1,true,&bottom_width);
+                }
+                observe_top_black_bands(native_top,shown_frames,
+                    cpu_handoff?presented->system_timestamp:scheduler_system_timestamp());
+            }
+            phase_adaptive_ticks+=SDL_GetPerformanceCounter()-adaptive_start;
+        } else if (cpu_handoff) {
             native_top=presented->native_top.data();
             top_pixels=presented->pixels[0].data(); bottom_pixels=presented->pixels[1].data();
             top_width=presented->widths[0]; bottom_width=presented->widths[1];

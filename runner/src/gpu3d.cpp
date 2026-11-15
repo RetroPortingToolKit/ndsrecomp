@@ -22,6 +22,7 @@
 
 #include "io.h"
 #include "gpu2d.h"
+#include "gpu3d_survivors.h"
 #include "scheduler.h"
 #include "savestate.h"
 #include "state.h"
@@ -52,6 +53,7 @@ using NdsAcceleratedRenderer = melonDS::GLRenderer;
 using NdsAcceleratedRenderer = melonDS::ComputeRenderer;
 #endif
 #include "ComputeHost.h"
+#include "melonds_compute/CpuSurvivorHost.h"
 #endif
 
 namespace {
@@ -383,6 +385,13 @@ void compute_submit_readback() {
 // not leave the whole raster command chain buffered until the final swap.
 void compute_publish_display_frame() {
     if (!g_compute_rendered_frame) return;
+    if (nds_gpu2d_survivors_enabled()) {
+        // CPU layer production never consumes ordinary 3D pixels. Submit
+        // early, then read back only when capture or an explicit observer asks.
+        g_compute_display_deferred = false;
+        glFlush();
+        return;
+    }
     const bool needs_cpu = nds_gpu2d_requires_3d_readback() ||
                            g_display_readback_latency;
     if (needs_cpu) {
@@ -1177,6 +1186,9 @@ bool gpu3d_savestate_validate(const NdsGpu3dSaveState& in,
 bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
                             std::string* error) {
     if (!gpu3d_savestate_validate(in, error)) return false;
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    nds_survivor_host_invalidate();
+#endif
 #if defined(NDS_MKDS_MODEL_HLE)
     mkds_model::clear_cache();
 #endif
@@ -1248,6 +1260,9 @@ bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
 }
 
 void nds_gpu3d_reset() {
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    nds_survivor_host_invalidate();
+#endif
 #if defined(NDS_MKDS_MODEL_HLE)
     mkds_model::clear_cache();
 #endif
@@ -1540,6 +1555,11 @@ void nds_gpu3d_vcount144() {
 }
 
 void nds_gpu3d_vblank() {
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    // Pair the just-completed CPU rows with the image they observed, before
+    // geometry swap and VCount215 can render the next 3D image over it.
+    nds_survivor_host_capture();
+#endif
 #if defined(NDS_NATIVE_3D)
     NdsEmuScope region(NDS_EMU_GEOM);
     if (g_native_3d.VBlank()) native_3d_latch();

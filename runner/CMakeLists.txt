@@ -1006,6 +1006,8 @@ if(NDS_ENABLE_COMPUTE_RENDERER)
         src/melonds_compute/GPU_OpenGL.cpp
         src/melonds_compute/PlatformCompute.cpp
         src/melonds_compute/ComputeHost.cpp
+        src/melonds_compute/CpuSurvivorHost.cpp
+        src/melonds_compute/D3D11InteropTarget.cpp
         vendor/melonds/OpenGLSupport.cpp
         vendor/melonds/glad/glad.c
         vendor/melonds/xxhash/xxhash.c)

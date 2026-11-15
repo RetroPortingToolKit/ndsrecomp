@@ -22,6 +22,10 @@
 #include "title_patches.h"
 #include "vram.h"
 #include "emu_profile.h"
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+#include "melonds_compute/CpuSurvivorHost.h"
+#include "cpu_render_handoff.h"
+#endif
 
 namespace {
 
@@ -1840,6 +1844,12 @@ void latch_line(int y, LineJob& job) {
         const bool capture_uses_3d = job.cap &&
             ((job.unit[0].capture >> 29) & 3u) != 1u &&
             ((job.unit[0].capture & (1u << 24)) || job.bg0_3d);
+        if(g_survivors_enabled&&g_survivors[job.buffer].capture)
+            // Capture may latch after the last raster submission. Its CPU
+            // compositor must observe that image even though ordinary display
+            // deliberately did not schedule a readback. Subsequent rows reuse
+            // the completed copy through the existing synchronization helper.
+            nds_gpu3d_sync_display_frame();
         const uint32_t* const line3d = capture_uses_3d
             ? nds_gpu3d_capture_line(y) : nds_gpu3d_line(y);
         if (line3d) {
@@ -2283,8 +2293,11 @@ const nds_survivors::Frame* nds_gpu2d_survivor_building() {
 }
 
 void nds_gpu2d_reset(){
-    invalidate_survivors();
     drain_pool(NDS_GPU2D_FENCE_FRAME);
+    invalidate_survivors();
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    nds_survivor_host_invalidate();
+#endif
     g_unit={};
     g_front = 0;
     g_direct_frame_active = false;
@@ -2341,6 +2354,14 @@ void nds_gpu2d_reset(){
     for (auto& frame : g_direct_object_frame) frame.fill(0u);
 }
 void nds_gpu2d_stop(){
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    // A completed handoff packet can still borrow the previous frame while
+    // ARM7 requests power-off. Join services this request after presentation,
+    // before invalidating either metadata slot or its native base image.
+    if(nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { nds_gpu2d_stop(); });return;
+    }
+#endif
     drain_pool(NDS_GPU2D_FENCE_FRAME);
     invalidate_survivors();
     for (auto& buffers : g_fb)
@@ -2409,6 +2430,9 @@ bool gpu2d_savestate_export(NdsGpu2dSaveState* out) {
     out->front = static_cast<uint8_t>(g_front);
     out->frame_capture_active = g_frame_capture_active ? 1u : 0u;
     out->present_capture_active = g_present_capture_active ? 1u : 0u;
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    if(!nds_survivor_host_snapshot(out))return false;
+#endif
     return true;
 }
 
@@ -2438,6 +2462,9 @@ bool gpu2d_savestate_import(const NdsGpu2dSaveState& in,
     if (!gpu2d_savestate_validate(in, error)) return false;
     drain_pool(NDS_GPU2D_FENCE_FRAME);
     invalidate_survivors();
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    nds_survivor_host_invalidate();
+#endif
     g_unit[0] = import_unit(in.unit[0]);
     g_unit[1] = import_unit(in.unit[1]);
     size_t pos = 0;
@@ -2637,6 +2664,10 @@ void nds_gpu2d_vblank(){
 }
 const uint32_t* nds_gpu2d_framebuffer(int screen){
     drain_pool(NDS_GPU2D_FENCE_PRESENT);
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    if(nds_survivor_host_enabled())
+        if(const auto* image=nds_survivor_host_observe(screen,false,nullptr))return image;
+#endif
     return g_fb[g_front][screen & 1].data();
 }
 void nds_gpu2d_set_adaptive_skybox_fill(bool enabled) {
@@ -2679,6 +2710,7 @@ bool nds_gpu2d_requires_3d_readback() {
     if ((unit.capture & 0x80000000u) != 0u || unit.capture_latch ||
         g_frame_capture_active)
         return true;
+    if(g_survivors_enabled)return false;
     return !g_direct_frame_active &&
            !nds_gpu3d_display_readback_latency();
 }
@@ -3128,6 +3160,10 @@ void composite_adaptive_frame(const AdaptiveCtx& ctx) {
 }  // namespace
 
 const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    if(nds_survivor_host_enabled())
+        if(const auto* image=nds_survivor_host_observe(screen,true,width))return image;
+#endif
     drain_pool(NDS_GPU2D_FENCE_PRESENT);
     const uint32_t* native = nds_gpu2d_framebuffer(screen);
     const bool engine_a_on_top = (nds_powercontrol9() & 0x8000u) != 0;

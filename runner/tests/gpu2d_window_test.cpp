@@ -27,6 +27,7 @@ uint64_t g_wide_line_reads = 0;
 uint64_t g_native_line_reads = 0, g_attribute_line_reads = 0, g_capture_line_reads = 0;
 bool g_3d_visible = true;
 uint64_t g_display_sync_requests = 0;
+bool g_capture_copy_pending = false, g_capture_saw_stale_copy = false;
 uint16_t g_test_powercontrol = 0x8002u;
 uint16_t g_3d_render_xpos = 0;
 uint32_t g_3d_render_polygon_count = 0;
@@ -920,7 +921,9 @@ bool test_adaptive_helpers_match_serial() {
 
 // Minimal device implementations required by the production renderer object.
 uint16_t nds_powercontrol9() { return g_test_powercontrol; }
-void nds_gpu3d_sync_display_frame() { ++g_display_sync_requests; }
+void nds_gpu3d_sync_display_frame() {
+    ++g_display_sync_requests;g_capture_copy_pending=false;
+}
 const uint8_t* nds_vram_renderer_palette(int) { return g_palette.data(); }
 const uint8_t* nds_vram_renderer_oam(int) { return g_oam.data(); }
 const NdsVramRendererView* nds_vram_renderer_view(int) { return &g_view; }
@@ -934,6 +937,7 @@ void nds_vram_note_capture_write() {}
 uint32_t nds_video_read(int, uint32_t, uint32_t) { return 0; }
 const uint32_t* nds_gpu3d_line(int) { ++g_native_line_reads; return g_3d_line.data(); }
 const uint32_t* nds_gpu3d_capture_line(int) {
+    g_capture_saw_stale_copy|=g_capture_copy_pending;
     ++g_capture_line_reads;
     return g_capture_reference_override ? g_capture_reference_line.data() : g_3d_line.data();
 }
@@ -1061,6 +1065,7 @@ bool test_survivor_line_ownership() {
     nds_gpu2d_set_survivor_widths(448,448);nds_gpu2d_set_survivors(true);
     nds_gpu2d_set_threaded(true,2);nds_gpu2d_start_frame();
     const auto native_reads=g_native_line_reads,wide_reads=g_wide_line_reads,attr_reads=g_attribute_line_reads;
+    const auto ordinary_syncs=g_display_sync_requests;
     nds_gpu2d_render_scanline(0);
     g_test_powercontrol=0x0202;g_unit[0].bldcnt=0x0841;g_unit[0].eva=7;g_unit[0].evb=9;
     g_unit[0].master_bright=0x4003;g_3d_render_xpos=5;g_3d_visible=false;
@@ -1087,6 +1092,7 @@ bool test_survivor_line_ownership() {
     if(!require(current->wide_layers[(96+10)*4]!=native[0]))return false;
     if(!require(current->native_base[0]==g_fb[current->buffer][0].data()&&current->native_base[1]==g_fb[current->buffer][1].data()))return false;
     if(!require(g_native_line_reads==native_reads&&g_wide_line_reads==wide_reads&&g_attribute_line_reads==attr_reads))return false;
+    if(!require(g_display_sync_requests==ordinary_syncs))return false;
     nds_gpu2d_render_scanline(0);
     if(!require(nds_gpu2d_survivor_current()==current&&current->identity==identity&&current->native_layers[10*4]==rgb6(0x001F)))return false;
     NdsGpu2dSaveState saved;
@@ -1102,10 +1108,14 @@ bool test_survivor_line_ownership() {
     if(!require(!nds_gpu2d_survivor_building()&&g_fb[back][0][0]==marker))return false;
     nds_gpu2d_reset();g_unit[0].dispcnt=0x00010108;g_test_powercontrol=0x8202;
     nds_gpu2d_start_frame();g_unit[0].capture=0x80000000u;
+    // Simulate a capture armed after GPU submission: the CPU image is stale
+    // until the explicit observer synchronizes it, before the first fetch.
+    g_capture_copy_pending=true;g_capture_saw_stale_copy=false;
     const auto cap_reads=g_capture_line_reads;
     for(int y=0;y<192;++y)nds_gpu2d_render_scanline(y);
     nds_gpu2d_vblank();
     if(!require(nds_gpu2d_survivor_pending()&&nds_gpu2d_survivor_pending()->capture&&g_capture_line_reads>cap_reads))return false;
+    if(!require(!g_capture_copy_pending&&!g_capture_saw_stale_copy))return false;
     nds_gpu2d_set_survivors(false);nds_gpu2d_set_threaded(false,1);
     g_adaptive_hud_anchor=g_adaptive_skybox_fill=false;g_3d_output_width=256;g_test_powercontrol=0x8002;
     return true;

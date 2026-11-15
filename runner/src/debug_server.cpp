@@ -29,6 +29,7 @@
 #include "gpu2d.h"
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
 #include "melonds_compute/ComputeHost.h"
+#include "melonds_compute/CpuSurvivorHost.h"
 #endif
 #include "gpu3d.h"
 #if defined(NDS_MKDS_MODEL_HLE)
@@ -1461,6 +1462,13 @@ std::string handle(const std::string& line) {
             ",\"command_cache\":" + nds_gpu3d_command_batch_json() + "}";
 #else
         return "{\"implementation\":\"LLE\"}";
+#endif
+    }
+    if (cmd == "survivor_frame") {
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+        return nds_survivor_host_json();
+#else
+        return "{\"enabled\":false}";
 #endif
     }
     if (cmd == "gpu3d_backend") {
