@@ -42,7 +42,7 @@ struct State {
     std::array<std::array<uint16_t,16>,4> packets{}; // firmware,touch,power,mic
     uint32_t samples=0,phase=0,filter=20,led=1,led_frame=0,led_actual=1;
     uint32_t mic_flags=0,mic_base=0,mic_size=0,mic_pos=0,mic_period=1,mic_half=0;
-    uint32_t sleep_flags=0,sleep_pm=0;
+    uint32_t sleep_flags=0,sleep_pm=0,sleep_rcnt=0;
     uint32_t touch_pending=0,touch_raw=0;
     uint64_t led_next=Never,mic_next=Never;
     std::array<uint64_t,4> touch_next{Never,Never,Never,Never};
@@ -173,6 +173,7 @@ bool power_request(const std::array<uint16_t,16>& c,uint64_t now){
     if(state.sleep)return reply(8,cmd,3,now);
     uint8_t previous;if(!pm_read(0,&previous))return false;
     state.sleep=true;state.sleep_pm=previous;state.sleep_flags=c[1];
+    state.sleep_rcnt=nds_io_offline_sleep_enter(state.sleep_flags,c[2],now);
     state.led=2;state.led_frame=0;led_mode(2);pm_mask(0,1);
     nds_offline_sound_sleep(true,now);nds_spu_write(0x04000504u,0,2);
     return true; // SDK sleep replies only after the selected wake source.
@@ -321,6 +322,7 @@ void nds_offline_arm7_advance(uint64_t now){
         }
         pm_write(0,uint8_t(state.sleep_pm));
         power_switch((state.sleep_flags&0x20)?6:7);power_switch((state.sleep_flags&0x40)?4:5);
+        nds_io_offline_sleep_leave(state.sleep_flags,uint16_t(state.sleep_rcnt));
         pm_mask(1,0);nds_spu_write(0x04000504u,512,2);
         state.sleep=false;nds_io_offline_reply(wire(8,0),now);
         // Restoring the SDK IRQ mask dispatches one pending callback, not every
@@ -374,18 +376,18 @@ struct Reader {
     bool blob(std::vector<uint8_t>* out){const uint32_t size=word();if(!valid||size>0x800000||size>in.size()-std::min(at,in.size()))return false;out->assign(in.begin()+at,in.begin()+at+size);at+=size;return true;}
 };
 bool decode(const std::vector<uint8_t>& in,State* out,std::vector<uint8_t>* sound,std::vector<uint8_t>* card,std::string* error){
-    Reader r{in};if(r.word()!=0x3746464Fu||r.word()!=1||r.word()!=game)return fail(error,"Offline ARM7 state identity is invalid");
+    Reader r{in};if(r.word()!=0x3746464Fu||r.word()!=2||r.word()!=game)return fail(error,"Offline ARM7 state identity is invalid");
     State next;
     uint32_t booleans[5];for(auto& value:booleans)value=r.word();
     for(auto value:booleans)if(value>1)return fail(error,"Offline ARM7 state has invalid flags");
     next.active=booleans[0];next.touch_auto=booleans[1];next.mic_auto=booleans[2];next.sleep=booleans[3];next.reset_pending=booleans[4];
     for(auto& packet:next.packets)for(auto& value:packet){const auto cell=r.word();if(cell>65535)return fail(error,"Offline ARM7 packet cell is invalid");value=uint16_t(cell);}
-    uint32_t* fields[]={&next.samples,&next.phase,&next.filter,&next.led,&next.led_frame,&next.led_actual,&next.mic_flags,&next.mic_base,&next.mic_size,&next.mic_pos,&next.mic_period,&next.mic_half,&next.sleep_flags,&next.sleep_pm,&next.touch_pending,&next.touch_raw};
+    uint32_t* fields[]={&next.samples,&next.phase,&next.filter,&next.led,&next.led_frame,&next.led_actual,&next.mic_flags,&next.mic_base,&next.mic_size,&next.mic_pos,&next.mic_period,&next.mic_half,&next.sleep_flags,&next.sleep_pm,&next.sleep_rcnt,&next.touch_pending,&next.touch_raw};
     for(auto* field:fields)*field=r.word();
     next.led_next=r.wide();next.mic_next=r.wide();
     for(auto& at:next.touch_next)at=r.wide();
     for(auto& pattern:next.patterns)for(auto& value:pattern)value=r.word();
-    if(!r.valid||(!game&&next.active)||next.samples>4||next.phase>=263||next.filter>255||next.led>15||next.led_actual>3||next.mic_flags>255||next.mic_half>65535||next.sleep_pm>255||next.touch_pending>next.samples||
+    if(!r.valid||(!game&&next.active)||next.samples>4||next.phase>=263||next.filter>255||next.led>15||next.led_actual>3||next.mic_flags>255||next.mic_half>65535||next.sleep_pm>255||next.sleep_rcnt>65535||next.touch_pending>next.samples||
        (next.touch_auto&&!next.samples)||(next.mic_auto&&(!next.mic_period||!next.mic_size||next.mic_pos>=next.mic_size||!ram(next.mic_base,next.mic_size))))return fail(error,"Offline ARM7 driver state is invalid");
     for(unsigned i=0;i<4;++i)if((!next.touch_auto||i>=next.samples)&&next.touch_next[i]!=Never)return fail(error,"Offline ARM7 touch deadline is invalid");
     if(!next.mic_auto&&next.mic_next!=Never)return fail(error,"Offline ARM7 microphone deadline is invalid");
@@ -397,10 +399,10 @@ bool decode(const std::vector<uint8_t>& in,State* out,std::vector<uint8_t>* soun
 bool nds_offline_arm7_snapshot(std::vector<uint8_t>* out,std::string* error){
     if(!out)return fail(error,"Offline ARM7 snapshot output is null");
     std::vector<uint8_t> sound,card;if(!nds_offline_sound_snapshot(&sound)||!nds_offline_card_snapshot(&card))return fail(error,"Offline ARM7 component snapshot failed");
-    std::vector<uint8_t> bytes;put32(bytes,0x3746464F);put32(bytes,1);put32(bytes,game);
+    std::vector<uint8_t> bytes;put32(bytes,0x3746464F);put32(bytes,2);put32(bytes,game);
     for(bool value:{state.active,state.touch_auto,state.mic_auto,state.sleep,state.reset_pending})put32(bytes,value);
     for(const auto& packet:state.packets)for(auto value:packet)put32(bytes,value);
-    for(auto value:{state.samples,state.phase,state.filter,state.led,state.led_frame,state.led_actual,state.mic_flags,state.mic_base,state.mic_size,state.mic_pos,state.mic_period,state.mic_half,state.sleep_flags,state.sleep_pm,state.touch_pending,state.touch_raw})put32(bytes,value);
+    for(auto value:{state.samples,state.phase,state.filter,state.led,state.led_frame,state.led_actual,state.mic_flags,state.mic_base,state.mic_size,state.mic_pos,state.mic_period,state.mic_half,state.sleep_flags,state.sleep_pm,state.sleep_rcnt,state.touch_pending,state.touch_raw})put32(bytes,value);
     put64(bytes,state.led_next);put64(bytes,state.mic_next);for(auto at:state.touch_next)put64(bytes,at);
     for(const auto& pattern:state.patterns)for(auto value:pattern)put32(bytes,value);
     put32(bytes,uint32_t(sound.size()));bytes.insert(bytes.end(),sound.begin(),sound.end());put32(bytes,uint32_t(card.size()));bytes.insert(bytes.end(),card.begin(),card.end());

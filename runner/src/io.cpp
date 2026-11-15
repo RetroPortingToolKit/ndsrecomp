@@ -1827,6 +1827,17 @@ bool nds_io_offline_peek(uint32_t* word) {
     *word=g_fifo[0][g_fifo_head[0]];return true;
 }
 uint32_t nds_io_offline_wake_flags() {return g_if[1];}
+uint16_t nds_io_offline_sleep_enter(uint32_t flags,uint16_t keys,uint64_t now) {
+    OfflineArm7Context context(now);nds_tick_rtc(now);
+    const uint16_t previous=g_rcnt;
+    // The same canonical register assignments as KEYCNT/RCNT MMIO writes.
+    if(flags&1u)g_keycnt[1]=uint16_t((keys|0x4000u)&0xC3FFu);
+    if(flags&2u)g_rcnt=uint16_t((g_rcnt&~0xC000u)|0x8140u);
+    return previous;
+}
+void nds_io_offline_sleep_leave(uint32_t flags,uint16_t rcnt) {
+    if(flags&2u)g_rcnt=rcnt;
+}
 void nds_io_offline_irq_clear(uint32_t bits) {nds_clear_irq(1,bits);}
 void nds_io_offline_set_tick_epoch_address(uint32_t address) {g_offline_tick_epoch_address=address;}
 bool nds_io_offline_tick_deadline(uint64_t absolute_os_tick,uint64_t now,uint64_t* deadline) {

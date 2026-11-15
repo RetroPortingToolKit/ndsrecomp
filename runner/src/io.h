@@ -39,6 +39,8 @@ bool nds_io_offline_peek(uint32_t* word);
 bool nds_io_offline_memory(uint32_t addr, uint8_t* bytes, uint32_t size,
                             bool write, uint64_t now);
 uint32_t nds_io_offline_wake_flags();
+uint16_t nds_io_offline_sleep_enter(uint32_t flags,uint16_t keys,uint64_t now);
+void nds_io_offline_sleep_leave(uint32_t flags,uint16_t rcnt);
 void nds_io_offline_irq_clear(uint32_t bits);
 void     nds_io_reset();
 // Clear observer history without changing any guest-visible device state.
