@@ -239,6 +239,8 @@ uint32_t nds_io_debug_read(int cpu, uint32_t addr, uint32_t width);
 uint16_t nds_exmemcnt(int cpu);
 // ARM7 POWCNT2/WIFIWAITCNT control the 0x04800000 Wi-Fi bus wait states.
 uint16_t nds_powercontrol7();
+// Whole native cartridge-removal shutdown; leaves console/display power intact.
+void nds_io_offline_card_stop(uint64_t now);
 uint16_t nds_powercontrol9();
 uint16_t nds_wifiwaitcnt();
 uint8_t nds_wramcnt();

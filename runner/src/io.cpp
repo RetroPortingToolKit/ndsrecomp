@@ -2439,6 +2439,17 @@ uint32_t nds_io_debug_read(int cpu, uint32_t addr, uint32_t width) {
 
 uint16_t nds_exmemcnt(int cpu) { return g_exmemcnt[cpu & 1]; }
 uint16_t nds_powercontrol7() { return g_powercontrol7; }
+void nds_io_offline_card_stop(uint64_t now) {
+    nds_tick_spu(now);
+    nds_spu_write(0x04000500u, nds_spu_read(0x04000500u, 2) & ~0x8000u, 2);
+    nds_spu_write(0x04000504u, 0, 2);
+    pm_release();
+    pm_write(0);
+    pm_write(static_cast<uint8_t>(g_pm_regs[0] & ~0x11u));
+    pm_release();
+    g_powercontrol7 &= ~0x0003u;
+    nds_wifi_set_power_control(false, now);
+}
 uint16_t nds_powercontrol9() {
     return static_cast<uint16_t>(io_mem_read(0x04000304u, 2));
 }
