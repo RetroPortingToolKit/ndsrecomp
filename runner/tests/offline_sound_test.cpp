@@ -272,6 +272,28 @@ int main() {
   check(replies.size() == 1);
   nds_offline_sound_advance(220160);
   check(replies.size() == 2 && reply_times[1] == 220160);
+  // PM masks software sound IRQs. Keep hardware output time, then resume one
+  // overdue callback at the first future original periodic phase.
+  boot(false, true);
+  nds_offline_sound_sleep(true, 0);
+  check(nds_offline_sound_next_event(0) == UINT64_MAX);
+  check(!nds_offline_sound_can_receive(0, false));
+  nds_offline_sound_advance(200000);
+  check(replies.empty());
+  check(nds_spu_debug_output_produced() == 200000 / 1024);
+  std::vector<uint8_t> asleep, after_status;
+  check(nds_offline_sound_snapshot(&asleep));
+  const auto sound_status = nds_offline_sound_json();
+  check(sound_status.find("\"sleeping\":true") != std::string::npos);
+  check(nds_offline_sound_snapshot(&after_status));
+  check(asleep == after_status);
+  std::string sleep_error;
+  check(nds_offline_sound_import(asleep, &sleep_error));
+  check(nds_offline_sound_next_event(200000) == UINT64_MAX);
+  nds_offline_sound_sleep(false, 220000);
+  check(replies.size() == 1 && reply_times[0] == 220000);
+  check(nds_offline_sound_next_event(220000) == 220160);
+  check(nds_offline_sound_can_receive(0, false));
   boot();
   // Full SSEQ->bank->PSG voice path, then exact caller-visible packed writes.
   put<uint32_t>(0x02008038, 1);

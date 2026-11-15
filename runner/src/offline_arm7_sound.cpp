@@ -12,6 +12,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <sstream>
 #include <type_traits>
 
 // Canonical IO owner supplies bounded physical memory access and FIFO IRQs.
@@ -53,7 +54,7 @@ struct Sound {
   uint32_t shared = 0, weaklock = 0, stronglock = 0, rng = 0;
   int32_t masterpan = -1, surround = 0;
   uint8_t queued = 0, profile_id = 0;
-  uint8_t active = 0, fault = 0, in_advance = 0;
+  uint8_t active = 0, fault = 0, in_advance = 0, sleeping = 0;
 } g;
 struct SourceSpan {
   const uint8_t *data;
@@ -1506,6 +1507,36 @@ bool nds_offline_sound_takeover(uint64_t now, uint64_t next) {
   return true;
 }
 const char *nds_offline_sound_takeover_status() { return takeover_status; }
+std::string nds_offline_sound_json() {
+  unsigned voices = 0, players = 0, tracks = 0;
+  for (unsigned i = 0; i < 16; ++i) {
+    voices += g.work.voice(i).flag(v::Flags, 1);
+    players += g.work.player(i).flag(p::Flags, p::Active);
+  }
+  for (unsigned i = 0; i < 32; ++i)
+    tracks += g.work.track(i).flag(t::Flags, t::Active);
+  uint64_t fingerprint = 14695981039346656037ull;
+  for (auto byte : g.work.bytes) {
+    fingerprint ^= byte;
+    fingerprint *= 1099511628211ull;
+  }
+  std::ostringstream out;
+  out << "{\"ready\":" << (nds_offline_sound_ready() ? "true" : "false")
+      << ",\"active\":" << (g.active ? "true" : "false")
+      << ",\"fault\":" << (g.fault ? "true" : "false")
+      << ",\"sleeping\":" << (g.sleeping ? "true" : "false")
+      << ",\"now\":" << g.now << ",\"next\":" << g.next
+      << ",\"queued\":" << unsigned(g.queued) << ",\"active_voices\":" << voices
+      << ",\"active_players\":" << players << ",\"active_tracks\":" << tracks
+      << ",\"work_fingerprint\":" << fingerprint << ",\"track_positions\":[";
+  for (unsigned i = 0; i < 32; ++i) {
+    if (i)
+      out << ',';
+    out << g.work.track(i).get<uint32_t>(t::Position);
+  }
+  out << "]}";
+  return out.str();
+}
 void nds_offline_sound_reset() {
   source_dirty = true;
   source_spans.clear();
@@ -1530,7 +1561,7 @@ bool nds_offline_sound_preflight(uint32_t payload, bool error) {
   return valid;
 }
 bool nds_offline_sound_can_receive(uint32_t payload, bool error) {
-  return g.active && !g.fault &&
+  return g.active && !g.fault && !g.sleeping &&
          (error || payload < 0x02000000u || g.queued < 8);
 }
 bool nds_offline_sound_receive(uint32_t payload, bool error, uint64_t now) {
@@ -1553,10 +1584,10 @@ bool nds_offline_sound_receive(uint32_t payload, bool error, uint64_t now) {
 uint64_t nds_offline_sound_next_event(uint64_t now) {
   if (!g.active || g.fault)
     return Never;
-  uint64_t next = g.next;
+  uint64_t next = g.sleeping ? Never : g.next;
   const bool reply_room = nds_io_offline_reply_capacity(1);
   for (unsigned i = 0; i < 8; ++i)
-    if (g.alarm_deadlines[i] > now || reply_room)
+    if (!g.sleeping && (g.alarm_deadlines[i] > now || reply_room))
       next = std::min(next, std::max(g.alarm_deadlines[i], now));
   if (capture_active())
     next = std::min(next, (now / 1024 + 1) * 1024);
@@ -1566,8 +1597,14 @@ void nds_offline_sound_advance(uint64_t now) {
   if (!g.active || g.fault || g.in_advance)
     return;
   g.in_advance = true;
+  if (g.sleeping) {
+    nds_tick_spu(now);
+    g.now = std::max(g.now, now);
+    g.in_advance = false;
+    return;
+  }
   for (;;) {
-    uint64_t next = g.next;
+    uint64_t next = g.next <= g.now ? now : g.next;
     const bool reply_room = nds_io_offline_reply_capacity(1);
     for (unsigned i = 0; i < 8; ++i)
       if (g.alarm_deadlines[i] > now || reply_room)
@@ -1577,9 +1614,9 @@ void nds_offline_sound_advance(uint64_t now) {
       break;
     nds_tick_spu(next);
     g.now = next;
-    if (g.next == next) {
+    if (g.next <= next) {
       driver(true);
-      g.next += DriverPeriod;
+      g.next += ((next - g.next) / DriverPeriod + 1) * DriverPeriod;
     }
     for (unsigned i = 0; i < 8; ++i)
       if (g.alarm_deadlines[i] <= next) {
@@ -1611,6 +1648,21 @@ void nds_offline_sound_advance(uint64_t now) {
   nds_tick_spu(now);
   g.now = now;
   g.in_advance = false;
+}
+void nds_offline_sound_sleep(bool entering, uint64_t now) {
+  if (!g.active || g.fault || g.in_advance || bool(g.sleeping) == entering)
+    return;
+  if (entering) {
+    nds_offline_sound_advance(now);
+    g.sleeping = true;
+  } else {
+    // OSAlarm's periodic reinsertion chooses the first future occurrence of
+    // its existing start/period after the delayed IRQ callback returns.
+    nds_tick_spu(now);
+    g.now = std::max(g.now, now);
+    g.sleeping = false;
+    nds_offline_sound_advance(now);
+  }
 }
 bool nds_offline_sound_source_overlap(const uint8_t *physical, uint32_t width) {
   if (!g.active || !physical || !width)
@@ -1658,7 +1710,7 @@ void nds_offline_sound_before_write(const uint8_t *physical, uint32_t width,
 // its existing owner; no CPU registers or SDK instruction stream are captured.
 namespace {
 struct Snapshot {
-  uint32_t magic = 0x31444E53, version = 1;
+  uint32_t magic = 0x31444E53, version = 2;
   Sound sound;
 };
 } // namespace
@@ -1682,7 +1734,7 @@ bool nds_offline_sound_validate(const std::vector<uint8_t> &in,
     return fail("Invalid sound service state size");
   Snapshot s{};
   std::memcpy(&s, in.data(), sizeof s);
-  if (s.magic != 0x31444E53 || s.version != 1 ||
+  if (s.magic != 0x31444E53 || s.version != 2 || s.sound.sleeping > 1 ||
       s.sound.profile_id != g.profile_id ||
       std::memcmp(&s.sound.profile, &g.profile, sizeof(Profile)) ||
       s.sound.queued > 8 || s.sound.in_advance || s.sound.fault)

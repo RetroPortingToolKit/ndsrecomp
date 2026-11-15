@@ -14,10 +14,15 @@ bool nds_offline_sound_preflight(uint32_t payload, bool error);
 // supported word in the hardware FIFO until this returns true.
 bool nds_offline_sound_can_receive(uint32_t payload, bool error);
 const char *nds_offline_sound_takeover_status();
+std::string nds_offline_sound_json();
 bool nds_offline_sound_receive(uint32_t payload, bool error, uint64_t now);
 uint64_t nds_offline_sound_next_event(uint64_t now);
 void nds_offline_sound_advance(uint64_t now);
 void nds_offline_sound_reset();
+// PM masks the software-driver/alarm IRQs during sleep. Hardware PCM/capture
+// clocks keep their existing SPU contract. Wake observes overdue callbacks
+// once and retains their periodic phase, skipping elapsed periods.
+void nds_offline_sound_sleep(bool entering, uint64_t now);
 // Call before mutating shared sample/bank/sequence memory. Capture writes
 // remain scheduled observations, since direct guest reads cannot trigger them.
 void nds_offline_sound_before_write(const uint8_t *physical, uint32_t width,
