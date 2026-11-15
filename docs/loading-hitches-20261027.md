@@ -58,6 +58,9 @@ backend selection and CPU capability checks remain unchanged.
 
 Apply both patches to the pinned Dynarmic a41c380 SDK before configuring:
 
+The complete current SDK patch order, including prepared blocks and the
+observation service, is documented in [the pinned SDK recipe](dynarmic-sdk.md).
+
 ```powershell
 git -C <isolated-sdk> apply <framework>/runner/cmake/dynarmic-readonly-pages.patch
 git -C <isolated-sdk> apply <framework>/runner/cmake/dynarmic-cold-register-allocation.patch
