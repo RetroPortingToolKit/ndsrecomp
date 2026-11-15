@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <string>
 
 #include "state.h"
 #include "savestate.h"
@@ -48,6 +49,9 @@ int     g_cur = -1;           // currently-loaded CPU (-1 = none)
 
 NdsSchedulerProfile g_profile{};
 uint64_t g_profile_rounds = 0;
+#if defined(NDS_OFFLINE_ARM7)
+std::string offline_takeover_status;
+#endif
 
 // NDS_PROFILE_SCHED: unset = off; "1" or any non-numeric value = the
 // established 1-in-1009 round sampler; a number >= 2 = sample 1 round in
@@ -395,6 +399,9 @@ void scheduler_init() {
     g_slot[1] = CpuSlot{};
     g_cur = -1;
     g_sys_timestamp = 0;
+#if defined(NDS_OFFLINE_ARM7)
+    offline_takeover_status.clear();
+#endif
     g_owner_thread = std::this_thread::get_id();
     scheduler_profile_reset();
 }
@@ -432,8 +439,15 @@ void scheduler_set_cpu_boot(int cpu, uint32_t entry, uint32_t sp,
 void scheduler_run_round() {
     RoundActivityGuard round_activity;
 #if defined(NDS_OFFLINE_ARM7)
-    if (nds_offline_arm7_selected() && !nds_offline_arm7_active())
-        nds_offline_arm7_try_takeover(g_sys_timestamp);
+    if (nds_offline_arm7_selected() && !nds_offline_arm7_active()) {
+        std::string reason;
+        if (nds_offline_arm7_try_takeover(g_sys_timestamp,&reason)) {
+            offline_takeover_status="active";
+#if defined(NDS_ARM9_DYNARMIC)
+            nds_arm7_native_release();
+#endif
+        } else if (!reason.empty()) offline_takeover_status=std::move(reason);
+    }
 #endif
     // melonDS-faithful interleave (docs/scheduler_design.md, Commit A). Each
     // outer iteration is capped at kIterCap SYSTEM cycles (or the next scheduled
@@ -671,6 +685,14 @@ void scheduler_performance_io_fence() {
         ++performance_fences;
         nds_reschedule_slice((g_runtime_cycles+1u)>>1u);
     }
+}
+
+const char* scheduler_offline_takeover_status() {
+#if defined(NDS_OFFLINE_ARM7)
+    return offline_takeover_status.c_str();
+#else
+    return "not compiled";
+#endif
 }
 void scheduler_performance_window_counts(uint64_t* windows,uint64_t* fences) {
     *windows=performance_windows;*fences=performance_fences;

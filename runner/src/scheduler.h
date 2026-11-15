@@ -80,6 +80,7 @@ void scheduler_debug_state(NdsSchedulerDebugState* out);
 // have terminally halted. ARM9 runs ~2× the cycles per round (clock ratio).
 SchedResult scheduler_run(uint64_t arm9_cycle_budget);
 void scheduler_run_round();
+const char* scheduler_offline_takeover_status();
 
 // Terminally halt both CPU slots for a fatal device/frontend failure raised
 // outside CPU dispatch. Unlike nds_halt(), this survives the next slice setup.

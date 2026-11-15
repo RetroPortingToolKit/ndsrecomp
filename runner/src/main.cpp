@@ -2341,6 +2341,22 @@ int main(int argc, char** argv) {
         nds_gpu2d_set_adaptive_workers(gpu2d_adaptive_workers);
     };
     boot();
+    auto reset_machine = [&]() {
+#if defined(NDS_OFFLINE_ARM7)
+        if (nds_offline_arm7_reset_pending()) {
+            // Retail OS_ResetSystem writes this caller parameter before its
+            // PXI reset notification. Warm reboot returns to the cartridge.
+            const uint32_t parameter=bus_device_read32(9,0x027ffc20u);
+            const auto mode=frontend_options.boot_mode;
+            frontend_options.boot_mode=NdsBootMode::Direct;
+            boot();
+            frontend_options.boot_mode=mode;
+            bus_device_write32(9,0x027ffc20u,parameter,0);
+            return;
+        }
+#endif
+        boot();
+    };
 
     if (!interactive) {
         // The SDL frontend normally selects the raster width. Serve/headless
@@ -2405,7 +2421,7 @@ int main(int argc, char** argv) {
         // the socket, commands execute on the frontend thread between frames
         // via debug_pump(). Execution stays frontend-owned (run_to_* are
         // rejected); queries, rings, and touch/keys injection are live.
-        debug_set_reset_fn(boot);
+        debug_set_reset_fn(reset_machine);
         debug_pump_start(port);
         std::fprintf(stderr, "[run] interactive SDL mode from reset\n");
         const int rc = nds_run_interactive_frontend(frontend_options);
@@ -2434,7 +2450,7 @@ int main(int argc, char** argv) {
         if (const char* dt = std::getenv("NDS_DEEP_TRACE"))
             if (dt[0] == '0' && dt[1] == '\0') runtime_set_deep_trace(0);
         std::fprintf(stderr, "[run] debug server mode from reset\n");
-        debug_set_reset_fn(boot);
+        debug_set_reset_fn(reset_machine);
         debug_serve(port);
         dump_replay_status();
         const bool save_ok = nds_io_flush_cartridge_save();

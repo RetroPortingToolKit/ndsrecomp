@@ -1583,6 +1583,14 @@ ndsrecomp_link_tomlpp(frontend_config_test)
       NDS_BUILD_VIDEO_SAVESTATE_TEST=1)
   add_test(NAME video_savestate_test COMMAND video_savestate_test)
   set_tests_properties(video_savestate_test PROPERTIES TIMEOUT 20)
+  if(NDS_OFFLINE_ARM7)
+    add_executable(offline_sound_test tests/offline_sound_test.cpp
+        src/offline_arm7_sound.cpp src/spu.cpp)
+    target_include_directories(offline_sound_test PRIVATE src
+        "${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t" ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+    add_test(NAME offline_sound_test COMMAND offline_sound_test)
+    set_tests_properties(offline_sound_test PROPERTIES TIMEOUT 20)
+  endif()
   get_target_property(_native_raster_fixture video_savestate_test SOURCES)
   list(REMOVE_ITEM _native_raster_fixture tests/video_savestate_test.cpp)
   add_executable(native_3d_raster_test tests/native_3d_raster_test.cpp

@@ -8,6 +8,7 @@ void nds_arm9_native_note_write() {}
 void nds_arm9_native_note_write_pages(const uint32_t*, uint32_t) {}
 void nds_arm9_native_flush_writes() {}
 void nds_arm9_native_clear() {}
+void nds_arm7_native_release() {}
 void nds_arm9_native_census(bool, bool) {}
 std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 std::string nds_arm9_native_compilation_json(bool) { return "{\"available\":false}"; }
@@ -656,6 +657,7 @@ void nds_arm9_native_note_write_pages(const uint32_t* first,uint32_t count) {
     nds_arm9_native_note_write();
 }
 void nds_arm9_native_flush_writes() {for(auto& n:natives)if(n)n->flush_writes();}
+void nds_arm7_native_release() { natives[NDS_ARM7].reset(); }
 void nds_arm9_native_clear() {
 #if defined(NDS_NATIVE_PUBLISHED_STORES)
     store_protected_pages.clear();

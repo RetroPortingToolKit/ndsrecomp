@@ -19,6 +19,7 @@
 #include "scheduler.h"
 #if defined(NDS_OFFLINE_ARM7)
 #include "offline_arm7.h"
+#include "offline_arm7_sound.h"
 #endif
 #include "savestate.h"
 #include "state.h"
@@ -507,7 +508,9 @@ std::string handle(const std::string& line) {
         return std::string("{\"available\":true,\"selected\":")+
             (nds_offline_arm7_selected()?"true":"false")+
             ",\"active\":"+(nds_offline_arm7_active()?"true":"false")+
-            ",\"reset_pending\":"+(nds_offline_arm7_reset_pending()?"true":"false")+"}";
+            ",\"reset_pending\":"+(nds_offline_arm7_reset_pending()?"true":"false")+
+            ",\"takeover_status\":\""+json_escape(scheduler_offline_takeover_status())+"\""+
+            ",\"sound\":"+nds_offline_sound_json()+"}";
 #else
         return "{\"available\":false,\"selected\":false,\"active\":false}";
 #endif
