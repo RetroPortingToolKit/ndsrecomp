@@ -192,9 +192,11 @@ The unsupported-line counter now measures these fallback rows.
 Frames without readback explicitly flush the GPU raster commands at VCount215
 so CPU simulation can overlap the display job; removing the CPU copy must not
 also defer GPU submission until presentation.
-Performance execution enables this path by default; NDS_COMPUTE_WINDOW_DIRECT=0 retains
-the reference compositor. Faithful execution retains the prior opt-in1x
-behavior, including with launchers that explicitly set the flag to1.
+Performance execution in the qualified MKDS-only build enables this path by
+default; NDS_COMPUTE_WINDOW_DIRECT=0 retains the reference compositor. Other
+title bundles and Faithful execution retain the prior opt-in1x behavior,
+including with launchers that explicitly set the flag to1. MPH performance
+qualification remains open; its package does not gain HD window admission.
 Skybox-repair/window combinations retain the existing compositor. Actual-GL
 tests compare the new and legacy integer blend paths with native CPU composition,
 including the combined4x/AA8/window/scroll case and BGRA8 fallback rows;

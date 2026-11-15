@@ -2321,10 +2321,16 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     nds_gpu2d_set_direct_present(
         nds_compute_host_has_visible_context());
     const char* window_direct = std::getenv("NDS_COMPUTE_WINDOW_DIRECT");
+    bool qualified_hd_windows = false;
+#if defined(NDS_MKDS_PERFORMANCE) && !defined(NDS_MPH_PERFORMANCE)
+    // Only the MKDS-only enhanced package has qualified the HD window path.
+    // Other title/profile bundles retain the existing 1x probe admission.
+    qualified_hd_windows = nds_performance_execution();
+#endif
     const bool window_requested = window_direct ?
-        std::strcmp(window_direct, "1") == 0 : nds_performance_execution();
+        std::strcmp(window_direct, "1") == 0 : qualified_hd_windows;
     nds_gpu2d_set_direct_windows(window_requested &&
-        (nds_performance_execution() || options.internal_resolution == 1u));
+        (qualified_hd_windows || options.internal_resolution == 1u));
 #else
     if (nds_gpu3d_renderer_policy() == NdsGpu3dRendererPolicy::Auto) {
         std::fprintf(stderr,
