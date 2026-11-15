@@ -187,6 +187,8 @@ void begin_survivors(unsigned buffer) {
     auto& frame=g_survivors[buffer];
     frame.native_layers.resize(nds_survivors::Rows*nds_survivors::NativeWidth*4);
     frame.wide_layers.resize(nds_survivors::Rows*nds_survivors::MaxWidth*4);
+    frame.native_objects.resize(nds_survivors::Rows*nds_survivors::NativeWidth);
+    frame.wide_objects.resize(nds_survivors::Rows*nds_survivors::MaxWidth);
     frame.rows.fill(0);frame.widths=g_survivor_widths;frame.needs_gpu={};
     frame.identity=++g_survivor_identity;frame.buffer=buffer;frame.lines=0;
     frame.capture=(g_unit[0].capture&0x80000000u)||g_unit[0].capture_latch;
@@ -1341,6 +1343,45 @@ bool line_forceblank(const LineJob& job, int engine) {
            (job.unit[engine].dispcnt & 0x80u);
 }
 
+// Rows containing only 3D, OBJ and backdrop need one packed OBJ/window word
+// per cell. Keep the independent native HUD view, but leave final composition
+// and CPU base materialization to the GPU consumer.
+void render_compact_survivor_line(const LineJob& job, LineScratch& sc) {
+    using namespace nds_survivors;
+    auto& frame=g_survivors[job.buffer];
+    const auto* row=frame.row(job.y);
+    const Unit& u=job.unit[0];
+    const unsigned width=row[LayerWidth];
+    const NdsGpu2dWindowState windows{u.dispcnt,u.win};
+    const bool windowed=(u.dispcnt&NDS_GPU2D_DISPCNT_WINDOW_ENABLE_MASK)!=0;
+    auto pack=[&](unsigned out_width,const Pixel* objects,const uint8_t* object_window,bool wide,uint32_t* dst) {
+        const int extra=(int(out_width)-256)/2;
+        for(unsigned x=0;x<out_width;++x) {
+            uint8_t mask=0x3Fu;
+            if(windowed) {
+                const int hud_x=wide?nds_gpu2d_adaptive_hud_x(x,out_width,job.survivor_anchor,job.survivor_center_width):int(x);
+                const uint8_t wx=wide?nds_gpu2d_adaptive_window_x(x,extra,hud_x):uint8_t(x);
+                mask=nds_gpu2d_window_mask(windows,wx,uint8_t(job.y),object_window[x]!=0);
+            }
+            const auto& p=objects[x];
+            dst[x]=nds_gpu2d_pack_direct_pixel(p.color,p.priority,p.alpha,p.valid,mask);
+        }
+    };
+    render_obj_line(u,0,job.y,sc.obj.data(),NativeWidth,job.oam[0],job.palette[0],*job.vram[0],sc.obj_window.data(),0,job.survivor_center_width);
+    auto* native=frame.native_objects.data()+job.y*NativeWidth;
+    pack(NativeWidth,sc.obj.data(),sc.obj_window.data(),false,native);
+    auto* wide=frame.wide_objects.data()+job.y*MaxWidth;
+    if(row[Flags]&CenterNative) {
+        const unsigned extra=(width-NativeWidth)/2;
+        std::fill_n(wide,width,nds_gpu2d_pack_direct_pixel(0,0,0,true,0x10u));
+        std::copy_n(native,NativeWidth,wide+extra);
+    } else if(width==NativeWidth)std::copy_n(native,NativeWidth,wide);
+    else {
+        render_obj_line(u,0,job.y,sc.survivor_obj.data(),width,job.oam[0],job.palette[0],*job.vram[0],sc.survivor_window.data(),job.survivor_anchor,job.survivor_center_width);
+        pack(width,sc.survivor_obj.data(),sc.survivor_window.data(),true,wide);
+    }
+}
+
 // Decode each native BG once. The native and adaptive planes deliberately
 // select their own OBJ/window positions; cropping anchored HUD pixels would
 // corrupt native observations and current-build snapshots.
@@ -1348,6 +1389,7 @@ void render_survivor_line(LineJob& job, LineScratch& sc) {
     using namespace nds_survivors;
     auto& frame=g_survivors[job.buffer];
     const auto* row=frame.row(job.y);
+    if(row[Flags]&CompactObj) {render_compact_survivor_line(job,sc);return;}
     const Unit& u=job.unit[0];
     const unsigned width=row[LayerWidth];
     const bool center=(row[Flags]&CenterNative)!=0;
@@ -1828,6 +1870,10 @@ void latch_line(int y, LineJob& job) {
         row[SourceWidth]=nds_gpu3d_output_width();
         row[Flags]=(needs?Needs3D:0u)|(nds_gpu3d_display_visible()?Visible3D:0u)|
             (center?CenterNative:0u)|(!center&&width>256&&g_adaptive_skybox_fill?SkyboxFill:0u);
+        if(needs&&!frame.capture&&!(u.dispcnt&0xE00u)) {
+            row[Flags]|=CompactObj;
+            row[Backdrop]=rgb6(view16(job.palette[0],0));
+        }
         if(needs&&!frame.capture)frame.needs_gpu[job.screen[0]]=true;
         frame.widths[job.screen[0]]=std::max<uint16_t>(frame.widths[job.screen[0]],width);
         frame.lines=std::max<uint16_t>(frame.lines,y+1);

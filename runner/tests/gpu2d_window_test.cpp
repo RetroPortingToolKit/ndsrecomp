@@ -1115,9 +1115,74 @@ bool test_survivor_line_ownership() {
     for(int y=0;y<192;++y)nds_gpu2d_render_scanline(y);
     nds_gpu2d_vblank();
     if(!require(nds_gpu2d_survivor_pending()&&nds_gpu2d_survivor_pending()->capture&&g_capture_line_reads>cap_reads))return false;
+    if(!require(!(nds_gpu2d_survivor_pending()->row(0)[s::Flags]&s::CompactObj)))return false;
     if(!require(!g_capture_copy_pending&&!g_capture_saw_stale_copy))return false;
     nds_gpu2d_set_survivors(false);nds_gpu2d_set_threaded(false,1);
     g_adaptive_hud_anchor=g_adaptive_skybox_fill=false;g_3d_output_width=256;g_test_powercontrol=0x8002;
+    return true;
+}
+
+bool test_compact_survivor_rows() {
+    namespace s=nds_survivors;
+    nds_gpu2d_reset();
+    std::array<uint8_t,0x4000> obj_vram{},bg_vram{};
+    reset_obj_fixture(obj_vram);g_view.bg[0]=bg_vram.data();
+    std::fill_n(obj_vram.data(),32,0x11);std::fill_n(bg_vram.data(),32,0x11);
+    write16(g_palette,0,0x7C00);write16(g_palette,2,0x03E0);write16(g_palette,0x202,0x001F);
+    set_obj(0,0,10,0);set_obj(1,0x0400,232,2u<<10);set_obj(2,0x0800,24,0);
+    g_unit[0].dispcnt=0x0001B108u;g_unit[0].bgcnt[1]=1u<<8;
+    g_unit[0].win[0]=16;g_unit[0].win[1]=8;g_unit[0].win[4]=192;g_unit[0].win[5]=0;
+    g_unit[0].win[8]=0x32;g_unit[0].win[10]=0x3F;g_unit[0].win[11]=0x10;
+    g_test_powercontrol=0x8202;g_3d_output_width=448;g_3d_render_xpos=0;g_3d_visible=true;
+    g_adaptive_hud_anchor=true;g_adaptive_hud_center_width=64;g_adaptive_hud_gap_fill=true;
+    g_adaptive_center_native=false;g_adaptive_center_max_polygons=0;g_adaptive_skybox_fill=true;
+    nds_gpu2d_set_survivor_widths(448,448);nds_gpu2d_set_survivors(true);nds_gpu2d_set_threaded(true,2);
+    nds_gpu2d_start_frame();
+    const auto native_reads=g_native_line_reads,wide_reads=g_wide_line_reads,attr_reads=g_attribute_line_reads,syncs=g_display_sync_requests;
+    const unsigned back=g_front^1;
+    constexpr uint32_t base_marker=0xFF123456u,layer_marker=0xBADC0DEu;
+    g_fb[back][0].fill(base_marker);
+    nds_gpu2d_render_scanline(0);
+    // The row's registers are immutable even when the next line changes route,
+    // visibility, color effects and its center/wide placement decision.
+    g_test_powercontrol=0x0202;g_3d_visible=false;g_3d_render_xpos=5;
+    g_unit[0].bldcnt=0x0841;g_unit[0].master_bright=0x4003;g_unit[0].eva=7;g_unit[0].evb=9;
+    nds_gpu2d_render_scanline(1);
+    g_test_powercontrol=0x8202;g_3d_visible=true;g_3d_render_xpos=0;
+    g_unit[0].dispcnt|=0x200;nds_gpu2d_render_scanline(2);
+    g_unit[0].dispcnt&=~0x200u;
+    // Compact rows must not touch the general four-word transport.
+    std::fill_n(g_survivors[back].native_layers.data()+3*s::NativeWidth*4,s::NativeWidth*4,layer_marker);
+    std::fill_n(g_survivors[back].wide_layers.data()+3*s::MaxWidth*4,s::MaxWidth*4,layer_marker);
+    for(int y=3;y<192;++y)nds_gpu2d_render_scanline(y);
+    nds_gpu2d_vblank();nds_gpu2d_start_frame();nds_gpu2d_finish_frame();
+    const auto* frame=nds_gpu2d_survivor_current();
+    if(!require(frame&&!frame->capture))return false;
+    if(!require((frame->row(0)[s::Flags]&s::CompactObj)&&(frame->row(1)[s::Flags]&s::CompactObj)&&
+        !(frame->row(2)[s::Flags]&s::CompactObj)&&(frame->row(3)[s::Flags]&s::CompactObj)))return false;
+    if(!require(frame->row(0)[s::Backdrop]==rgb6(0x7C00)&&frame->row(0)[s::Screen]==0&&frame->row(1)[s::Screen]==1))return false;
+    if(!require(frame->row(1)[s::MasterBright]==0x4003&&frame->row(1)[s::Bldcnt]==0x0841&&frame->row(1)[s::RenderX]==5&&
+        !(frame->row(1)[s::Flags]&s::Visible3D)&&(frame->row(1)[s::Flags]&s::CenterNative)))return false;
+    const uint32_t red=nds_gpu2d_pack_direct_pixel(rgb6(0x001F),0,0,true,0x32);
+    const uint32_t alpha=nds_gpu2d_pack_direct_pixel(rgb6(0x001F),2,0xFF,true,0x3F);
+    if(!require(frame->native_objects[10]==red&&frame->wide_objects[10]==red&&frame->wide_objects[106]!=red))return false;
+    if(!require(frame->native_objects[232]==alpha&&frame->wide_objects[424]==alpha))return false;
+    if(!require(frame->native_objects[24]==0x4040u&&frame->wide_objects[24]==0x4040u))return false;
+    const auto* center=frame->wide_objects.data()+s::MaxWidth;
+    const uint32_t black=nds_gpu2d_pack_direct_pixel(0,0,0,true,0x10);
+    if(!require(center[0]==black&&center[95]==black&&center[96+10]==red&&center[352]==black&&center[447]==black))return false;
+    if(!require(frame->native_layers[2*s::NativeWidth*4+10*4]==rgb6(0x001F)&&
+        frame->native_layers[2*s::NativeWidth*4+10*4+2]==rgb6(0x03E0)))return false;
+    if(!require(std::all_of(frame->native_layers.begin()+3*s::NativeWidth*4,frame->native_layers.begin()+4*s::NativeWidth*4,
+        [](uint32_t value){return value==layer_marker;})&&
+        std::all_of(frame->wide_layers.begin()+3*s::MaxWidth*4,frame->wide_layers.begin()+4*s::MaxWidth*4,
+        [](uint32_t value){return value==layer_marker;})))return false;
+    if(!require(g_fb[back][0][0]==base_marker&&g_fb[back][0][3*256]==base_marker))return false;
+    if(!require(g_native_line_reads==native_reads&&g_wide_line_reads==wide_reads&&g_attribute_line_reads==attr_reads&&g_display_sync_requests==syncs))return false;
+    nds_gpu2d_set_survivors(false);nds_gpu2d_set_threaded(false,1);
+    g_adaptive_hud_anchor=g_adaptive_hud_gap_fill=g_adaptive_skybox_fill=false;
+    g_3d_output_width=256;g_3d_render_xpos=0;g_test_powercontrol=0x8002;
+    std::puts("[compact survivors] independent native/wide OBJ+windows, mixed rows, center margins and zero ordinary 3D reads");
     return true;
 }
 
@@ -1144,6 +1209,7 @@ int main() {
     if (!test_fixed_16_9_composition()) return 20;
     if (!test_direct_window_late_fallback()) return 21;
     if (!test_survivor_line_ownership()) return 22;
+    if (!test_compact_survivor_rows()) return 23;
     return 0;
 }
 #endif
