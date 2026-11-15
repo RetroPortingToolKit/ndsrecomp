@@ -319,6 +319,16 @@ int main() {
   check(get<int16_t>(0x0200A000 + TrackOffset + track::ExtraPitch) == 0x1234);
   check(get<uint32_t>(0x0200A000 + 0x11C0) == 0x03807ECC);
   check(nds_offline_sound_ready());
+  std::vector<uint8_t> valid_state, invalid_depth, unchanged;
+  check(nds_offline_sound_snapshot(&valid_state));
+  commands({{0, 7, (1u << 24), 1, track::Depth, 255}});
+  check(nds_offline_sound_snapshot(&invalid_depth));
+  std::string validation_error;
+  check(!nds_offline_sound_validate(invalid_depth, &validation_error));
+  check(nds_offline_sound_import(valid_state, &validation_error));
+  check(!nds_offline_sound_import(invalid_depth, &validation_error));
+  check(nds_offline_sound_snapshot(&unchanged));
+  check(unchanged == valid_state);
   std::printf(
       "offline sound: %u checks passed; real SPU PCM, both wire profiles, "
       "native SSEQ, packed ABI, alarm, ordering and current-state replay\n",

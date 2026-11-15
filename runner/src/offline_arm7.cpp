@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "offline_arm7.h"
+#include "emu_profile.h"
 #include "offline_arm7_card.h"
 #include "io.h"
 #include "spu.h"
@@ -220,7 +221,9 @@ void nds_offline_arm7_reset(){state=State{};next_takeover_check=0;nds_offline_so
 bool nds_offline_arm7_try_takeover(uint64_t now,std::string* error){
     if(state.active)return true;
     if(now<next_takeover_check)return false;
-    next_takeover_check=next_line(now,192);
+    next_takeover_check=now+2130u;
+    if(!nds_cpu_halted(1)||nds_halt_wake_pending(1)||nds_dma_cpu_stalled(1))
+        return fail(error,"ARM7 is not at an idle halted boundary");
     if(!game||!nds_offline_sound_ready()||!nds_offline_card_ready()||!nds_io_offline_spi_idle())return fail(error,"Offline ARM7 components or SPI are not ready");
     const auto& a=address[game-1];
     constexpr uint32_t required=(1u<<4)|(1u<<5)|(1u<<6)|(1u<<7)|(1u<<8)|(1u<<9)|(1u<<12)|(1u<<13)|(1u<<14);
@@ -259,6 +262,8 @@ bool nds_offline_arm7_try_takeover(uint64_t now,std::string* error){
     if(next.mic_auto){next.mic_flags=load32(a.mic+0x24)&0xFFFF;next.mic_base=load32(a.mic+0x28);next.mic_pos=load32(a.mic+0x2C);next.mic_size=load32(a.mic+0x30);const uint32_t reload=load32(a.mic+0x34);const unsigned shifts[4]={0,6,8,10};next.mic_period=(65536-(reload&65535))<<shifts[(reload>>16)&3];if(!next.mic_size||next.mic_pos>=next.mic_size||!ram(next.mic_base,next.mic_size))return fail(error,"ARM7 microphone schedule is invalid");next.mic_next=now+next.mic_period;}
     uint64_t driver_tick;
     if(!sound_deadline(now,&driver_tick))return fail(error,"ARM7 SDK sound alarm is not at an idle known epoch");
+    // The timer probe may raise a wake; do not commit a now-runnable peer.
+    if(nds_halt_wake_pending(1)||nds_dma_cpu_stalled(1))return fail(error,"ARM7 woke during takeover observation");
     if(!nds_offline_sound_takeover(now,driver_tick))return fail(error,"ARM7 sound takeover declined");
     state=next;if(state.touch_auto)schedule_touch(now);state.led_next=next_line(now,192);state.active=true;return true;
 }
@@ -276,6 +281,7 @@ bool nds_offline_arm7_preflight(uint32_t word){
 }
 bool nds_offline_arm7_receive(uint32_t word,uint64_t now){
     if(state.sleep||!nds_offline_arm7_preflight(word))return false;
+    NdsEmuScope service_time(NDS_EMU_ARM7_SERVICE);
     const unsigned tag=word&31;const bool error=word&32;const uint32_t payload=word>>6;
     if(tag==7&&!nds_offline_sound_can_receive(payload,error))return false;
     const bool completes=tag==5||(slot(tag)>=0&&(payload&0x01000000u));

@@ -1030,28 +1030,32 @@ uint32_t bus_device_read32(int cpu, uint32_t addr) {
     return value;
 }
 
+namespace {
+struct DeviceWriteScope {
+    const NdsCpu cpu=g_nds_active;
+    const unsigned long long cycles=g_runtime_cycles;
+    const uint64_t master=g_bus_master_write_timestamp;
+    DeviceWriteScope(int target,uint64_t time) {
+        g_bus_master_write_timestamp=time!=UINT64_MAX?time:
+            master!=UINT64_MAX?master:(cpu==NDS_ARM9?cycles>>1u:cycles);
+        g_nds_active=target==7?NDS_ARM7:NDS_ARM9;
+        g_runtime_cycles=g_nds_active==NDS_ARM9?
+            g_bus_master_write_timestamp<<1u:g_bus_master_write_timestamp;
+    }
+    ~DeviceWriteScope() {
+        g_nds_active=cpu;g_runtime_cycles=cycles;g_bus_master_write_timestamp=master;
+    }
+};
+}
+
 void bus_device_write32(int cpu, uint32_t addr, uint32_t value, uint64_t time) {
-    const NdsCpu old = g_nds_active;
-    const uint64_t previous_time = g_bus_master_write_timestamp;
-    g_bus_master_write_timestamp = time != UINT64_MAX ? time :
-        previous_time != UINT64_MAX ? previous_time :
-        (old == NDS_ARM9 ? g_runtime_cycles >> 1u : g_runtime_cycles);
-    g_nds_active = cpu == 7 ? NDS_ARM7 : NDS_ARM9;
+    DeviceWriteScope context(cpu,time);
     bus_write_u32(addr, value);
-    g_nds_active = old;
-    g_bus_master_write_timestamp = previous_time;
 }
 
 void bus_device_write16(int cpu, uint32_t addr, uint16_t value, uint64_t time) {
-    const NdsCpu old = g_nds_active;
-    const uint64_t previous_time = g_bus_master_write_timestamp;
-    g_bus_master_write_timestamp = time != UINT64_MAX ? time :
-        previous_time != UINT64_MAX ? previous_time :
-        (old == NDS_ARM9 ? g_runtime_cycles >> 1u : g_runtime_cycles);
-    g_nds_active = cpu == 7 ? NDS_ARM7 : NDS_ARM9;
+    DeviceWriteScope context(cpu,time);
     bus_write_u16(addr, value);
-    g_nds_active = old;
-    g_bus_master_write_timestamp = previous_time;
 }
 
 bool bus_device_resolve_ram(int cpu, uint32_t addr, uint32_t size, const uint8_t** data) {

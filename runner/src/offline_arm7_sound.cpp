@@ -585,7 +585,9 @@ void update_track(unsigned tr, unsigned pl, bool tick) {
   }
 }
 bool step_track(unsigned tr, unsigned pl, bool audible = true) {
+  if (tr >= TrackCount || pl >= PlayerCount) { g.fault = true; return false; }
   auto a = g.work.track(tr);
+  if (a.byte(t::Depth) > 3) { g.fault = true; return false; }
   for (uint32_t q = a.get<uint32_t>(t::Voices), k = 0; q && k < 16; ++k) {
     int i = voiceindex(q);
     if (i < 0) {
@@ -1734,11 +1736,17 @@ bool nds_offline_sound_validate(const std::vector<uint8_t> &in,
     return fail("Invalid sound service state size");
   Snapshot s{};
   std::memcpy(&s, in.data(), sizeof s);
-  if (s.magic != 0x31444E53 || s.version != 2 || s.sound.sleeping > 1 ||
+  if (s.magic != 0x31444E53 || s.version != 2 || s.sound.sleeping > 1 || s.sound.active > 1 ||
       s.sound.profile_id != g.profile_id ||
       std::memcmp(&s.sound.profile, &g.profile, sizeof(Profile)) ||
       s.sound.queued > 8 || s.sound.in_advance || s.sound.fault)
     return fail("Invalid sound service state identity");
+  if (s.sound.active && (s.sound.next == Never ||
+      (!s.sound.sleeping && s.sound.next < s.sound.now)))
+    return fail("Invalid native sound driver deadline");
+  for (unsigned i = 0; i < TrackCount; ++i)
+    if (s.sound.work.track(i).byte(t::Depth) > 3)
+      return fail("Invalid native sequence stack depth");
   for (unsigned i = 0; i < 16; ++i) {
     auto a = s.sound.work.voice(i);
     if (s.sound.active && (a.byte(v::Id) != i || a.byte(v::Type) > 2 ||
