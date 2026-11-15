@@ -5,6 +5,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d11.h>
+#include <d3d9.h>
 #include <SDL3/SDL.h>
 #include "glad/glad.h"
 #include <cstdio>
@@ -27,6 +28,10 @@ bool fail(std::string* error, const std::string& message) {
 std::string win_error(const char* operation) {
     return std::string(operation) + " failed (Win32 error " + std::to_string(GetLastError()) + ")";
 }
+std::string hr_error(const char* operation, HRESULT result) {
+    char code[16]{}; std::snprintf(code,sizeof(code),"0x%08lX",static_cast<unsigned long>(result));
+    return std::string(operation)+" failed (HRESULT "+code+")";
+}
 bool extension(const char* list, const char* name) {
     if (!list) return false;
     const size_t length = std::strlen(name);
@@ -44,6 +49,10 @@ struct D3D11InteropTarget::Impl {
     SDL_Texture* target{};
     HANDLE device{}, object{};
     GLuint renderbuffer{}, framebuffer{};
+    bool texture_object{};
+    IDirect3DDevice9Ex* device9{};
+    IDirect3DSurface9* surface9{};
+    IDirect3DTexture9* parent9{};
     bool locked{};
     OpenDevice open{};
     CloseDevice close{};
@@ -62,16 +71,17 @@ bool D3D11InteropTarget::create(SDL_Renderer* renderer, int width, int height, s
         return fail(error, "Direct3D interop requires the current OpenGL 4.3 producer context");
     auto* dx = static_cast<ID3D11Device*>(SDL_GetPointerProperty(SDL_GetRendererProperties(renderer),
         SDL_PROP_RENDERER_D3D11_DEVICE_POINTER, nullptr));
-    if (!dx) return fail(error, "The SDL renderer does not expose a Direct3D 11 device");
-    const UINT flags = dx->GetCreationFlags();
-    if (flags & D3D11_CREATE_DEVICE_SINGLETHREADED)
+    auto* dx9 = static_cast<IDirect3DDevice9*>(SDL_GetPointerProperty(SDL_GetRendererProperties(renderer),
+        SDL_PROP_RENDERER_D3D9_DEVICE_POINTER, nullptr));
+    if (!dx && !dx9) return fail(error, "The SDL renderer does not expose a Direct3D 9Ex or 11 device");
+    if (dx && (dx->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED))
         return fail(error, "Direct3D 11 device is single-threaded; set SDL_RENDER_DIRECT3D_THREADSAFE=1 before renderer creation");
     auto ext_arb = proc<ExtensionString>("wglGetExtensionsStringARB");
     auto ext_ext = proc<ExtensionStringExt>("wglGetExtensionsStringEXT");
     auto current_dc = proc<CurrentDC>("wglGetCurrentDC");
     const char* extensions = ext_arb && current_dc ? ext_arb(current_dc()) : ext_ext ? ext_ext() : nullptr;
-    if (!extension(extensions, "WGL_NV_DX_interop") || !extension(extensions, "WGL_NV_DX_interop2"))
-        return fail(error, "The current OpenGL device lacks WGL_NV_DX_interop2");
+    if (!extension(extensions, "WGL_NV_DX_interop") || (dx && !extension(extensions, "WGL_NV_DX_interop2")))
+        return fail(error, "The current OpenGL device lacks the required Direct3D interop extension");
     impl_ = std::make_unique<Impl>();
     auto& state = *impl_;
     state.renderer = renderer;
@@ -84,24 +94,60 @@ bool D3D11InteropTarget::create(SDL_Renderer* renderer, int width, int height, s
     auto reject = [&](const std::string& message) { reset(); return fail(error, message); };
     if (!state.open || !state.close || !state.register_object || !state.unregister_object || !state.lock || !state.unlock)
         return reject("The OpenGL driver did not expose all required Direct3D interop functions");
+    if (dx9 && !dx) {
+        D3DDEVICE_CREATION_PARAMETERS parameters{};
+        HRESULT result = dx9->GetCreationParameters(&parameters);
+        if (FAILED(result)) return reject(hr_error("Direct3D 9 device creation query",result));
+        if (!(parameters.BehaviorFlags&D3DCREATE_MULTITHREADED))
+            return reject("Direct3D 9 device is not multithreaded; set SDL_RENDER_DIRECT3D_THREADSAFE=1 before renderer creation");
+        result = dx9->QueryInterface(__uuidof(IDirect3DDevice9Ex),reinterpret_cast<void**>(&state.device9));
+        if (FAILED(result)) return reject(hr_error("Direct3D 9Ex query (set SDL_WINDOWS_USE_D3D9EX before SDL initialization)",result));
+        state.texture_object = true;
+    }
     state.target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, width, height);
     if (!state.target) return reject(std::string("SDL target creation failed: ") + SDL_GetError());
     if (!SDL_SetTextureBlendMode(state.target, SDL_BLENDMODE_NONE) ||
         !SDL_SetTextureScaleMode(state.target, SDL_SCALEMODE_NEAREST))
         return reject(std::string("SDL target configuration failed: ") + SDL_GetError());
-    auto* image = static_cast<ID3D11Texture2D*>(SDL_GetPointerProperty(SDL_GetTextureProperties(state.target),
-        SDL_PROP_TEXTURE_D3D11_TEXTURE_POINTER, nullptr));
-    if (!image) return reject("The SDL target does not expose its Direct3D 11 texture");
-    D3D11_TEXTURE2D_DESC description{};
-    image->GetDesc(&description);
-    if (description.Usage != D3D11_USAGE_DEFAULT)
-        return reject("The SDL Direct3D texture does not use D3D11_USAGE_DEFAULT");
+    void* image{};
+    void* interop_device=dx;
+    if (state.device9) {
+        // SDL exposes its current D3D9 target surface. Registering that
+        // surface as an RBO is rejected on some drivers; its default-pool
+        // parent texture is directly shareable without an intermediate copy.
+        SDL_Texture* previous=SDL_GetRenderTarget(renderer);
+        if (!SDL_SetRenderTarget(renderer,state.target) || !SDL_FlushRenderer(renderer)) {
+            const std::string message=std::string("SDL Direct3D 9 target selection failed: ")+SDL_GetError();
+            SDL_SetRenderTarget(renderer,previous);return reject(message);
+        }
+        const HRESULT fetched=state.device9->GetRenderTarget(0,&state.surface9);
+        const bool restored=SDL_SetRenderTarget(renderer,previous)&&SDL_FlushRenderer(renderer);
+        if (FAILED(fetched)) return reject(hr_error("SDL Direct3D 9 target surface query",fetched));
+        if (!restored) return reject(std::string("SDL target restore failed: ")+SDL_GetError());
+        D3DSURFACE_DESC description{};
+        HRESULT result=state.surface9->GetDesc(&description);
+        if (FAILED(result)) return reject(hr_error("SDL Direct3D 9 target description",result));
+        if (description.Pool!=D3DPOOL_DEFAULT || !(description.Usage&D3DUSAGE_RENDERTARGET))
+            return reject("SDL Direct3D 9 target is not a default-pool render target");
+        result=state.surface9->GetContainer(__uuidof(IDirect3DTexture9),reinterpret_cast<void**>(&state.parent9));
+        if (FAILED(result)) return reject(hr_error("SDL Direct3D 9 parent texture query",result));
+        image=state.parent9;interop_device=state.device9;
+    } else {
+        auto* texture=static_cast<ID3D11Texture2D*>(SDL_GetPointerProperty(SDL_GetTextureProperties(state.target),
+            SDL_PROP_TEXTURE_D3D11_TEXTURE_POINTER,nullptr));
+        if (!texture) return reject("The SDL target does not expose its Direct3D 11 texture");
+        D3D11_TEXTURE2D_DESC description{};texture->GetDesc(&description);
+        if (description.Usage!=D3D11_USAGE_DEFAULT) return reject("The SDL Direct3D texture does not use D3D11_USAGE_DEFAULT");
+        image=texture;
+    }
     SetLastError(0);
-    state.device = state.open(dx);
+    state.device = state.open(interop_device);
     if (!state.device) return reject(win_error("wglDXOpenDeviceNV"));
-    glGenRenderbuffers(1, &state.renderbuffer);
+    if (state.texture_object) glGenTextures(1,&state.renderbuffer);
+    else glGenRenderbuffers(1,&state.renderbuffer);
     SetLastError(0);
-    state.object = state.register_object(state.device, image, state.renderbuffer, GL_RENDERBUFFER, 1 /* READ_WRITE_NV */);
+    state.object = state.register_object(state.device,image,state.renderbuffer,
+        state.texture_object?GL_TEXTURE_2D:GL_RENDERBUFFER,1 /* READ_WRITE_NV */);
     if (!state.object) return reject(win_error("wglDXRegisterObjectNV"));
     if (!lock(error)) { const std::string message = error ? *error : "Interop target lock failed"; return reject(message); }
     GLint previous_draw{}, previous_read{};
@@ -109,7 +155,8 @@ bool D3D11InteropTarget::create(SDL_Renderer* renderer, int width, int height, s
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read);
     glGenFramebuffers(1, &state.framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, state.framebuffer);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, state.renderbuffer);
+    if (state.texture_object) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,state.renderbuffer,0);
+    else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,state.renderbuffer);
     const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(previous_draw));
     glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previous_read));
@@ -148,8 +195,14 @@ void D3D11InteropTarget::reset() {
     if (state.object && state.unregister_object && !state.unregister_object(state.device, state.object))
         report("wglDXUnregisterObjectNV");
     if (state.framebuffer) glDeleteFramebuffers(1, &state.framebuffer);
-    if (state.renderbuffer) glDeleteRenderbuffers(1, &state.renderbuffer);
+    if (state.renderbuffer) {
+        if (state.texture_object) glDeleteTextures(1,&state.renderbuffer);
+        else glDeleteRenderbuffers(1,&state.renderbuffer);
+    }
     if (state.device && state.close && !state.close(state.device)) report("wglDXCloseDeviceNV");
+    if (state.parent9) state.parent9->Release();
+    if (state.surface9) state.surface9->Release();
+    if (state.device9) state.device9->Release();
     if (state.target) SDL_DestroyTexture(state.target);
     impl_.reset();
 }

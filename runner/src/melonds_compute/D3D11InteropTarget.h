@@ -7,7 +7,7 @@
 struct SDL_Renderer;
 struct SDL_Texture;
 
-// One SDL-owned D3D11 render target with explicit GL/D3D ownership transfer.
+// One SDL-owned D3D9Ex/11 target with explicit GL/D3D ownership transfer.
 // The caller keeps the renderer alive and the producer GL context current
 // through reset/destruction. Unsupported platforms return unavailable.
 class D3D11InteropTarget final {
