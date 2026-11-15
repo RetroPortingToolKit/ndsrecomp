@@ -6,6 +6,7 @@
 // implementation and owns device behavior, exceptions and unsupported opcodes.
 bool nds_arm9_native_run();
 bool nds_arm9_native_supported();
+bool nds_arm9_observation_service();
 void nds_arm9_native_note_write();
 void nds_arm9_native_note_write_pages(const uint32_t* first, uint32_t count);
 void nds_arm9_native_flush_writes();
