@@ -69,7 +69,7 @@ void commands(std::initializer_list<Command> input) {
   check(nds_offline_sound_receive(0x02001000, false, now));
   check(nds_offline_sound_receive(0, false, now));
 }
-void boot(bool mph = false) {
+void boot(bool mph = false, bool adopt = false) {
   ram.fill(0);
   wram.fill(0);
   replies.clear();
@@ -86,12 +86,37 @@ void boot(bool mph = false) {
     b.byte(nds_offline_sound::player::Id, i);
     std::memset(b.bytes + nds_offline_sound::player::Tracks, 255, 16);
   }
+  if (adopt) {
+    auto alarm = work.alarm(0);
+    alarm.byte(0, 1);
+    alarm.byte(1, 5);
+    alarm.set<uint64_t>(12, 20);
+    alarm.set<uint32_t>(0x14, mph ? 0x03802784 : 0x037FF3D0);
+    alarm.set<uint32_t>(0x18, 5 << 8);
+    alarm.set<uint64_t>(0x20, 100);
+    nds_spu_write(0x04000404, 0x023FFFF0, 4);
+    nds_spu_write(0x04000408, 0xFE00, 2);
+    nds_spu_write(0x0400040A, 2, 2); // 8-byte loop prefix
+    nds_spu_write(0x0400040C, 8,
+                  4); // 32-byte sample, extent wraps physical RAM
+    nds_spu_write(0x04000400, 0x8840007F, 4);
+  }
   std::memcpy(ptr(base, work.bytes.size()), work.bytes.data(),
               work.bytes.size());
   put<int32_t>(mph ? 0x038081E0 : 0x0380759C, -1);
   check(nds_offline_sound_configure(
       mph ? "90164d1ac127ee5f9815ea4ae7de798c7b5fc629"
           : "691e00d9a5dd80b04f80cc7559503e8b06848785"));
+  std::vector<uint8_t> before, after;
+  check(nds_offline_sound_snapshot(&before));
+  put<uint8_t>(base + 15 * nds_offline_sound::VoiceSize, 0);
+  check(!nds_offline_sound_takeover(0, 174592));
+  check(nds_offline_sound_ready());
+  check(std::strcmp(nds_offline_sound_takeover_status(),
+                    "voice initialization incomplete") == 0);
+  check(nds_offline_sound_snapshot(&after));
+  check(before == after);
+  put<uint8_t>(base + 15 * nds_offline_sound::VoiceSize, 15);
   check(nds_offline_sound_takeover(0, 174592));
   check(nds_offline_sound_ready());
 }
@@ -115,6 +140,13 @@ bool nds_io_offline_memory(uint32_t a, uint8_t *b, uint32_t n, bool write,
 bool nds_io_offline_reply_capacity(uint32_t) { return true; }
 bool nds_io_offline_reply(uint32_t x, uint64_t) {
   replies.push_back(x);
+  return true;
+}
+bool nds_io_offline_tick_deadline(uint64_t ticks, uint64_t now,
+                                  uint64_t *deadline) {
+  if (ticks > UINT64_MAX / 64)
+    return false;
+  *deadline = std::max(now, ticks * 64);
   return true;
 }
 bool bus_device_resolve_ram(int cpu, uint32_t a, uint32_t n,
@@ -142,7 +174,29 @@ void bus_device_write16(int cpu, uint32_t a, uint16_t x, uint64_t) {
 
 int main() {
   for (bool mph : {false, true}) {
+    boot(mph, true);
+    check(nds_offline_sound_source_overlap(ptr(0x023FFFF0, 16), 16));
+    check(nds_offline_sound_source_overlap(ptr(0x02000000, 24), 24));
+    check(!nds_offline_sound_source_overlap(ptr(0x02000018, 1), 1));
+    check(nds_offline_sound_next_event(0) == 6400);
+    nds_offline_sound_advance(6400);
+    check(replies.size() == 1 && replies.back() == (7u | ((5u << 8) << 6)));
+    check(nds_offline_sound_next_event(6400) == 7680);
     boot(mph);
+    Command volume = {0, 23, 127, 0, 0, 0};
+    std::memcpy(ptr(0x02001000, 24), volume.data(), 24);
+    for (unsigned i = 0; i < 8; ++i)
+      check(nds_offline_sound_receive(0x02001000, false, 0));
+    check(nds_offline_sound_preflight(0x02001000, false));
+    check(!nds_offline_sound_can_receive(0x02001000, false));
+    std::vector<uint8_t> queued_before, queued_after;
+    check(nds_offline_sound_snapshot(&queued_before));
+    check(!nds_offline_sound_receive(0x02001000, false, 0));
+    check(nds_offline_sound_snapshot(&queued_after));
+    check(queued_before == queued_after);
+    check(nds_offline_sound_can_receive(0, false));
+    check(nds_offline_sound_receive(0, false, 0));
+    check(nds_offline_sound_can_receive(0x02001000, false));
     for (unsigned i = 0; i < 64; ++i)
       put<int8_t>(0x02004000 + i, int(i * 7) - 100);
     commands({{0, 29, 0x02006000, 0, 0, 0},

@@ -19,6 +19,7 @@ extern bool nds_io_offline_memory(uint32_t, uint8_t *, uint32_t, bool,
                                   uint64_t);
 extern bool nds_io_offline_reply_capacity(uint32_t);
 extern bool nds_io_offline_reply(uint32_t, uint64_t);
+extern bool nds_io_offline_tick_deadline(uint64_t, uint64_t, uint64_t *);
 extern bool bus_device_resolve_ram(int, uint32_t, uint32_t, const uint8_t **);
 extern "C" uint64_t g_busf_mapping_generation;
 
@@ -61,6 +62,7 @@ struct SourceSpan {
 std::vector<SourceSpan> source_spans;
 uint64_t source_generation = Never;
 bool source_dirty = true;
+const char *takeover_status = "not attempted";
 
 bool memory(uint32_t a, void *data, uint32_t n, bool write = false) {
   if (!nds_io_offline_memory(a, static_cast<uint8_t *>(data), n, write,
@@ -1431,51 +1433,79 @@ bool nds_offline_sound_configure(const char *sha1) {
 }
 bool nds_offline_sound_ready() { return g.profile_id && !g.fault; }
 bool nds_offline_sound_takeover(uint64_t now, uint64_t next) {
-  if (!nds_offline_sound_ready() || next < now || next - now > DriverPeriod)
+  const auto decline = [](const char *reason) {
+    takeover_status = reason;
     return false;
-  g.now = now;
-  g.next = next;
-  memory(g.profile.work, g.work.bytes.data(), WorkSize);
-  g.shared = load<uint32_t>(g.profile.shared);
-  g.weaklock = load<uint32_t>(g.profile.locks);
-  g.stronglock = load<uint32_t>(g.profile.locks + 4);
-  memory(g.profile.pan, g.pans.data(), 16);
-  memory(g.profile.volume, g.volumes.data(), 16);
-  g.masterpan = load<int32_t>(g.profile.masterpan);
-  g.surround = load<int32_t>(g.profile.surround);
-  g.rng = load<uint32_t>(g.profile.rng);
+  };
+  if (!nds_offline_sound_ready() || next < now || next - now > DriverPeriod)
+    return decline("driver phase not ready");
+  if (g.active)
+    return true;
+  // Admission reads into a tentative semantic state. An early bootstrap
+  // rejection must leave readiness, queues, source caches and retry intact.
+  Sound candidate = g;
+  candidate.now = now;
+  candidate.next = next;
+  candidate.alarm_deadlines.fill(Never);
+  const auto read = [&](uint32_t addr, void *out, uint32_t size) {
+    return nds_io_offline_memory(addr, static_cast<uint8_t *>(out), size, false,
+                                 now);
+  };
+  if (!read(g.profile.work, candidate.work.bytes.data(), WorkSize) ||
+      !read(g.profile.shared, &candidate.shared, 4) ||
+      !read(g.profile.locks, &candidate.weaklock, 4) ||
+      !read(g.profile.locks + 4, &candidate.stronglock, 4) ||
+      !read(g.profile.pan, candidate.pans.data(), 16) ||
+      !read(g.profile.volume, candidate.volumes.data(), 16) ||
+      !read(g.profile.masterpan, &candidate.masterpan, 4) ||
+      !read(g.profile.surround, &candidate.surround, 4) ||
+      !read(g.profile.rng, &candidate.rng, 4))
+    return decline("driver work unavailable");
   for (unsigned i = 0; i < 16; ++i) {
-    auto a = g.work.voice(i);
+    auto a = candidate.work.voice(i);
     if (a.byte(v::Id) != i || a.byte(v::Type) > 2 ||
-        a.byte(v::EnvelopeStage) > 3) {
-      g.fault = true;
-      break;
-    }
-    g.sources[i] = a.get<uint32_t>(v::Source);
-    g.lengths[i] =
-        (a.get<uint16_t>(v::Wave + 6) + a.get<uint32_t>(v::Wave + 8)) * 4;
+        a.byte(v::EnvelopeStage) > 3)
+      return decline("voice initialization incomplete");
     if (a.get<uint32_t>(v::Callback) &&
-        a.get<uint32_t>(v::Callback) != g.profile.callback) {
-      g.fault = true;
-      break;
+        a.get<uint32_t>(v::Callback) != g.profile.callback)
+      return decline("unknown voice callback");
+  }
+  for (unsigned i = 0; i < 8; ++i) {
+    auto alarm = candidate.work.alarm(i);
+    if (alarm.byte(0)) {
+      const auto handler = alarm.get<uint32_t>(0x14);
+      const auto expected = g.profile_id == 1 ? 0x037FF3D0u : 0x03802784u;
+      if (handler == expected) {
+        if (alarm.get<uint32_t>(0x18) != (i | (unsigned(alarm.byte(1)) << 8)))
+          return decline("alarm callback identity mismatch");
+        if (!nds_io_offline_tick_deadline(alarm.get<uint64_t>(0x20), now,
+                                          &candidate.alarm_deadlines[i]))
+          return decline("active alarm phase unavailable");
+      } else if (handler || alarm.get<uint64_t>(12))
+        return decline("unknown active alarm callback");
+      // A fired one-shot retains the SDK active flag until cancellation, but
+      // its embedded OSAlarm handler is null and it has no remaining event.
     }
   }
-  for (unsigned i = 0; i < 8; ++i)
-    if (g.work.alarm(i).byte(0)) {
-      g.fault = true;
-      break;
-    }
   NdsSpuSaveState hardware;
   if (!spu_savestate_export(&hardware))
-    g.fault = true;
+    return decline("SPU state unavailable");
   for (unsigned i = 0; i < 16; ++i) {
-    g.sources[i] = hardware.channel[i].src;
-    g.lengths[i] = (hardware.channel[i].loop + hardware.channel[i].length) * 4;
+    const auto &channel = hardware.channel[i];
+    const uint64_t bytes = uint64_t(channel.loop) + channel.length;
+    if (bytes > UINT32_MAX)
+      return decline("SPU source extent overflow");
+    candidate.sources[i] = channel.src;
+    // The SPU snapshot has already converted register word counts to bytes.
+    candidate.lengths[i] = uint32_t(bytes);
   }
+  candidate.active = true;
+  g = candidate;
   source_dirty = true;
-  g.active = !g.fault;
-  return g.active;
+  takeover_status = "active";
+  return true;
 }
+const char *nds_offline_sound_takeover_status() { return takeover_status; }
 void nds_offline_sound_reset() {
   source_dirty = true;
   source_spans.clear();
@@ -1494,15 +1524,18 @@ bool nds_offline_sound_preflight(uint32_t payload, bool error) {
     return true;
   if (payload < 0x02000000u)
     return true;
-  if (g.queued >= 8)
-    return false;
   const auto fault = g.fault;
   bool valid = list_valid(payload);
   g.fault = fault;
   return valid;
 }
+bool nds_offline_sound_can_receive(uint32_t payload, bool error) {
+  return g.active && !g.fault &&
+         (error || payload < 0x02000000u || g.queued < 8);
+}
 bool nds_offline_sound_receive(uint32_t payload, bool error, uint64_t now) {
-  if (!nds_offline_sound_preflight(payload, error))
+  if (!nds_offline_sound_preflight(payload, error) ||
+      !nds_offline_sound_can_receive(payload, error))
     return false;
   nds_offline_sound_advance(now);
   if (error)
@@ -1557,7 +1590,7 @@ void nds_offline_sound_advance(uint64_t now) {
           g.alarm_deadlines[i] += period * 64;
         else {
           g.alarm_deadlines[i] = Never;
-          a.byte(0, 0);
+          a.set<uint32_t>(0x14, 0);
         }
       }
     if (g.fault)
