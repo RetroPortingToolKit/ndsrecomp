@@ -21,6 +21,22 @@ bool nds_io_native_math_read(uint32_t addr, uint32_t width,
                              uint64_t arm9_cycles, uint32_t* value);
 bool nds_io_native_math_write(uint32_t addr, uint32_t value, uint32_t width,
                               uint64_t arm9_cycles);
+// Complete host peripheral transactions reuse the canonical chip backing and
+// persistent-write hooks. They decline before effects while a guest transfer
+// owns the SPI/RTC wires; callers preflight guest buffers separately.
+bool nds_io_offline_spi_idle();
+bool nds_io_offline_spi(uint32_t device, const uint8_t* tx, uint8_t* rx,
+                         uint32_t size);
+bool nds_io_offline_rtc(uint8_t reg, bool write, uint8_t* bytes, uint32_t size);
+uint32_t nds_io_offline_touch();
+bool nds_io_offline_reply_capacity(uint32_t count);
+bool nds_io_offline_reply(uint32_t word, uint64_t now);
+bool nds_io_offline_receive_word(uint32_t expected, uint64_t now);
+bool nds_io_offline_peek(uint32_t* word);
+bool nds_io_offline_memory(uint32_t addr, uint8_t* bytes, uint32_t size,
+                            bool write, uint64_t now);
+uint32_t nds_io_offline_wake_flags();
+void nds_io_offline_irq_clear(uint32_t bits);
 void     nds_io_reset();
 // Clear observer history without changing any guest-visible device state.
 void     nds_io_debug_history_reset();

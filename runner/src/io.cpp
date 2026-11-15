@@ -1801,6 +1801,91 @@ bool g_nds_insn_stop = false;
 // --rtc-host (see io.h): main.cpp sets this before the initial boot.
 bool g_nds_rtc_host = false;
 
+namespace {
+struct OfflineArm7Context {
+    const NdsCpu cpu=g_nds_active;
+    const unsigned long long cycles=g_runtime_cycles;
+    explicit OfflineArm7Context(uint64_t now) {g_nds_active=NDS_ARM7;g_runtime_cycles=now;}
+    ~OfflineArm7Context() {g_nds_active=cpu;g_runtime_cycles=cycles;}
+};
+}
+
+bool nds_io_offline_reply_capacity(uint32_t count) {
+    return count==0u || ((g_fifocnt[1]&0x8000u) && count<=uint32_t(16-g_fifo_cnt[1]));
+}
+bool nds_io_offline_reply(uint32_t word, uint64_t now) {
+    if (!nds_io_offline_reply_capacity(1)) return false;
+    OfflineArm7Context context(now);fifo_send(1,word);return true;
+}
+bool nds_io_offline_receive_word(uint32_t expected, uint64_t now) {
+    if (!g_fifo_cnt[0] || g_fifo[0][g_fifo_head[0]]!=expected) return false;
+    OfflineArm7Context context(now);fifo_recv(1);return true;
+}
+bool nds_io_offline_peek(uint32_t* word) {
+    if (!word || !g_fifo_cnt[0]) return false;
+    *word=g_fifo[0][g_fifo_head[0]];return true;
+}
+uint32_t nds_io_offline_wake_flags() {return g_if[1];}
+void nds_io_offline_irq_clear(uint32_t bits) {nds_clear_irq(1,bits);}
+bool nds_io_offline_memory(uint32_t addr, uint8_t* bytes, uint32_t size,
+                            bool write, uint64_t now) {
+    const bool main=addr>=0x02000000u && addr<0x02800000u && size<=0x02800000u-addr;
+    const bool arm7_read=!write && addr>=0x037F8000u && addr<0x03810000u && size<=0x03810000u-addr;
+    if (!bytes || !size || (!main&&!arm7_read)) return false;
+    if (!write) return bus_debug_copy(7,addr,bytes,size);
+    OfflineArm7Context context(now);
+    while (size && (addr&3u)) {bus_write_u8(addr++,*bytes++);--size;}
+    while (size>=4u) {uint32_t value;std::memcpy(&value,bytes,4);bus_write_u32(addr,value);addr+=4;bytes+=4;size-=4;}
+    while (size) {bus_write_u8(addr++,*bytes++);--size;}
+    return true;
+}
+
+bool nds_io_offline_spi_idle() {
+    return !(g_spicnt&0x0080u) && !g_fw_hold && !g_pm_hold && !g_tsc_datapos && !(g_rtc_io&4u);
+}
+
+bool nds_io_offline_spi(uint32_t device, const uint8_t* tx, uint8_t* rx,
+                         uint32_t size) {
+    if (device>2u || !tx || !size || size>0x800005u || !nds_io_offline_spi_idle())
+        return false;
+    for (uint32_t i=0;i<size;++i) {
+        const uint8_t value=device==0u?pm_write(tx[i]):device==1u?fw_write(tx[i]):tsc_write(tx[i]);
+        g_spi_resp=value;
+        if (rx) rx[i]=value;
+    }
+    if (device==0u) pm_release();
+    else if (device==1u) fw_release();
+    else tsc_release();
+    // The service completes the whole transaction. No guest instruction can
+    // observe an intermediate BUSY byte or an asserted chip-select.
+    g_spicnt=uint16_t(device==0u?0x8002u:device==1u?0x8100u:0x8201u);
+    g_spi_deadline=UINT64_MAX;
+    return true;
+}
+
+bool nds_io_offline_rtc(uint8_t reg, bool write, uint8_t* bytes, uint32_t size) {
+    const bool valid_reg=(reg&~0x70u)==0u;
+    const uint32_t limit=(reg==0x20u)?7u:(reg==0x60u||reg==0x10u||reg==0x50u)?3u:1u;
+    if (!valid_reg || !bytes || !size || size>limit || (g_rtc_io&0x04u)) return false;
+    const uint8_t previous_cmd=g_rtc_cmd;
+    const int previous_pos=g_rtc_inpos;
+    uint8_t previous_output[8];std::memcpy(previous_output,g_rtc_output,8);
+    g_rtc_cmd=uint8_t(0x06u|reg|(write?0u:0x80u));
+    if (write) {
+        for (uint32_t i=0;i<size;++i) {g_rtc_inpos=int(i+1);rtc_cmd_write(bytes[i]);}
+    } else {
+        std::memset(g_rtc_output,0,8);rtc_cmd_read();std::memcpy(bytes,g_rtc_output,size);
+    }
+    g_rtc_cmd=previous_cmd;g_rtc_inpos=previous_pos;
+    std::memcpy(g_rtc_output,previous_output,8);
+    return true;
+}
+
+uint32_t nds_io_offline_touch() {
+    return (g_keyinput&(1u<<22))?0x06000000u:
+        (uint32_t(g_tsc_x)&0xFFFu)|((uint32_t(g_tsc_y)&0xFFFu)<<12u)|0x01000000u;
+}
+
 bool nds_io_native_math_address(uint32_t addr, uint32_t width) {
     return (width==1u || width==2u || width==4u) &&
         (addr&3u)+width<=4u && math_addr(addr) && math_addr(addr+width-1u);
