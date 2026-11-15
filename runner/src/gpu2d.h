@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include "gpu3d_survivors.h"
 
 // ---- Threaded scanline rendering -----------------------------------------
 // Per-scanline rendering can run on worker threads driven from a per-line
