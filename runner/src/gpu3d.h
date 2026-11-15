@@ -71,6 +71,8 @@ bool nds_gpu3d_set_runtime_internal_scale(uint8_t scale);
 uint8_t nds_gpu3d_internal_scale();
 void nds_gpu3d_set_display_readback_latency(bool enabled);
 bool nds_gpu3d_display_readback_latency();
+// Visibility is guest state, independent of whether a CPU readback exists.
+bool nds_gpu3d_display_visible();
 // Presentation handle for the high-resolution RGBA8 surface, whose channels
 // carry the same RGB6/alpha5 values as the integer surface above, normalized
 // by 63 and 31. Zero unless an accelerated renderer is active at scale > 1.

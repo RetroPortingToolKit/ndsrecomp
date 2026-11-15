@@ -873,6 +873,11 @@ bool nds_gpu3d_display_readback_latency() {
 #endif
 }
 
+bool nds_gpu3d_display_visible() {
+    const auto& gpu=g_nds.GPU.GPU3D;
+    return gpu.RenderingEnabled&&!gpu.AbortFrame;
+}
+
 uint32_t nds_gpu3d_compute_output_texture_hires() {
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
     auto* renderer = dynamic_cast<NdsAcceleratedRenderer*>(
