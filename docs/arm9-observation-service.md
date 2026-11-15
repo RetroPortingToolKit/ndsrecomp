@@ -67,6 +67,8 @@ MKDS used identical preparation/input but different current-profile trajectories
 instructions fell about 4.7% and polygon submissions about 29.5%. Its whole-process
 gain cannot be attributed solely to this service. MPH scene, health and positions
 matched; instructions differed about 0.6% and polygon submissions about 0.1%.
+Actual-observation GX boundary requests remain about 8.84/frame in MKDS and
+6.11/frame in MPH; geometry-stall rounds and ordinary readbacks remain zero.
 These are shared-host observations, not general performance guarantees. Sampled
 exclusive execution timing is scaled by actual sampled rounds; Tier3 is measured
 separately and carved out before addition. Final combined practical review is
