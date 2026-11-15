@@ -16,6 +16,8 @@ bool find_file(const uint8_t* rom, uint32_t bytes, std::string_view path,
                View* out, uint16_t directory = 0xf000);
 bool inspect(const View& input, uint32_t* output_bytes,
              uint32_t limit = 8u * 1024u * 1024u);
+bool validate(const View& input, uint32_t* output_bytes,
+              uint32_t limit = 8u * 1024u * 1024u);
 // Transactional host decode: malformed/unsupported input leaves out unchanged.
 // Guest publication is a separate, single canonical write after validation.
 bool decode(const View& input, std::vector<uint8_t>* out,

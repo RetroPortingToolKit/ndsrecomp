@@ -42,7 +42,7 @@ uint32_t nds_io_offline_wake_flags();
 bool nds_io_offline_card_idle();
 // Immutable asset view only when the cartridge is in normal mode and its
 // command/backup bus has no pending transaction. The caller owns SDK locking.
-bool nds_io_asset_cartridge(const uint8_t** bytes, uint32_t* size);
+bool nds_io_asset_cartridge(const uint8_t** bytes, uint32_t* size, bool require_idle=true);
 void nds_io_offline_wireless_power(bool enabled,uint64_t now);
 bool nds_io_offline_wireless_vram(uint32_t source,uint32_t size,bool clear,uint64_t now);
 bool nds_io_offline_card_spi(const uint8_t* tx,uint8_t* rx,uint32_t size,uint64_t now);

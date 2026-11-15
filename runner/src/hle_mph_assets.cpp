@@ -266,6 +266,9 @@ void complete(uint32_t kind) {
         nds_halt("MPH assets: invalid native continuation"); return;
     }
     const uint32_t allocation = g_cpu.R[0];
+    if (kind == File && overlaps(frame[Argument], 4u, sp, frame_size)) {
+        nds_halt("MPH assets: output slot aliases native frame"); return;
+    }
     if (kind == File && !allocation) {
         bus_write_u32(frame[Argument], 0);
         g_cpu.R[13] = sp + frame_size; g_cpu.R[14] = frame[Return];
@@ -278,6 +281,16 @@ void complete(uint32_t kind) {
     const uint32_t destination = allocation + (kind == Archive ? 0x28u : 0u);
     if (!ram(allocation, size + (kind == Archive ? 0x28u : 0u))) {
         nds_halt("MPH assets: invalid guest allocation"); return;
+    }
+    // A restored allocator result must not overwrite the live continuation or
+    // its ownership metadata through a different virtual mirror of the RAM.
+    if (overlaps(destination, size, sp, frame_size) ||
+        (kind == File && overlaps(destination, size, frame[Argument], 4u)) ||
+        (kind == Archive &&
+            (overlaps(destination, size, frame[Manager], 0x7Cu) ||
+             overlaps(destination, size, archive_manager_slot, 4u) ||
+             overlaps(destination, size, allocation, 0x28u)))) {
+        nds_halt("MPH assets: allocation aliases native ownership"); return;
     }
     std::vector<uint8_t> decoded;
     if (!service.decode(file, &decoded) || decoded.size() != size) {
@@ -295,6 +308,8 @@ void complete(uint32_t kind) {
     if (kind == File) { bus_write_u32(frame[Argument], allocation); ++count.files; }
     else ++count.archives;
     count.bytes += size;
+    count.last_offset=file.offset;count.last_compressed=file.size;
+    count.last_destination=destination;count.last_decoded=size;
     g_cpu.R[13] = sp + frame_size;
     g_cpu.R[14] = frame[Return];
     g_cpu.R[0] = kind == File ? size : 1u;

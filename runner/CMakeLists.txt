@@ -106,6 +106,8 @@ option(NDS_ARM9_OBSERVATION_SERVICE
     "Native ARM9 math and IRQ/cache control at actual observation boundaries" OFF)
 option(NDS_OFFLINE_ARM7
     "Native offline ARM7 driver services and ARM9 event-horizon execution" OFF)
+option(NDS_WHOLE_ASSETS
+    "Native complete file-to-decompressed-RAM asset operations" OFF)
 option(NDS_TIER3_CANONICAL_STATE
     "Share canonical registers/banks with faithful execution" ON)
 set(NDS_MKDS_PERFORMANCE_BANK_DIR "" CACHE PATH
@@ -623,6 +625,9 @@ if(NDS_ARM9_DYNARMIC_ENABLED)
     endif()
     if(NDS_OFFLINE_ARM7)
         string(APPEND NDS_BUILD_VARIANT "-offline-arm7-v1")
+    endif()
+    if(NDS_WHOLE_ASSETS)
+        string(APPEND NDS_BUILD_VARIANT "-whole-assets-v1")
     endif()
     if(NDS_NATIVE_PRECISE_WRITES)
         string(APPEND NDS_BUILD_VARIANT "-physical-write-publication-v1")
@@ -1164,6 +1169,14 @@ if(NDS_MKDS_PERFORMANCE)
     target_compile_definitions(nds_runner PRIVATE NDS_MKDS_PERFORMANCE=1)
 endif()
 if(NDS_ARM9_DYNARMIC_ENABLED)
+    if(NDS_WHOLE_ASSETS)
+        if(NOT NDS_OFFLINE_ARM7)
+            message(FATAL_ERROR "Whole asset services require the qualified offline profile")
+        endif()
+        target_sources(nds_runner PRIVATE src/native_asset_data.cpp src/whole_asset_service.cpp
+            src/hle_mkds_assets.cpp src/hle_mph_assets.cpp)
+        target_compile_definitions(nds_runner PRIVATE NDS_WHOLE_ASSETS=1)
+    endif()
     if(NDS_OFFLINE_ARM7)
         if(NOT NDS_ARM9_OBSERVATION_SERVICE OR NOT NDS_3D_GEOMETRY STREQUAL "NATIVE")
             message(FATAL_ERROR "Offline driver services require native geometry and ARM9 observation services")

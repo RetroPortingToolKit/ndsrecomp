@@ -1,5 +1,8 @@
 #include "execution_model.h"
 #include "arm9_native_options.h"
+#if defined(NDS_WHOLE_ASSETS)
+#include "whole_asset_service.h"
+#endif
 #if defined(NDS_OFFLINE_ARM7)
 #include "offline_arm7.h"
 #endif
@@ -59,6 +62,9 @@ const char* nds_execution_model_identity() {
 #endif
 #if defined(NDS_OFFLINE_ARM7)
         (nds_offline_arm7_selected()?"-offline-arm7-v1":"")+
+#endif
+#if defined(NDS_WHOLE_ASSETS)
+        (nds_assets::selected()?"-whole-assets-v1":"")+
 #endif
         (nds_native_options().blocks?"-block64":"")+
         (nds_native_options().data?"-data-window":"")+

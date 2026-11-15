@@ -21,6 +21,9 @@
 #include "arm9_native.h"
 #include "scheduler.h"
 #include "direct_boot.h"
+#if defined(NDS_WHOLE_ASSETS)
+#include "whole_asset_service.h"
+#endif
 #if defined(NDS_OFFLINE_ARM7)
 #include "offline_arm7.h"
 #endif
@@ -1778,6 +1781,13 @@ int main(int argc, char** argv) {
     if (!nds_offline_arm7_configure(rom_sha1,offline_requested,&execution_error) && offline_requested) {
         std::fprintf(stderr, "refusing to start offline services: %s\n", execution_error.c_str());
         return 1;
+    }
+#endif
+#if defined(NDS_WHOLE_ASSETS)
+    const char* asset_setting=std::getenv("NDS_WHOLE_ASSETS");
+    if(!nds_assets::configure(rom_sha1.c_str(),offline_requested&&
+       (!asset_setting||std::strcmp(asset_setting,"0")!=0))){
+        std::fprintf(stderr,"refusing to start whole asset services for this image\n");return 1;
     }
 #endif
     const std::string execution_build_id = std::string(NDS_RUNNER_BUILD_ID) +

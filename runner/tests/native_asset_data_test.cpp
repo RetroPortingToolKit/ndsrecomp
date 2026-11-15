@@ -29,6 +29,8 @@ int main(int argc, char** argv) {
     require(decode(view(literals), &out) && out == std::vector<uint8_t>({'a','b','c'}), "LZ literals");
     const std::vector<uint8_t> overlap{0x10,18,0,0,0x40,'A',0xe0,0};
     require(decode(view(overlap), &out) && out == std::vector<uint8_t>(18,'A'), "LZ forward overlap");
+    uint32_t validated=0;
+    require(validate(view(overlap),&validated)&&validated==18,"Complete stream validation before guest allocation");
     const std::vector<uint8_t> flags{0x10,9,0,0,0,'A','B','C','D','E','F','G','H',0,'I'};
     require(decode(view(flags), &out) && out == std::vector<uint8_t>({'A','B','C','D','E','F','G','H','I'}), "LZ second flag group");
     const std::vector<uint8_t> rle{0x30,9,0,0,0x81,'Z',4,'a','b','c','d','e'};
@@ -39,6 +41,8 @@ int main(int argc, char** argv) {
         {0x20,1,0,0,0}, {0x10,0,0,0}}) {
         out = {99};
         require(!decode(view(bad), &out) && out == std::vector<uint8_t>({99}), "Malformed input must not publish partial output");
+        validated=123;
+        require(!validate(view(bad),&validated)&&validated==123,"Malformed stream must decline before guest allocation");
     }
     uint32_t count = 123;
     require(!inspect(view(overlap), &count, 17) && count == 123, "Output bound");

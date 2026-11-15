@@ -9,6 +9,9 @@
 
 #include "runtime_arm.h"
 #include "physical_write.h"
+#if defined(NDS_WHOLE_ASSETS)
+#include "whole_asset_service.h"
+#endif
 #if defined(NDS_ARM9_DYNARMIC)
 #include "arm9_native.h"
 #endif
@@ -622,6 +625,27 @@ const CachedStaticLookup* lookup_static_cached_impl(const CpuCtx& c,
             if (cache_validation_pages(expanded, replacement.validation)) {
                 expanded.fn = replacement.function;
                 slot = expanded;
+            }
+        }
+    }
+#endif
+#if defined(NDS_WHOLE_ASSETS)
+    if(hit||nds_assets::is_entry(g_nds_active,pc,thumb)) {
+        const auto replacement=nds_assets::resolve(g_nds_active,pc,thumb);
+        if(replacement.guard_size) {
+            const uint32_t last=(replacement.guard_start+replacement.guard_size-1)&~0xfffu;
+            for(uint32_t page=replacement.guard_start&~0xfffu;;page+=4096) {
+                if(!cache_page_generation(slot,page)){slot={};return nullptr;}
+                if(page==last)break;
+            }
+            if(replacement.validation&&!cache_validation_pages(slot,replacement.validation)){
+                slot={};return nullptr;
+            }
+        }
+        if(replacement.function) {
+            CachedStaticLookup expanded=slot;expanded.validation=replacement.validation;expanded.page_count=0;
+            if(cache_validation_pages(expanded,replacement.validation)){
+                expanded.fn=replacement.function;slot=expanded;
             }
         }
     }

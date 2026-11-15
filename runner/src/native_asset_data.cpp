@@ -12,6 +12,46 @@ uint32_t u32(const uint8_t* p) {
 bool within(uint32_t offset, uint32_t count, uint32_t size) {
     return offset <= size && count <= size - offset;
 }
+// Validation needs only the produced-byte count. Backreferences never require
+// their values until the actual decode, so preflight allocates no output copy.
+bool walk(const View& input, uint32_t count, uint8_t* decoded) {
+    uint32_t source = 4, destination = 0;
+    while (destination < count) {
+        if (source == input.size) return false;
+        const uint8_t flags = input.data[source++];
+        if (input.data[0] == 0x30) {
+            const uint32_t length = (flags & 127u) + ((flags & 128u) ? 3u : 1u);
+            if (length > count - destination) return false;
+            if (flags & 128u) {
+                if (source == input.size) return false;
+                if (decoded) std::memset(decoded + destination, input.data[source], length);
+                ++source;
+            } else {
+                if (!within(source, length, input.size)) return false;
+                if (decoded) std::memcpy(decoded + destination, input.data + source, length);
+                source += length;
+            }
+            destination += length; continue;
+        }
+        for (unsigned bit = 0; bit < 8 && destination < count; ++bit) {
+            if (flags & (0x80u >> bit)) {
+                if (!within(source, 2, input.size)) return false;
+                const uint8_t first = input.data[source++], second = input.data[source++];
+                const uint32_t length = (first >> 4) + 3u;
+                const uint32_t distance = ((first & 15u) << 8 | second) + 1u;
+                if (distance > destination || length > count - destination) return false;
+                if (decoded) for (uint32_t i = 0; i < length; ++i)
+                    decoded[destination + i] = decoded[destination + i - distance];
+                destination += length;
+            } else {
+                if (source == input.size) return false;
+                if (decoded) decoded[destination] = input.data[source];
+                ++destination; ++source;
+            }
+        }
+    }
+    return true;
+}
 }
 
 bool slice(const uint8_t* rom, uint32_t bytes, uint32_t offset,
@@ -101,40 +141,13 @@ bool decode(const View& input, std::vector<uint8_t>* out, uint32_t limit) {
     if (!out || !inspect(input, &count, limit)) return false;
     try {
         std::vector<uint8_t> decoded(count);
-        uint32_t source = 4, destination = 0;
-        while (destination < count) {
-            if (source == input.size) return false;
-            const uint8_t flags = input.data[source++];
-            if (input.data[0] == 0x30) {
-                const uint32_t length = (flags & 127u) + ((flags & 128u) ? 3u : 1u);
-                if (length > count - destination) return false;
-                if (flags & 128u) {
-                    if (source == input.size) return false;
-                    std::memset(decoded.data() + destination, input.data[source++], length);
-                } else {
-                    if (!within(source, length, input.size)) return false;
-                    std::memcpy(decoded.data() + destination, input.data + source, length);
-                    source += length;
-                }
-                destination += length; continue;
-            }
-            for (unsigned bit = 0; bit < 8 && destination < count; ++bit) {
-                if (flags & (0x80u >> bit)) {
-                    if (!within(source, 2, input.size)) return false;
-                    const uint8_t first = input.data[source++], second = input.data[source++];
-                    const uint32_t length = (first >> 4) + 3u;
-                    const uint32_t distance = ((first & 15u) << 8 | second) + 1u;
-                    if (distance > destination || length > count - destination) return false;
-                    for (uint32_t i = 0; i < length; ++i) {
-                        decoded[destination] = decoded[destination - distance]; ++destination;
-                    }
-                } else {
-                    if (source == input.size) return false;
-                    decoded[destination++] = input.data[source++];
-                }
-            }
-        }
+        if (!walk(input,count,decoded.data())) return false;
         out->swap(decoded); return true;
     } catch (const std::bad_alloc&) { return false; }
+}
+bool validate(const View& input,uint32_t* output_bytes,uint32_t limit) {
+    uint32_t count=0;
+    if(!output_bytes||!inspect(input,&count,limit)||!walk(input,count,nullptr))return false;
+    *output_bytes=count;return true;
 }
 }

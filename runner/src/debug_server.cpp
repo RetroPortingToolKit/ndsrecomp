@@ -20,6 +20,9 @@
 #if defined(NDS_OFFLINE_ARM7)
 #include "offline_arm7.h"
 #include "offline_arm7_sound.h"
+#if defined(NDS_WHOLE_ASSETS)
+#include "whole_asset_service.h"
+#endif
 #endif
 #include "savestate.h"
 #include "state.h"
@@ -503,6 +506,13 @@ std::string handle(const std::string& line) {
 #endif
 
     if (cmd == "ping") return "{\"pong\":true}";
+    if(cmd=="whole_assets") {
+#if defined(NDS_WHOLE_ASSETS)
+        return nds_assets::json();
+#else
+        return "{\"available\":false}";
+#endif
+    }
     if (cmd == "offline_arm7") {
 #if defined(NDS_OFFLINE_ARM7)
         return std::string("{\"available\":true,\"selected\":")+
