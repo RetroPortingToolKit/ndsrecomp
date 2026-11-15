@@ -431,6 +431,10 @@ void scheduler_set_cpu_boot(int cpu, uint32_t entry, uint32_t sp,
 
 void scheduler_run_round() {
     RoundActivityGuard round_activity;
+#if defined(NDS_OFFLINE_ARM7)
+    if (nds_offline_arm7_selected() && !nds_offline_arm7_active())
+        nds_offline_arm7_try_takeover(g_sys_timestamp);
+#endif
     // melonDS-faithful interleave (docs/scheduler_design.md, Commit A). Each
     // outer iteration is capped at kIterCap SYSTEM cycles (or the next scheduled
     // event, whichever is sooner). ARM9 runs FIRST up to its target and may

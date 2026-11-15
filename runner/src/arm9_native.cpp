@@ -48,6 +48,9 @@ std::string nds_arm9_native_preparation_json() { return "{\"available\":false}";
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 #if defined(_MSC_VER)
 #include <intrin.h>
 #else
@@ -242,6 +245,14 @@ public:
             };
             conf.memory_tick_address_mask=0xFF000000u;
             conf.memory_tick_address_value=0x04000000u;
+#if defined(NDS_OFFLINE_ARM7)
+            // Mutable PCM is observed before actual RAM callback stores.
+            // Direct read pages still bypass callback timing entirely.
+            if (nds_offline_arm7_selected()) {
+                conf.memory_tick_address_mask=0;
+                conf.memory_tick_address_value=0;
+            }
+#endif
             conf.enable_native_cpsr_control=true;
         }
 #endif

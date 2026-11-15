@@ -119,6 +119,7 @@ typedef struct NdsDispatchEntry {
 // design.
 #define NDS_LIVE_BANK_ABI_VERSION 6u
 #define NDS_LIVE_BANK_FLAG_DEPENDENCY_CLOSURE 0x00000001u
+#define NDS_LIVE_BANK_FLAG_PREWRITE_AUDIO 0x00000002u
 
 typedef struct NdsBusFastWin NdsBusFastWin;
 
@@ -226,6 +227,16 @@ void runtime_note_code_write(void);
 void runtime_note_code_write_pages(const uint32_t* first, uint32_t count);
 void runtime_note_live_write(uint32_t addr, uint32_t width,
                              uint32_t old_value, uint32_t new_value);
+// Physical pre-mutation observation. Publication below remains post-mutation.
+void runtime_before_ram_write(const uint8_t* bytes, uint32_t size, uint64_t system_time);
+extern uint64_t g_bus_master_write_timestamp;
+#if defined(NDS_OFFLINE_ARM7)
+extern unsigned long long g_runtime_cycles;
+static inline uint64_t runtime_ram_write_time(void) {
+    return g_bus_master_write_timestamp != UINT64_MAX ? g_bus_master_write_timestamp :
+        (g_nds_active == NDS_ARM9 ? g_runtime_cycles >> 1u : g_runtime_cycles);
+}
+#endif
 // Optional native RAM stores may publish directly only within this qualified
 // execution window. The coverage epoch remains part of every store transaction.
 uint64_t* runtime_native_store_epoch(void);
@@ -352,6 +363,9 @@ static inline void bus_write_u32(uint32_t addr, uint32_t val) {
                 memcpy(&old_value, w->data + off, 4);
                 runtime_note_live_write(addr, 4u, old_value, val);
             }
+#if defined(NDS_OFFLINE_ARM7)
+            runtime_before_ram_write(w->data + off, 4u, runtime_ram_write_time());
+#endif
             memcpy(w->data + off, &val, 4);
             nds_busf_note_write(w, off, 4u);
             return;
@@ -370,6 +384,9 @@ static inline void bus_write_u16(uint32_t addr, uint16_t val) {
                 memcpy(&old_value, w->data + off, 2);
                 runtime_note_live_write(addr, 2u, old_value, val);
             }
+#if defined(NDS_OFFLINE_ARM7)
+            runtime_before_ram_write(w->data + off, 2u, runtime_ram_write_time());
+#endif
             memcpy(w->data + off, &val, 2);
             nds_busf_note_write(w, off, 2u);
             return;
@@ -385,6 +402,9 @@ static inline void bus_write_u8(uint32_t addr, uint8_t val) {
         if (w && w->data) {
             if (addr >= 0x027E0000u && addr < 0x027E0040u)
                 runtime_note_live_write(addr, 1u, w->data[off], val);
+#if defined(NDS_OFFLINE_ARM7)
+            runtime_before_ram_write(w->data + off, 1u, runtime_ram_write_time());
+#endif
             w->data[off] = val;
             nds_busf_note_write(w, off, 1u);
             return;

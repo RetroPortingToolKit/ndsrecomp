@@ -104,6 +104,8 @@ option(NDS_NATIVE_CONTROL
     "Experiment: native pure status/multiply and stateless ARM9 cache operations" OFF)
 option(NDS_ARM9_OBSERVATION_SERVICE
     "Native ARM9 math and IRQ/cache control at actual observation boundaries" OFF)
+option(NDS_OFFLINE_ARM7
+    "Native offline ARM7 driver services and ARM9 event-horizon execution" OFF)
 option(NDS_TIER3_CANONICAL_STATE
     "Share canonical registers/banks with faithful execution" ON)
 set(NDS_MKDS_PERFORMANCE_BANK_DIR "" CACHE PATH
@@ -441,6 +443,9 @@ set(NDS_PREBUILT_BANK_ARCHIVE "" CACHE FILEPATH
 set(NDS_PREBUILT_BANK_ARCHIVE_SHA256 "" CACHE STRING
     "Required SHA256 of NDS_PREBUILT_BANK_ARCHIVE")
 if(NDS_PREBUILT_BANK_ARCHIVE)
+    if(NDS_OFFLINE_ARM7 AND NDS_ARM9_DYNARMIC_ENABLED)
+        message(FATAL_ERROR "Offline audio requires generated banks rebuilt against the current prewrite runtime header")
+    endif()
     if(NOT EXISTS "${NDS_PREBUILT_BANK_ARCHIVE}" OR NOT NDS_PREBUILT_BANK_ARCHIVE_SHA256)
         message(FATAL_ERROR "Prebuilt bank archive requires an existing file and expected SHA256")
     endif()
@@ -470,6 +475,9 @@ add_library(nds_banks STATIC
     ${SM64DS_BANK_SOURCES}
     ${TITLE_BANK_SOURCES})
 ndsrecomp_limit_generated_compiles(nds_banks)
+if(NDS_OFFLINE_ARM7 AND NDS_ARM9_DYNARMIC_ENABLED)
+    target_compile_definitions(nds_banks PRIVATE NDS_OFFLINE_ARM7=1)
+endif()
 ndsrecomp_limit_link(nds_banks)
 target_include_directories(nds_banks PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
@@ -594,6 +602,9 @@ if(NDS_ARM9_DYNARMIC_ENABLED)
         file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-observation-callbacks.patch" _nds_observation_patch_sha)
         string(SUBSTRING "${_nds_observation_patch_sha}" 0 12 _nds_observation_patch_short)
         string(APPEND NDS_BUILD_VARIANT "-observation-v1-sdk${_nds_observation_patch_short}")
+    endif()
+    if(NDS_OFFLINE_ARM7)
+        string(APPEND NDS_BUILD_VARIANT "-offline-arm7-v1")
     endif()
     if(NDS_NATIVE_PRECISE_WRITES)
         string(APPEND NDS_BUILD_VARIANT "-physical-write-publication-v1")
@@ -1135,6 +1146,13 @@ if(NDS_MKDS_PERFORMANCE)
     target_compile_definitions(nds_runner PRIVATE NDS_MKDS_PERFORMANCE=1)
 endif()
 if(NDS_ARM9_DYNARMIC_ENABLED)
+    if(NDS_OFFLINE_ARM7)
+        if(NOT NDS_ARM9_OBSERVATION_SERVICE OR NOT NDS_3D_GEOMETRY STREQUAL "NATIVE")
+            message(FATAL_ERROR "Offline driver services require native geometry and ARM9 observation services")
+        endif()
+        target_sources(nds_runner PRIVATE src/offline_arm7.cpp src/offline_arm7_sound.cpp src/offline_arm7_card.cpp)
+        target_compile_definitions(nds_runner PRIVATE NDS_OFFLINE_ARM7=1)
+    endif()
     if(NDS_MPH_PERFORMANCE)
         target_compile_definitions(nds_runner PRIVATE NDS_MPH_PERFORMANCE=1)
     endif()

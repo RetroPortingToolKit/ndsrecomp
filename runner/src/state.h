@@ -136,8 +136,9 @@ uint8_t bus_debug_read8(int cpu, uint32_t addr);
 // memory view for the duration of the transfer and still feed the always-on
 // bus ring, independent of which CPU the scheduler last loaded.
 uint32_t bus_device_read32(int cpu, uint32_t addr);
-void bus_device_write32(int cpu, uint32_t addr, uint32_t value);
-void bus_device_write16(int cpu, uint32_t addr, uint16_t value);
+void bus_device_write32(int cpu, uint32_t addr, uint32_t value, uint64_t system_time = UINT64_MAX);
+void bus_device_write16(int cpu, uint32_t addr, uint16_t value, uint64_t system_time = UINT64_MAX);
+bool bus_device_resolve_ram(int cpu, uint32_t address, uint32_t size, const uint8_t** data);
 // Overlay bytes onto the loaded ARM9 BIOS image (direct boot on a
 // reimplemented BIOS copies the cartridge's Nintendo logo in at +0x20).
 void bus_patch_arm9_bios(uint32_t offset, const uint8_t* p, uint32_t n);

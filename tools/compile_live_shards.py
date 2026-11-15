@@ -1081,6 +1081,9 @@ def write_wrapper(path: Path, bank: str, candidate_id: str,
         "    static NdsLiveBankInfo info;",
         "    info.abi_version = NDS_LIVE_BANK_ABI_VERSION;",
         "    info.flags = NDS_LIVE_BANK_FLAG_DEPENDENCY_CLOSURE;",
+        "#if defined(NDS_OFFLINE_ARM7)",
+        "    info.flags |= NDS_LIVE_BANK_FLAG_PREWRITE_AUDIO;",
+        "#endif",
         f'    info.bank_id = "{bank}";',
         f'    info.candidate_id = "{candidate_id}";',
         f'    info.title_sha1 = "{rom_sha1}";',
@@ -1260,7 +1263,9 @@ def compile_shard_dll(args: argparse.Namespace, sources: list[Path],
     model, so the define list is built once here rather than per backend.
     """
     static_cpu = 0 if cpu == 9 else 1
-    defines = [f"-DNDS_STATIC_CPU={static_cpu}"]
+    # Current runners export the physical prewrite ABI as a no-op outside the
+    # offline profile. Both compilers must emit and advertise the same fence.
+    defines = [f"-DNDS_STATIC_CPU={static_cpu}", "-DNDS_OFFLINE_ARM7=1"]
     if args.compiler == "tcc":
         includes = [tcc_include_dir(args), src_dir]
         command = [

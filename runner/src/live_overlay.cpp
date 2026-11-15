@@ -26,6 +26,9 @@
 #include "runtime_arm.h"
 #include "state.h"
 #include "emu_profile.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 #include "../../recompiler/src/codegen_identity.h"
 
 #if defined(_WIN32)
@@ -1069,11 +1072,16 @@ bool preflight_live_bank(const NdsLiveBankInfo& info,
         return false;
     };
     constexpr uint32_t kKnownFlags =
-        NDS_LIVE_BANK_FLAG_DEPENDENCY_CLOSURE;
+        NDS_LIVE_BANK_FLAG_DEPENDENCY_CLOSURE | NDS_LIVE_BANK_FLAG_PREWRITE_AUDIO;
     if (info.flags & ~kKnownFlags) {
         return fail(RejectReason::LoadUnknownFlags,
                     "live bank has unknown safety flags");
     }
+#if defined(NDS_OFFLINE_ARM7)
+    if (nds_offline_arm7_selected() && !(info.flags & NDS_LIVE_BANK_FLAG_PREWRITE_AUDIO))
+        return fail(RejectReason::LoadUnknownFlags,
+                    "offline audio requires a live bank with physical prewrite observation");
+#endif
     // The shard build passes the CPU identity twice: as metadata `cpu` and
     // as -DNDS_STATIC_CPU, which folds the ARM9/ARM7 timing ternaries into
     // the generated bodies at compile time. If they disagree the bank runs

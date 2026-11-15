@@ -21,6 +21,9 @@
 #include "arm9_native.h"
 #include "scheduler.h"
 #include "direct_boot.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 #include "generated_firmware.h"
 #include "firmware_state.h"
 #include "firmware_user_settings.h"
@@ -1766,6 +1769,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "refusing to start: %s\n", execution_error.c_str());
         return 1;
     }
+#if defined(NDS_OFFLINE_ARM7)
+    if (!nds_offline_arm7_configure(rom_sha1,
+            !resolved_network.enabled && !resolved_network.wfc_enabled &&
+            resolved_network.backend != NdsNetBackendKind::Replay, &execution_error)) {
+        std::fprintf(stderr, "refusing to start offline services: %s\n", execution_error.c_str());
+        return 1;
+    }
+#endif
     const std::string execution_build_id = std::string(NDS_RUNNER_BUILD_ID) +
         "-" + nds_execution_model_identity();
     std::fprintf(stderr, "[execution] %s\n", nds_execution_model_identity());
@@ -2270,6 +2281,9 @@ int main(int argc, char** argv) {
         // Reset both cores: SVC mode, IRQ+FIQ masked, ARM state, reset vector.
         const uint32_t reset_cpsr = 0x13u | CPSR_I_BIT | CPSR_F_BIT;
         scheduler_init();
+#if defined(NDS_OFFLINE_ARM7)
+        nds_offline_arm7_reset();
+#endif
         scheduler_reset_cpu(0, 0xFFFF0000u, reset_cpsr);  // ARM9
         scheduler_reset_cpu(1, 0x00000000u, reset_cpsr);  // ARM7
 

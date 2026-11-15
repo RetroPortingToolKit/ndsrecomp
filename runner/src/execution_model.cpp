@@ -1,5 +1,8 @@
 #include "execution_model.h"
 #include "arm9_native_options.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 #if defined(NDS_ARM9_DYNARMIC)
 #include "arm9_native.h"
 #endif
@@ -53,6 +56,9 @@ const char* nds_execution_model_identity() {
 #endif
 #if defined(NDS_ARM9_OBSERVATION_SERVICE)
         (nds_arm9_observation_service()?"-observation-v1":"")+
+#endif
+#if defined(NDS_OFFLINE_ARM7)
+        (nds_offline_arm7_selected()?"-offline-arm7-v1":"")+
 #endif
         (nds_native_options().blocks?"-block64":"")+
         (nds_native_options().data?"-data-window":"")+
