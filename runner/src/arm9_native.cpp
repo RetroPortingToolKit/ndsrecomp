@@ -173,7 +173,7 @@ public:
     using ReadPages=std::array<uint8_t*,Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
     std::unique_ptr<ReadPages> read_pages;
     uint64_t read_mapping_generation=~uint64_t(0),read_sites=0,read_callbacks=0;
-    uint64_t data_coalesced=0,gx_coalesced=0,slow_reads=0,slow_writes=0;
+    uint64_t data_coalesced=0,gx_coalesced=0,gx_boundary_handoffs=0,slow_reads=0,slow_writes=0;
     uint64_t arithmetic_cap_splits=0;
     void refresh_reads() {
         if(!read_pages||read_mapping_generation==g_busf_mapping_generation)return;
@@ -409,6 +409,7 @@ public:
         if(!ordinary_ram) {
             if(census_enabled)census(write_census,access_key(a));
             ++slow_writes;
+            if(!batch_gx&&nds_native_gx_command(a,width))++gx_boundary_handoffs;
             if(batch_gx||batch_data)context();else device();
         } else {g_cpu.R[15]=(*registers)[15];g_cpu.R[14]=(*registers)[14];}
         // Only this inline RAM store is covered by the exact generation test
@@ -423,12 +424,13 @@ public:
         }
         if(batch_data)++data_coalesced;
         if(batch_gx) {
-            // The modeled FIFO IS the ordered queue. Submit each command once
-            // at the current guest timestamp, retaining decoding/status/IRQ/DMA.
-            // Avoid an additional host queue and synchronize on actual effects.
+            // Native geometry accepts the input directly; the reference batch
+            // uses its FIFO. Both synchronize on actual observable effects.
             ++gx_coalesced;
             if(nds_gxfifo_stalled()||nds_dma_cpu_stalled(0)||nds_cpu_halted(0)||
-               g_nds_irq_pending_cache[0]||nds_event_break_hit()||nds_slice_over())device();
+               g_nds_irq_pending_cache[0]||nds_event_break_hit()||nds_slice_over()) {
+                ++gx_boundary_handoffs;device();
+            }
         }
         if(generation&&watches.contains(generation))clear();
     }
@@ -757,6 +759,7 @@ std::string nds_arm9_native_json() {
         ",\"direct_read_sites\":"+std::to_string(native->read_sites)+
         ",\"data_coalesced\":"+std::to_string(native->data_coalesced)+
         ",\"gx_coalesced\":"+std::to_string(native->gx_coalesced)+
+        ",\"gx_boundary_handoffs\":"+std::to_string(native->gx_boundary_handoffs)+
         ",\"slow_reads\":"+std::to_string(native->slow_reads)+
         ",\"slow_writes\":"+std::to_string(native->slow_writes)+
         ",\"instructions\":"+std::to_string(native->instructions)+
