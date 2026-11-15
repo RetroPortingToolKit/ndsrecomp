@@ -26,11 +26,18 @@ banks. Load validates the stream before replacing live state; host command/mesh
 caches are cleared rather than serialized. States from different geometry
 implementations are intentionally incompatible.
 
-Readback remains a raster/composition decision. The qualified MKDS GPU
-composition path can retain 3D on the GPU during no-capture frames; actual guest
-capture still obtains an image. MPH's extra-background CPU composition still
-requires readback. Native geometry alone does not remove that dependency or the
-remaining CPU 2D rasterization.
+Windows SDL3 Native/Performance builds automatically select GPU-resident display
+when the renderer supports Direct3D/OpenGL sharing. CPU scanline work produces
+compact OBJ/window metadata or general 2D survivors independently for each row;
+the GPU performs the final 3D blend for either LCD. Native and adaptive views
+retain their own HUD/window selection. Owned GPU images preserve the observed
+frame across subsequent rendering, and shared bottom targets detach before SDL
+renderer resets. Actual capture, explicit observations and snapshot export can
+obtain canonical native images on demand. CPU 2D rasterization remains.
+
+`NDS_3D_SURVIVORS=0` selects the previous display path. Automatic selection leaves
+Reference/Faithful builds on that path, and unsupported sharing capabilities
+retain the existing renderer fallback.
 
 ## Native model input
 
@@ -68,6 +75,13 @@ frontend frame in MKDS; the native geometry package used 7.283 to 6.224 ms in
 MPH. These are sampled shared-host results, not general throughput guarantees.
 The samples reported zero geometry-stall rounds in both native paths. Final
 combined integration and practical review remain separate gates.
+
+A subsequent matched sample compared GPU-resident display against the retained
+native geometry/model baseline. MKDS process CPU was neutral within variation
+(8.873 to 8.925 ms/frame), with wall time 7.069 to 6.466 ms/frame. MPH used
+6.276 to 5.458 ms of process CPU and 4.993 to 4.402 ms of wall time per frame.
+Both candidates recorded zero ordinary 3D readback calls. These bounded hidden,
+unpaced samples are shared-host observations, not general throughput guarantees.
 
 `native_3d.*`, `native_model.*` and `hle_mkds_model.*` are original MIT code.
 The geometry implementation was derived from the public
