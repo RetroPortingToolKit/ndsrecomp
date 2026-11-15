@@ -1557,6 +1557,15 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_include_directories(native_3d_raster_test PRIVATE ${_native_raster_includes})
   target_compile_definitions(native_3d_raster_test PRIVATE NDS_BUILD_VIDEO_SAVESTATE_TEST=1)
   add_test(NAME native_3d_raster_test COMMAND native_3d_raster_test)
+  # Exercise the build-selected production bridge, not just the standalone
+  # geometry service or the reference-only video fixture.
+  add_executable(native_3d_bridge_test tests/native_3d_bridge_test.cpp
+      src/native_3d.cpp src/native_3d_raster.cpp ${_native_raster_fixture})
+  target_include_directories(native_3d_bridge_test PRIVATE ${_native_raster_includes})
+  target_compile_definitions(native_3d_bridge_test PRIVATE
+      NDS_BUILD_VIDEO_SAVESTATE_TEST=1 NDS_NATIVE_3D=1)
+  add_test(NAME native_3d_bridge_test COMMAND native_3d_bridge_test)
+  set_tests_properties(native_3d_bridge_test PROPERTIES TIMEOUT 20)
 
   # AUXSPI backup-chip protocol: pins the write-enable latch's lifetime across
   # chip-select transfers, which is what silently dropped every cartridge save.
