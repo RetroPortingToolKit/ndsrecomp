@@ -33,7 +33,13 @@ struct Statistics {
     uint64_t input_words{}, commands{}, jobs{}, vertices{}, polygons{};
     uint64_t read_barriers{}, swaps{}, clipped{}, culled{}, overflows{};
     uint64_t cache_hits{}, cache_builds{}, reused_words{};
+    uint64_t native_packets{};
     std::array<uint64_t, 256> command_counts{};
+};
+struct OperationEntry { uint32_t offset{}; uint8_t command{}, count{}; uint16_t reserved{}; };
+struct Mesh {
+    std::vector<OperationEntry> operations;
+    std::vector<uint32_t> parameters;
 };
 
 class Service {
@@ -45,6 +51,8 @@ public:
     // Complete display lists are lowered once to immutable native operations.
     // Partial packed commands retain ordinary ingress and their continuation.
     void Job(std::span<const uint32_t> words);
+    static Mesh CompileMesh(std::span<const uint32_t> words);
+    void DrawMesh(const Mesh& mesh);
     void Direct(uint8_t command, uint32_t parameter);
     void Flush();
     // A real observation boundary: publish the pending draw job at VBlank.
@@ -52,6 +60,7 @@ public:
     bool VBlank();
     uint32_t Read(uint32_t address);
     void AcknowledgeStatus(uint32_t value, uint32_t mask = ~0u);
+    void AcknowledgeDisplay(uint32_t value);
     void SetPresentation(uint16_t width, bool guest_wide_projection);
     bool IRQAsserted() const;
     const Frame& Display() const { return display_; }
@@ -67,7 +76,6 @@ public:
     bool Load(std::span<const uint8_t> bytes, std::string* error);
 
 private:
-    struct OperationEntry { uint32_t offset{}; uint8_t command{}, count{}; uint16_t reserved{}; };
     struct CompiledJob {
         uint64_t hash{};
         std::vector<uint32_t> words, parameters;

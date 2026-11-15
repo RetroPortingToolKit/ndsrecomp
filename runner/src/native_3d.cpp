@@ -179,6 +179,26 @@ void Service::Packed(uint32_t word) {
     }
 }
 void Service::Packed(std::span<const uint32_t> words) { for (uint32_t word : words) Packed(word); }
+Mesh Service::CompileMesh(std::span<const uint32_t> words) {
+    if (words.size() > kOperations / 4) throw std::invalid_argument("native mesh command capacity");
+    Service decoder;
+    decoder.Packed(words);
+    if (decoder.state_.packed_count || decoder.state_.parameter_count)
+        throw std::invalid_argument("incomplete native mesh resource");
+    Mesh mesh;
+    mesh.operations = std::move(decoder.operations_);
+    mesh.parameters = std::move(decoder.payload_);
+    return mesh;
+}
+void Service::DrawMesh(const Mesh& mesh) {
+    if (operations_.size() + mesh.operations.size() > kOperations) Drain(false);
+    if (operations_.size() + mesh.operations.size() > kOperations)
+        throw std::runtime_error("native mesh pending-frame capacity");
+    const auto offset = static_cast<uint32_t>(payload_.size());
+    payload_.insert(payload_.end(), mesh.parameters.begin(), mesh.parameters.end());
+    for (auto op : mesh.operations) { op.offset += offset; operations_.push_back(op); }
+    ++statistics_.native_packets;
+}
 void Service::Job(std::span<const uint32_t> words) {
     // Keep exact equality after hashing. An address or generation alone does
     // not identify a model buffer that a guest regenerates or aliases.
@@ -482,6 +502,9 @@ void Service::AcknowledgeStatus(uint32_t value, uint32_t mask) {
     state_.irq_mode = status >> 30;
     if (value & mask & 0x8000) { state_.stack_error = 0; state_.projection_sp = state_.texture_sp = 0; }
 }
+void Service::AcknowledgeDisplay(uint32_t value) {
+    if (value & (1u << 13)) state_.overflow = 0;
+}
 bool Service::IRQAsserted() const {
     const size_t queued = operations_.size() - consumed_;
     return (state_.irq_mode == 1 && queued < 128) ||
@@ -489,6 +512,7 @@ bool Service::IRQAsserted() const {
 }
 uint32_t Service::Read(uint32_t address) {
     Drain(true);
+    if (address == 0x04000060) return state_.overflow << 13;
     if (address == 0x04000600) {
         const size_t queued = operations_.size() - consumed_;
         const bool tests = std::any_of(operations_.begin() + consumed_, operations_.end(),

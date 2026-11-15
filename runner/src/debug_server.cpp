@@ -31,6 +31,9 @@
 #include "melonds_compute/ComputeHost.h"
 #endif
 #include "gpu3d.h"
+#if defined(NDS_MKDS_MODEL_HLE)
+#include "hle_mkds_model.h"
+#endif
 #include "hle_profile.h"
 #if defined(NDS_MPH_MATH_HLE)
 #include "hle_mph_math.h"
@@ -1432,6 +1435,13 @@ std::string handle(const std::string& line) {
     if (cmd == "gx_optimizations") {
 #if defined(NDS_GX_COMMAND_CACHE)
         return std::string("{\"enabled\":true,\"cache\":") + nds_gpu3d_command_batch_json() + "}";
+#else
+        return "{\"enabled\":false}";
+#endif
+    }
+    if (cmd == "native_models") {
+#if defined(NDS_MKDS_MODEL_HLE)
+        return mkds_model::statistics_json();
 #else
         return "{\"enabled\":false}";
 #endif

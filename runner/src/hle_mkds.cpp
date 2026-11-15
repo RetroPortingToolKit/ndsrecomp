@@ -2,6 +2,9 @@
 #include "hle_vector_math.h"
 #include "state.h"
 #include "sha1.h"
+#if defined(NDS_MKDS_MODEL_HLE)
+#include "hle_mkds_model.h"
+#endif
 #if defined(NDS_MKDS_PIO_HLE)
 #include "hle_mkds_card_pio.h"
 #endif
@@ -43,12 +46,18 @@ bool initialize(const char* rom_sha1) {
 #endif
     counts.rom_supported = rom_sha1 &&
         std::strcmp(rom_sha1, "691e00d9a5dd80b04f80cc7559503e8b06848785") == 0;
+#if defined(NDS_MKDS_MODEL_HLE)
+    mkds_model::initialize(counts.rom_supported);
+#endif
     return counts.rom_supported;
 }
 Statistics statistics() { return counts; }
 
 bool is_entry(NdsCpu cpu, uint32_t pc, bool thumb) {
     if (!counts.rom_supported || cpu != NDS_ARM9 || thumb) return false;
+#if defined(NDS_MKDS_MODEL_HLE)
+    if (mkds_model::is_entry(pc)) return true;
+#endif
 #if defined(NDS_MKDS_STREAM_HLE)
     if (mkds_stream::is_entry(pc)) return true;
 #endif
@@ -61,6 +70,9 @@ bool is_entry(NdsCpu cpu, uint32_t pc, bool thumb) {
 
 Replacement resolve(NdsCpu cpu, uint32_t pc, bool thumb) {
     if (!counts.rom_supported || cpu != NDS_ARM9 || thumb) return {};
+#if defined(NDS_MKDS_MODEL_HLE)
+    if (mkds_model::is_entry(pc)) return mkds_model::resolve(pc);
+#endif
 #if defined(NDS_MKDS_STREAM_HLE)
     if (mkds_stream::is_entry(pc)) return mkds_stream::resolve(pc);
 #endif

@@ -32,6 +32,9 @@
 
 #include "NDS.h"
 #include "GPU3D_Soft.h"
+#if defined(NDS_MKDS_MODEL_HLE)
+#include "hle_mkds_model.h"
+#endif
 #if defined(NDS_NATIVE_3D)
 #include "native_3d.h"
 #include "native_3d_raster.h"
@@ -1169,6 +1172,9 @@ bool gpu3d_savestate_validate(const NdsGpu3dSaveState& in,
 bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
                             std::string* error) {
     if (!gpu3d_savestate_validate(in, error)) return false;
+#if defined(NDS_MKDS_MODEL_HLE)
+    mkds_model::clear_cache();
+#endif
 #if defined(NDS_USE_NATIVE_GL)
     g_capture_reference.Reset();
 #endif
@@ -1237,6 +1243,9 @@ bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
 }
 
 void nds_gpu3d_reset() {
+#if defined(NDS_MKDS_MODEL_HLE)
+    mkds_model::clear_cache();
+#endif
 #if defined(NDS_NATIVE_3D)
     g_native_3d.Reset();
     g_native_3d.SetPresentation(g_nds.GPU.GPU3D.GetRenderWidth(), g_nds.GPU.GPU3D.GetGuestWideProjection());
@@ -1277,8 +1286,23 @@ bool nds_gpu3d_reg_addr(uint32_t addr) {
            (addr >= 0x04000320u && addr < 0x040006A4u);
 }
 
+#if defined(NDS_NATIVE_3D)
+void nds_gpu3d_native_operation(uint8_t command, std::span<const uint32_t> parameters) {
+    if (g_nds.GPU.GPU3D.GeometryEnabled) g_native_3d.Operation(command, parameters);
+}
+void nds_gpu3d_native_mesh(const nds_native_3d::Mesh& mesh) {
+    if (g_nds.GPU.GPU3D.GeometryEnabled) g_native_3d.DrawMesh(mesh);
+}
+#endif
+
 uint32_t nds_gpu3d_read(uint32_t addr, uint32_t width) {
 #if defined(NDS_NATIVE_3D)
+    if (addr >= 0x04000060u && addr < 0x04000064u) {
+        const uint32_t value = (g_nds.GPU.GPU3D.Read32(0x04000060u) |
+            g_native_3d.Read(0x04000060u)) >> ((addr & 3u) * 8);
+        native_3d_irq();
+        return width == 1 ? value & 255 : width == 2 ? value & 65535 : value;
+    }
     if (addr >= 0x04000600u && addr < 0x040006A4u && addr != 0x04000610u) {
         NdsEmuScope region(NDS_EMU_GEOM);
         const uint32_t aligned = addr & ~3u;
@@ -1307,6 +1331,8 @@ void nds_gpu3d_write(uint32_t addr, uint32_t value, uint32_t width) {
     if (addr == 0x04000440u && width == 4u && value == 0u)
         nds_title_patches_projection_begin();
 #if defined(NDS_NATIVE_3D)
+    if (addr >= 0x04000060u && addr < 0x04000064u)
+        g_native_3d.AcknowledgeDisplay(value << ((addr & 3u) * 8));
     if (addr >= 0x04000400u && addr < 0x04000600u) {
         if (g_nds.GPU.GPU3D.GeometryEnabled && width == 4u) {
             if (addr < 0x04000440u) g_native_3d.Packed(value);
@@ -1392,13 +1418,13 @@ const char* nds_gpu3d_command_batch_json() {
     static char text[512];
     const auto& c = g_native_3d.Counters();
     std::snprintf(text, sizeof(text),
-        "{\"service\":\"native-frame\",\"words\":%llu,\"commands\":%llu,\"jobs\":%llu,\"vertices\":%llu,\"polygons\":%llu,\"reads\":%llu,\"swaps\":%llu,\"overflows\":%llu,\"cache_hits\":%llu,\"cache_builds\":%llu,\"reused_words\":%llu}",
+        "{\"service\":\"native-frame\",\"words\":%llu,\"commands\":%llu,\"jobs\":%llu,\"vertices\":%llu,\"polygons\":%llu,\"reads\":%llu,\"swaps\":%llu,\"overflows\":%llu,\"cache_hits\":%llu,\"cache_builds\":%llu,\"reused_words\":%llu,\"native_packets\":%llu}",
         (unsigned long long)c.input_words, (unsigned long long)c.commands,
         (unsigned long long)c.jobs, (unsigned long long)c.vertices,
         (unsigned long long)c.polygons, (unsigned long long)c.read_barriers,
         (unsigned long long)c.swaps, (unsigned long long)c.overflows,
         (unsigned long long)c.cache_hits, (unsigned long long)c.cache_builds,
-        (unsigned long long)c.reused_words);
+        (unsigned long long)c.reused_words, (unsigned long long)c.native_packets);
     return text;
 #elif defined(NDS_GX_COMMAND_CACHE)
     static char text[384];

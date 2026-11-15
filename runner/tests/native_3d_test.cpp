@@ -173,11 +173,28 @@ void CompiledDisplayLists() {
     Check(cached.VBlank()&&raw.VBlank(),"second queued frame publishes once");
     Check(cached.Counters().commands==raw.Counters().commands&&cached.Counters().polygons==2&&
           cached.Counters().vertices==6,"cached and uncached jobs execute exactly once across swaps");
+    const auto mesh=Service::CompileMesh(list);Service model;
+    Begin(model);Op(model,0x20,{31});model.DrawMesh(mesh);Publish(model);
+    Check(model.Counters().input_words==0&&model.Counters().native_packets==1,"native model packet bypasses packed ingress");
+    Begin(model);Op(model,0x20,{31u<<5});model.DrawMesh(mesh);Publish(model);
+    Check(model.Display().vertices[0].color[0]==0&&(model.Display().vertices[0].color[1]>>12)==511,
+          "native model packet uses current material without rebuilding packed words");
+}
+void FrameCapacityObservation() {
+    Service s;
+    for(unsigned i=0;i<2050;++i){Begin(s);V(s,-1024,-1024);V(s,1024,-1024);V(s,0,1024);}
+    Check(s.Read(0x04000604)==0x18000800,"native frame RAM remains bounded at hardware capacity");
+    Check(s.Read(0x04000060)&(1u<<13),"overflow is observable in display status");
+    s.AcknowledgeDisplay(1u<<13);
+    Check(!(s.Read(0x04000060)&(1u<<13)),"display acknowledgment clears sticky overflow");
+    for(unsigned i=0;i<1000;++i){Begin(s);V(s,12000,-1024);V(s,14000,-1024);V(s,13000,1024);}
+    s.Flush();Service restored;std::string error;
+    Check(restored.Load(s.Save(),&error),"continued no-swap overflow input retains a valid bounded current state");
 }
 }
 int main() {
     try {
-        GeometryAndObservation();MatricesAndResults();ClippingAndStrips();PackedAndCurrentState();BoxAndPositionSideEffect();JobBoundariesAndPresentation();PartialStripStateSafety();CompiledDisplayLists();
+        GeometryAndObservation();MatricesAndResults();ClippingAndStrips();PackedAndCurrentState();BoxAndPositionSideEffect();JobBoundariesAndPresentation();PartialStripStateSafety();CompiledDisplayLists();FrameCapacityObservation();
         std::puts("native geometry command jobs, matrices, clipping, strips, observations and current states passed");
         return 0;
     } catch(const std::exception& error) {std::fprintf(stderr,"%s\n",error.what());return 1;}
