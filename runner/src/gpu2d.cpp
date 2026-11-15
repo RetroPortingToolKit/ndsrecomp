@@ -1092,6 +1092,7 @@ struct LineJob {
     uint32_t* direct_params = nullptr;
     uint16_t direct_width = 0;
     bool direct_powered = true;
+    bool direct_fallback = false;
     // Staged display capture. The pixels are produced by whichever thread
     // renders the line; the write into guest VRAM, and the texture-generation
     // bump that goes with it, are applied by the scheduler thread in line
@@ -1690,7 +1691,19 @@ void latch_line(int y, LineJob& job) {
     }
     // The optional presentation path must not suppress a newly latched
     // guest capture. Its canonical CPU capture source remains authoritative.
-    if (job.direct_pixels && job.cap) job.engine_active[0] = true;
+    job.direct_fallback = job.direct_pixels &&
+        (!job.palette[0] || !job.oam[0] || !job.vram[0] ||
+         !job.direct_powered || job.screen[0] != 0u || job.cap ||
+         ((job.unit[0].dispcnt >> 16) & 3u) != 1u ||
+         (job.unit[0].dispcnt & 0x108u) != 0x108u ||
+         (job.unit[0].dispcnt & 0xE00u) != 0u);
+    if (job.direct_fallback) {
+        job.engine_active[0] = true;
+        g_window_direct_unsupported_lines.fetch_add(1, std::memory_order_relaxed);
+        // Eligibility is a frame-start hint. A later mode/layer/route change
+        // must still consume the current GPU frame, never the last CPU copy.
+        nds_gpu3d_sync_display_frame();
+    }
     job.bg0_3d = (job.unit[0].dispcnt & 0x8u) != 0 &&
                  (job.unit[0].dispcnt & 0x100u) != 0;
 
@@ -1749,13 +1762,9 @@ void latch_line(int y, LineJob& job) {
 }
 
 void render_direct_window_line(const LineJob& job) {
+    if (job.direct_fallback) return;
     const Unit& u = job.unit[0];
     const bool views = job.palette[0] && job.oam[0] && job.vram[0];
-    const bool supported = views && job.direct_powered && job.screen[0] == 0u && !job.cap &&
-        ((u.dispcnt >> 16) & 3u) == 1u &&
-        (u.dispcnt & 0x108u) == 0x108u && !(u.dispcnt & 0xE00u);
-    if (!supported)
-        g_window_direct_unsupported_lines.fetch_add(1, std::memory_order_relaxed);
     if (!views) {
         std::fill_n(job.direct_pixels, job.direct_width, 0x4040u);
         std::fill_n(job.direct_params, 4, 0u);
@@ -1787,11 +1796,25 @@ void render_direct_window_line(const LineJob& job) {
     job.direct_params[3] = u.bgx[0] & 0x1FFu;
 }
 
+void render_direct_fallback_line(const LineJob& job) {
+    if (!job.direct_fallback) return;
+    // Both engines have completed, so this is the physical top LCD even if
+    // POWCNT changed its routing mid-frame. Reuse the normal native fallback
+    // presentation, centered in the wide surface. The shader bypasses all
+    // blending/brightness for this already composed BGRA8 row.
+    std::fill_n(job.direct_pixels, job.direct_width, 0xFF000000u);
+    std::copy_n(g_fb[job.buffer][0].data() + job.y * 256, 256,
+                job.direct_pixels + (job.direct_width - 256) / 2);
+    std::fill_n(job.direct_params, 4, 0u);
+    job.direct_params[3] = 0x80000000u;
+}
+
 void render_line_job(LineJob& job, LineScratch& sc) {
     if (!profiling()) {
         if (job.direct_pixels) render_direct_window_line(job);
         if (job.engine_active[0]) render_engine_line(job, 0, sc);
         if (job.engine_active[1]) render_engine_line(job, 1, sc);
+        render_direct_fallback_line(job);
         return;
     }
     const auto start = std::chrono::steady_clock::now();
@@ -1799,6 +1822,7 @@ void render_line_job(LineJob& job, LineScratch& sc) {
     if (job.engine_active[0]) render_engine_line(job, 0, sc);
     const auto middle = std::chrono::steady_clock::now();
     if (job.engine_active[1]) render_engine_line(job, 1, sc);
+    render_direct_fallback_line(job);
     const auto finish = std::chrono::steady_clock::now();
     sc.render_ns += ns_since(start, finish);
     const uint64_t engine_a_ns = ns_since(start, middle);

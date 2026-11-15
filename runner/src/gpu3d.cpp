@@ -158,6 +158,7 @@ bool g_display_readback_latency = false;
 bool g_compute_rendered_frame = false;
 bool g_compute_readback_pending = false;
 bool g_compute_frame_ready = false;
+bool g_compute_display_deferred = false;
 bool g_compute_shader_setup_failed = false;
 bool g_compute_runtime_failed = false;
 constexpr uint32_t kComputeMaxWidth = 448u;
@@ -298,6 +299,7 @@ void compute_readback_failed(const char* stage) {
     g_compute_rendered_frame = false;
     g_compute_readback_pending = false;
     g_compute_frame_ready = false;
+    g_compute_display_deferred = false;
     if (!g_compute_runtime_failed) {
         std::fprintf(stderr, "[gpu3d] compute frame %s failed\n", stage);
         g_compute_runtime_failed = true;
@@ -435,6 +437,7 @@ void compute_finish_readback() {
         return;
     }
     g_compute_frame_ready = true;
+    g_compute_display_deferred = false;
 }
 
 #if !defined(NDS_USE_NATIVE_GL)
@@ -669,6 +672,7 @@ void nds_gpu3d_use_soft_renderer(bool threaded) {
         g_compute_rendered_frame = false;
         g_compute_readback_pending = false;
         g_compute_frame_ready = false;
+        g_compute_display_deferred = false;
 #endif
     }
     renderer->SetThreaded(threaded, g_nds.GPU);
@@ -929,6 +933,7 @@ bool nds_gpu3d_use_compute_renderer() {
     g_compute_rendered_frame = false;
     g_compute_readback_pending = false;
     g_compute_frame_ready = false;
+    g_compute_display_deferred = false;
     return true;
 #else
     return false;
@@ -1157,6 +1162,7 @@ bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
     g_compute_rendered_frame = false;
     g_compute_readback_pending = false;
     g_compute_frame_ready = false;
+    g_compute_display_deferred = false;
     std::memset(g_compute_frame, 0, sizeof g_compute_frame);
     std::memset(g_compute_attr_frame, 0, sizeof g_compute_attr_frame);
 #endif
@@ -1210,6 +1216,7 @@ void nds_gpu3d_reset() {
     g_compute_rendered_frame = false;
     g_compute_readback_pending = false;
     g_compute_frame_ready = false;
+    g_compute_display_deferred = false;
 #endif
     nds_gxfifo_set_stall(false);
 }
@@ -1433,6 +1440,20 @@ void nds_gpu3d_vcount215() {
 #endif
 }
 
+void nds_gpu3d_sync_display_frame() {
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    if (!g_compute_display_deferred && !g_compute_readback_pending &&
+        !g_compute_rendered_frame) return;
+    if (nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { nds_gpu3d_sync_display_frame(); }); return;
+    }
+    if (!g_nds.GPU.GPU3D.IsRendererAccelerated()) return;
+    if (g_compute_display_deferred) g_compute_rendered_frame = true;
+    compute_submit_readback();
+    compute_finish_readback();
+#endif
+}
+
 const uint32_t* nds_gpu3d_capture_line(int line) {
 #if defined(NDS_USE_NATIVE_GL)
     // Keep using the latched reference across a host-only fallback or HD
@@ -1613,8 +1634,12 @@ void nds_gpu3d_start_frame() {
         if (g_compute_rendered_frame) {
             if (same_frame || g_display_readback_latency)
                 compute_submit_readback();
-            else
+            else {
+                // Keep the current GPU surface recoverable if later visible
+                // scanlines acquire an unsupported direct-display consumer.
+                g_compute_display_deferred = true;
                 g_compute_rendered_frame = false;
+            }
         }
         if (g_compute_readback_pending && drain_pending)
             compute_finish_readback();

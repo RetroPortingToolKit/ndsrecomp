@@ -176,6 +176,8 @@ vec4 composeAt(vec2 sampleUV, ivec2 dst)
     masterBright = frameMasterBright; priority3d = framePriority3d;
     if (rasterMode != 0u && directMode != 0u && hdMode == 0u) {
         uvec4 p = texelFetch(texRaster, ivec2(0, dst.y), 0);
+        if ((p.w & 0x80000000u) != 0u)
+            return vec4(texelFetch(texObject, dst, 0).bgra) / 255.0;
         backdrop = uvec3(p.x, p.x >> 8, p.x >> 16) & uvec3(63u);
         bldcnt = p.y & 65535u; masterBright = p.y >> 16;
         eva = p.z & 255u; evb = (p.z >> 8) & 255u;

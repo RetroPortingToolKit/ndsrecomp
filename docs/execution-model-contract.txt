@@ -179,16 +179,26 @@ Qualification
 The third flat CPU candidate also lacks a material gain. Its first pair looked
 5% better, but one necessary Faithful A/A control under similar background load
 used less process CPU work than Performance. Do not retain that apparent win.
-The current opt-in graphics probe (NDS_COMPUTE_WINDOW_DIRECT=1) extends direct
-presentation to window masks at1x/separate GL top. It emits OBJ visibility,
+The enhanced graphics path extends direct presentation to window masks at
+native and higher internal resolution in a separate GL top window. It emits OBJ visibility,
 BG0 visibility and effects permission from the existing scanline register and
 memory latches, with per-line blend/brightness/scroll parameters. Capture and
-frame eligibility keep their existing CPU paths. Unexpected unsupported
-scanlines are counted and invalidate qualification; this is an experimental
-probe, disabled by default, not a promise of arbitrary raster-mode switching.
+frame eligibility keep their existing CPU paths. An unsupported scanline
+requests the current GPU readback, renders through the canonical CPU path,
+and transports the physical top LCD row as already composed BGRA8. Its raster
+sentinel bypasses GPU blending and brightness; native pixels are centered in
+the adaptive surface with black margins. Supported rows retain GPU composition.
+The unsupported-line counter now measures these fallback rows. Performance
+execution enables this path by default; NDS_COMPUTE_WINDOW_DIRECT=0 retains
+the reference compositor. Faithful execution retains the prior opt-in1x
+behavior, including with launchers that explicitly set the flag to1.
 Skybox-repair/window combinations retain the existing compositor. Actual-GL
-tests compare the new and legacy integer blend paths with native CPU composition;
+tests compare the new and legacy integer blend paths with native CPU composition,
+including the combined4x/AA8/window/scroll case and BGRA8 fallback rows;
 RGB6 must match exactly, allowing only one-byte UNORM8 transport rounding.
+This covers the top OBJ/window composition service. Extra backgrounds and the
+second screen still use their existing CPU renderers; it is not a complete
+GPU2D replacement.
 The observer-only presented_framebuffer query reads the last swapped GL image
 without advancing/re-rendering a frame; keep it outside timing windows.
 

@@ -151,6 +151,9 @@ void nds_gpu3d_start_frame();
 const uint32_t* nds_gpu3d_line(int line);
 // Guest VRAM capture uses the portable raster in native-GL builds.
 const uint32_t* nds_gpu3d_capture_line(int line);
+// Recover a GPU-resident display frame when a direct-present frame acquires a
+// CPU consumer mid-frame. No-op for software or an already current CPU copy.
+void nds_gpu3d_sync_display_frame();
 
 // Opt-in host-only widened raster surface. The native line API above always
 // returns the centered 256-pixel hardware viewport for the faithful 2D

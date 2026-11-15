@@ -24,7 +24,7 @@ GLuint texture(unsigned slot, GLenum format, GLenum type, int w, const void* dat
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D,0,format,w,192,0,GL_RGBA_INTEGER,type,data);return t;
 }
-void test_shader(bool scanline) {
+void test_shader(bool scanline, unsigned scale = 1) {
     constexpr int width=448,height=192;
     std::vector<uint32_t> three(width*height),objects(width*height),raster(height*4),expected(width*height);
     for (int y=0;y<height;++y) {
@@ -34,23 +34,36 @@ void test_shader(bool scanline) {
         const uint8_t priority3=scanline?uint8_t((y/16)&3):2u;
         raster[y*4]=background;raster[y*4+1]=u.bldcnt|(uint32_t(u.master_bright)<<16);
         raster[y*4+2]=u.eva|(uint32_t(u.evb)<<8)|(uint32_t(u.evy)<<16)|(uint32_t(priority3)<<24);
-        raster[y*4+3]=0;
+        const uint32_t scroll = scanline && scale > 1 ?
+            std::array<uint32_t,3>{0,5,507}[y%3] : 0;
+        const bool fallback = scanline && scale > 1 && y%31 == 0;
+        raster[y*4+3]=fallback ? 0x80000000u : scroll;
         for (int x=0;x<width;++x) {
             const uint8_t mask=scanline?uint8_t(x&63):63u,a3=uint8_t(y&31);
             const uint8_t alpha=std::array<uint8_t,3>{0,8,255}[(y/32)%3];
             const uint8_t priority=uint8_t((x/64)&3);
             const bool valid=x%7!=0;
-            const uint32_t object_color=0x00200733u,three_color=0x00092B11u;
+            const uint32_t object_color=0x00200733u;
+            const auto three_color = [&](int sx) {
+                return uint32_t((sx+17)&63) | (uint32_t((sx/3+43)&63)<<8) | (9u<<16);
+            };
             const size_t i=size_t(y)*width+x;
-            three[i]=three_color|(uint32_t(a3)<<24);
+            three[i]=three_color(x)|(uint32_t(a3)<<24);
             objects[i]=nds_gpu2d_pack_direct_pixel(object_color,priority,alpha,valid,mask);
+            if (fallback) {
+                objects[i]=0xFFCD7931u; // already-composed, asymmetric BGRA8.
+                expected[i]=0xFF3179CDu;
+                continue;
+            }
             Pixel top{background,32,0,4,5,true},below=top;
             auto push=[&](const Pixel& p) {
                 auto ahead=[](const Pixel& a,const Pixel& b){return a.priority<b.priority||(a.priority==b.priority&&a.order<b.order);};
                 if(ahead(p,top)){below=top;top=p;}else if(ahead(p,below))below=p;
             };
             if(valid&&(mask&16))push(Pixel{object_color,16,alpha,priority,0,true});
-            if(a3&&(mask&1))push(Pixel{three_color,1,0,priority3,1,true,a3});
+            const int sx = x + (scroll & 0x100u ? int(scroll)-512 : int(scroll));
+            if(a3&&(mask&1)&&sx>=0&&sx<width)
+                push(Pixel{three_color(sx),1,0,priority3,1,true,a3});
             uint32_t c=compose(u,top,below,(mask&32)!=0);
             if((u.master_bright>>14)==1)c=brighten(c,5,0);
             else if((u.master_bright>>14)==2)c=darken(c,5,15);
@@ -66,6 +79,21 @@ void test_shader(bool scanline) {
         texture(1,GL_RGBA8UI,GL_UNSIGNED_BYTE,width,objects.data()),
         texture(2,GL_RGBA8UI,GL_UNSIGNED_BYTE,width,three.data()),
         texture(6,GL_RGBA32UI,GL_UNSIGNED_INT,1,raster.data())};
+    GLuint hires = 0;
+    if (scale > 1) {
+        std::vector<uint32_t> hi(size_t(width)*height*scale*scale);
+        const auto expand=[](unsigned value, unsigned max) { return (value*255u+max/2)/max; };
+        for (unsigned y=0;y<height*scale;++y) for (unsigned x=0;x<width*scale;++x) {
+            const uint32_t p=three[size_t(y/scale)*width+x/scale];
+            hi[size_t(y)*width*scale+x] = expand((p>>16)&63u,63) |
+                (expand((p>>8)&63u,63)<<8) | (expand(p&63u,63)<<16) |
+                (expand(p>>24,31)<<24);
+        }
+        glGenTextures(1,&hires);glActiveTexture(GL_TEXTURE3);glBindTexture(GL_TEXTURE_2D,hires);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,width*scale,height*scale,0,GL_RGBA,GL_UNSIGNED_BYTE,hi.data());
+    }
     GLuint output,fbo,vao;glGenTextures(1,&output);glBindTexture(GL_TEXTURE_2D,output);
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,width,height,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
     glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
@@ -73,7 +101,9 @@ void test_shader(bool scanline) {
     ensure(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"test framebuffer");
     // Rebind the raster sampler after allocating the output texture.
     glActiveTexture(GL_TEXTURE6);glBindTexture(GL_TEXTURE_2D,inputs[3]);
-    glUseProgram(program);glUniform1ui(0,1);glUniform1ui(1,width);glUniform1ui(10,1);glUniform1ui(11,0);glUniform1ui(13,scanline?1u:0u);
+    if (hires) { glActiveTexture(GL_TEXTURE3);glBindTexture(GL_TEXTURE_2D,hires); }
+    glUseProgram(program);glUniform1ui(0,1);glUniform1ui(1,width);glUniform1ui(10,scale);glUniform1ui(11,0);glUniform1ui(13,scanline?1u:0u);
+    glUniform1ui(14,scale>1 ? 8u : 0u);
     glUniform1ui(2,0);glUniform3ui(3,17,37,13);glUniform1ui(4,0x3171);
     glUniform1ui(5,7);glUniform1ui(6,11);glUniform1ui(7,6);glUniform1ui(8,0);glUniform1ui(9,2);
     glViewport(0,0,width,height);glGenVertexArrays(1,&vao);glBindVertexArray(vao);glDrawArrays(GL_TRIANGLES,0,3);
@@ -95,8 +125,9 @@ void test_shader(bool scanline) {
         transport_rounding+=got!=want;
     }
     glDeleteVertexArrays(1,&vao);glDeleteFramebuffers(1,&fbo);glDeleteTextures(1,&output);glDeleteTextures(4,inputs);
+    if (hires) glDeleteTextures(1,&hires);
     glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);
-    std::printf("Actual GPU %s RGB6 blending matches native compositor for86016 pixels; one-byte UNORM8 rounding=%u\n",scanline?"window/raster":"legacy direct",transport_rounding);
+    std::printf("Actual GPU %s at%ux RGB6 blending matches native compositor for86016 pixels; one-byte UNORM8 rounding=%u\n",scanline?"window/raster":"legacy direct",scale,transport_rounding);
 }
 void test_ssaa() {
     GLuint vertex=shader(GL_VERTEX_SHADER,nds_compute_present::kPresentVertex);
@@ -218,6 +249,6 @@ int main() {
         if(context)SDL_GL_DestroyContext(context);if(window)SDL_DestroyWindow(window);SDL_Quit();return 77;
     }
     std::printf("GL %s / %s\n",glGetString(GL_VERSION),glGetString(GL_RENDERER));
-    int result=0;try{test_shader(true);test_shader(false);test_ssaa();test_native_gl_hd_transport();}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());result=1;}
+    int result=0;try{test_shader(true);test_shader(true,4);test_shader(false);test_ssaa();test_native_gl_hd_transport();}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());result=1;}
     SDL_GL_DestroyContext(context);SDL_DestroyWindow(window);SDL_Quit();return result;
 }

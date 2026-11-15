@@ -3,6 +3,7 @@
 #include "frontend_window_size.h"
 #include "arm9_native.h"
 #include "cpu_render_handoff.h"
+#include "execution_model.h"
 
 #include <algorithm>
 #include <array>
@@ -2320,8 +2321,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     nds_gpu2d_set_direct_present(
         nds_compute_host_has_visible_context());
     const char* window_direct = std::getenv("NDS_COMPUTE_WINDOW_DIRECT");
-    nds_gpu2d_set_direct_windows(window_direct &&
-        std::strcmp(window_direct, "1") == 0 && options.internal_resolution == 1u);
+    const bool window_requested = window_direct ?
+        std::strcmp(window_direct, "1") == 0 : nds_performance_execution();
+    nds_gpu2d_set_direct_windows(window_requested &&
+        (nds_performance_execution() || options.internal_resolution == 1u));
 #else
     if (nds_gpu3d_renderer_policy() == NdsGpu3dRendererPolicy::Auto) {
         std::fprintf(stderr,

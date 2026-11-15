@@ -24,6 +24,8 @@ std::array<uint8_t, 0x20000> g_capture_bank{};
 bool g_lcdc_mapped = false;
 uint16_t g_3d_output_width = 256;
 uint64_t g_wide_line_reads = 0;
+uint64_t g_display_sync_requests = 0;
+uint16_t g_test_powercontrol = 0x8002u;
 uint16_t g_3d_render_xpos = 0;
 uint32_t g_3d_render_polygon_count = 0;
 bool g_3d_projection_has_perspective = false;
@@ -915,7 +917,8 @@ bool test_adaptive_helpers_match_serial() {
 }
 
 // Minimal device implementations required by the production renderer object.
-uint16_t nds_powercontrol9() { return 0x8002u; }
+uint16_t nds_powercontrol9() { return g_test_powercontrol; }
+void nds_gpu3d_sync_display_frame() { ++g_display_sync_requests; }
 const uint8_t* nds_vram_renderer_palette(int) { return g_palette.data(); }
 const uint8_t* nds_vram_renderer_oam(int) { return g_oam.data(); }
 const NdsVramRendererView* nds_vram_renderer_view(int) { return &g_view; }
@@ -985,6 +988,57 @@ bool test_direct_window_scanline_latch() {
 }
 
 #ifndef NDS_GPU2D_REFERENCE_ONLY
+bool test_direct_window_late_fallback() {
+    std::array<uint8_t,0x4000> obj_vram{};
+    reset_obj_fixture(obj_vram);
+    g_unit[0].dispcnt = 0x00010108u;
+    g_unit[1].dispcnt = 0x00010000u;
+    g_direct_windows_enabled = g_direct_present_enabled = true;
+    g_3d_output_width = 448;
+    g_adaptive_skybox_fill = false;
+    g_direct_force_cpu_frames = 0;
+    g_3d_line.fill(0x1F072513u);
+    nds_gpu2d_start_frame();
+    if (!require(g_direct_frame_active)) return false;
+    const uint64_t sync_before = g_display_sync_requests;
+    LineJob line{};
+    LineScratch scratch{};
+    auto check_fallback = [&](int y) {
+        latch_line(y, line);
+        if (!require(line.direct_fallback && line.engine_active[0])) return false;
+        render_line_job(line, scratch);
+        if (!require(line.direct_params[3] == 0x80000000u)) return false;
+        if (!require(line.direct_pixels[0] == 0xFF000000u)) return false;
+        return require(std::equal(line.direct_pixels + 96,
+            line.direct_pixels + 96 + 256,
+            g_fb[line.buffer][0].data() + y * 256));
+    };
+    // A new background cannot silently disappear from an admitted frame.
+    g_unit[0].dispcnt |= 0x200u;
+    if (!check_fallback(40)) return false;
+    // A route change must copy engine B, now occupying the top LCD.
+    g_test_powercontrol = 0x0002u;
+    g_unit[1].dispcnt |= 0x80u;
+    if (!check_fallback(41)) return false;
+    if (!require(line.direct_pixels[96] == 0xFFFFFFFFu)) return false;
+    g_test_powercontrol = 0x8002u;
+    g_unit[0].dispcnt &= ~0x200u;
+    // A capture enabled after frame-start still latches and uses the CPU path.
+    g_unit[0].capture = 0x80000000u;
+    if (!check_fallback(0) || !require(line.cap)) return false;
+    if (!require(g_display_sync_requests == sync_before + 3)) return false;
+    g_unit[0].capture = 0;
+    g_unit[0].capture_latch = false;
+    latch_line(42, line);
+    if (!require(!line.direct_fallback && !line.engine_active[0])) return false;
+    render_line_job(line, scratch);
+    if (!require((line.direct_params[3] & 0x80000000u) == 0u)) return false;
+    g_direct_windows_enabled = g_direct_present_enabled = false;
+    g_3d_output_width = 256;
+    g_unit = {};
+    return true;
+}
+
 int main() {
     if (!test_window_raw_decode()) return 1;
     if (!test_window_enable_and_precedence()) return 2;
@@ -1006,6 +1060,7 @@ int main() {
     if (!test_adaptive_hud_gap_fill()) return 18;
     if (!test_adaptive_hud_gap_composition()) return 19;
     if (!test_fixed_16_9_composition()) return 20;
+    if (!test_direct_window_late_fallback()) return 21;
     return 0;
 }
 #endif
