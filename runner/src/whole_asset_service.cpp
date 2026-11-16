@@ -85,6 +85,7 @@ std::string json() {
        <<",\"mkds_decline_reason\":"<<a.decline_reason<<",\"mkds_entry_sp\":"<<a.entry_sp<<",\"mkds_archive_flags\":"<<a.archive_flags
        <<",\"mph_files\":"<<b.files<<",\"mph_archives\":"<<b.archives<<",\"mph_bytes\":"<<b.bytes
        <<",\"mph_declines\":"<<b.declines
+       <<",\"mph_decline_reason\":"<<b.decline_reason<<",\"mph_entry_sp\":"<<b.entry_sp<<",\"mph_archive_flags\":"<<b.archive_flags<<",\"mph_entry_path\":"<<b.entry_path
        <<",\"last\":{\"offset\":"<<(a.enabled?a.last_offset:b.last_offset)
        <<",\"compressed\":"<<(a.enabled?a.last_compressed:b.last_compressed)
        <<",\"destination\":"<<(a.enabled?a.last_destination:b.last_destination)

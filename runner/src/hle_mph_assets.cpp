@@ -129,7 +129,8 @@ bool normalized_path(std::string& path) {
     return !path.empty();
 }
 
-void fallback() {
+void fallback(uint32_t reason=0) {
+    if(reason)count.decline_reason=reason;
     ++count.declines;
     tier3_step_one(g_cpu.R[15]);
     if (!runtime_unwinding() && !runtime_should_yield())
@@ -190,20 +191,22 @@ bool find_archive(uint32_t manager_pointer, const std::string& name, bool& found
 }
 
 void begin(uint32_t kind) {
+    count.entry_sp=g_cpu.R[13];count.entry_path=g_cpu.R[1];
+    count.archive_flags=bus_read_u32(rom_archive+0x1c);
     std::string path, name;
     const uint32_t argument = g_cpu.R[0];
     uint32_t manager_pointer = 0;
     if (!ordinary_root() || !read_string(g_cpu.R[1], path, 255) ||
-        !normalized_path(path)) { fallback(); return; }
+        !normalized_path(path)) { fallback(1); return; }
     if (kind == File) {
-        if ((argument & 3u) || !ram(argument, 4)) { fallback(); return; }
+        if ((argument & 3u) || !ram(argument, 4)) { fallback(2); return; }
     } else {
         if (!read_string(argument, name, 31) || !manager(manager_pointer) ||
             path.size() < 4 || path.substr(path.size() - 4) != ".arc") {
-            fallback(); return;
+            fallback(3); return;
         }
         bool found = false;
-        if (!find_archive(manager_pointer, name, found)) { fallback(); return; }
+        if (!find_archive(manager_pointer, name, found)) { fallback(3); return; }
         if (found) { ++count.archives; g_cpu.R[0] = 1; nds_hle::finish(32); return; }
     }
     FileView file;
@@ -211,7 +214,7 @@ void begin(uint32_t kind) {
     if (!service.lookup(path.c_str(), &file) || !file.data || !file.size ||
         !service.inspect(file, &output_size) || !output_size ||
         output_size > max_output || (kind == Archive && output_size < 32)) {
-        fallback(); return;
+        fallback(4); return;
     }
     const uint32_t sp = g_cpu.R[13];
     if ((sp & 7u) || sp < frame_size || !ram(sp - frame_size, frame_size) ||
@@ -221,7 +224,7 @@ void begin(uint32_t kind) {
         overlaps(sp - frame_size, frame_size, mount, mount_proof.size()) ||
         overlaps(sp - frame_size, frame_size, argument,
                  kind == File ? 4u : uint32_t(name.size() + 1u))) {
-        fallback(); return;
+        fallback(5); return;
     }
     const std::array<uint32_t, 8> frame{frame_magic, kind, file.offset, file.size,
         output_size, argument, manager_pointer, g_cpu.R[14]};
