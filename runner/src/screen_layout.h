@@ -15,6 +15,22 @@ struct NdsScreenPlacement {
     bool pip{};
 };
 
+// Presentation-only alpha, rounded to the nearest portable 8-bit value.
+// Physical LCD images and the main screen always retain their opaque pixels.
+inline constexpr uint8_t kNdsPipOpacity = (255u * 90u + 50u) / 100u;
+inline uint8_t nds_screen_opacity(const NdsScreenPlacement& p, unsigned screen) {
+    return p.pip && screen != p.main_screen ? kNdsPipOpacity : 255;
+}
+inline uint32_t nds_screen_blend_pixel(uint32_t background, uint32_t foreground, uint8_t opacity) {
+    uint32_t result = 0xFF000000u;
+    for (unsigned shift : {0u, 8u, 16u}) {
+        const unsigned value = (((foreground >> shift) & 255u) * opacity +
+            ((background >> shift) & 255u) * (255u - opacity) + 127u) / 255u;
+        result |= value << shift;
+    }
+    return result;
+}
+
 inline NdsScreenPlacement nds_screen_placement(
     NdsScreenLayout layout, int top_width, int bottom_width,
     NdsPipCorner corner = NdsPipCorner::BottomRight,

@@ -2005,7 +2005,7 @@ bool create_presentation(const NdsFrontendOptions& options,
 }
 
 void render_screen(FrontendPresentation& presentation, int screen,
-                   const SDL_Rect& destination) {
+                   const SDL_Rect& destination, uint8_t opacity = 255) {
     SDL_Renderer* renderer = presentation.renderers[screen];
     SDL_Texture* source = presentation.textures[screen];
     if (presentation.sample_scale > 1 && presentation.sample_targets[screen]) {
@@ -2016,7 +2016,20 @@ void render_screen(FrontendPresentation& presentation, int screen,
         SDL_SetRenderTarget(renderer, nullptr);
         source = presentation.sample_targets[screen];
     }
+    // Apply PiP alpha only on the final copy, never the SSAA intermediate.
+    SDL_BlendMode blend{};
+    uint8_t alpha = 255;
+    if (opacity != 255) {
+        SDL_GetTextureBlendMode(source, &blend);
+        SDL_GetTextureAlphaMod(source, &alpha);
+        SDL_SetTextureBlendMode(source, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureAlphaMod(source, opacity);
+    }
     render_texture(renderer, source, &destination);
+    if (opacity != 255) {
+        SDL_SetTextureAlphaMod(source, alpha);
+        SDL_SetTextureBlendMode(source, blend);
+    }
 }
 
 struct PresentationTicks {
@@ -2219,8 +2232,10 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
             for(int y=0;y<r.h;++y)for(int x=0;x<r.w;++x) {
                 const int logical=x*presentation.screen_widths[screen]/r.w;
                 const int sx=logical-(presentation.screen_widths[screen]-widths[screen])/2;
-                if(sx>=0&&sx<widths[screen])
-                    pixels[(r.y+y)*p.width+r.x+x]=sources[screen][(y*192/r.h)*widths[screen]+sx];
+                const auto color=sx>=0&&sx<widths[screen]
+                    ? sources[screen][(y*192/r.h)*widths[screen]+sx] : 0xFF000000u;
+                auto& destination=pixels[(r.y+y)*p.width+r.x+x];
+                destination=nds_screen_blend_pixel(destination,color,nds_screen_opacity(p,screen));
             }
         }
         NdsComputePresentationFrame flat{};NdsComputePresentTicks gl{};
@@ -2412,7 +2427,8 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
         };
         render_screen(presentation,int(placement.main_screen),placement.main_screen?bottom_rect:top_rect);
         if(placement.main_screen==1)pointer();
-        render_screen(presentation,int(placement.main_screen^1u),placement.main_screen?top_rect:bottom_rect);
+        render_screen(presentation,int(placement.main_screen^1u),placement.main_screen?top_rect:bottom_rect,
+            nds_screen_opacity(placement,placement.main_screen^1u));
         if(placement.main_screen==0)pointer();
         draw_savestate_notice(renderer, presentation.pip?(placement.main_screen?bottom_rect:top_rect):bottom_rect, savestate_notice);
         ticks.draw += SDL_GetPerformanceCounter() - start;

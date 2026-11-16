@@ -8,6 +8,7 @@
 #include "glad/glad.h"
 #include "melonds_compute/PresentShaders.h"
 #include "melonds_compute/SurvivorPresentShader.h"
+#include "screen_layout.h"
 #include "GPU3D_OpenGL_Output.h"
 #include <stdexcept>
 
@@ -292,9 +293,30 @@ void test_cpu_survivors() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER,rowBuffer);glBufferData(GL_SHADER_STORAGE_BUFFER,sizeof(frame.rows),frame.rows.data(),GL_STREAM_DRAW);
     glViewport(0,0,sw,192);glUniform1ui(1,sw);glUniform1ui(7,0);glDrawArrays(GL_TRIANGLES,0,3);glReadPixels(101,96,1,1,GL_RGBA,GL_UNSIGNED_BYTE,&repaired);ensure(repaired==0xFFFF0000u,"compact wide sky repair follows retained packed polygon IDs");
     glViewport(0,0,256,192);glUniform1ui(1,256);glUniform1ui(7,1);glDrawArrays(GL_TRIANGLES,0,3);glReadPixels(5,96,1,1,GL_RGBA,GL_UNSIGNED_BYTE,&canonical);ensure(canonical==0xFF000000u,"compact native observer ignores adaptive sky repair");
+    // The same production shader draws an opaque main LCD, then blends only
+    // the inset. Guest/observer output remains opaque after that presentation.
+    glUniform1ui(2,0);glUniform1f(9,1.0f);glDrawArrays(GL_TRIANGLES,0,3);
+    const auto placement=nds_screen_placement(NdsScreenLayout::PictureInPicture,256,256);
+    const auto& inset=placement.screens[1];const uint32_t insetColor=0xFF2277CCu;
+    const uint32_t mainColor=base[0];std::fill(base.begin(),base.end(),insetColor);
+    glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,fallback);glTexSubImage2D(GL_TEXTURE_2D,0,0,0,256,192,GL_RGBA,GL_UNSIGNED_BYTE,base.data());
+    glViewport(inset.x,192-inset.y-inset.h,inset.w,inset.h);
+    glUniform1f(9,float(nds_screen_opacity(placement,1))/255.0f);
+    glEnable(GL_BLEND);glBlendEquationSeparate(GL_FUNC_ADD,GL_FUNC_ADD);glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
+    glDrawArrays(GL_TRIANGLES,0,3);glDisable(GL_BLEND);
+    std::vector<uint32_t> composed(sw*192);glReadPixels(0,0,sw,192,GL_RGBA,GL_UNSIGNED_BYTE,composed.data());
+    const auto blended=nds_screen_blend_pixel(mainColor,insetColor,nds_screen_opacity(placement,1));
+    for(int y=0;y<192;++y)for(int x=0;x<256;++x){
+        const bool inside=x>=inset.x&&x<inset.x+inset.w&&y>=192-inset.y-inset.h&&y<192-inset.y;
+        const uint32_t actual=composed[y*sw+x],expected=inside?blended:mainColor;
+        ensure((actual>>24u)==255u,"PiP composition keeps the main framebuffer opaque");
+        for(unsigned shift:{0u,8u,16u})ensure(std::abs(int((actual>>shift)&255u)-int((expected>>shift)&255u))<=1,"PiP alpha affects only inset pixels");
+    }
+    glUniform1f(9,1.0f);glViewport(0,0,256,192);glDrawArrays(GL_TRIANGLES,0,3);
+    glReadPixels(5,96,1,1,GL_RGBA,GL_UNSIGNED_BYTE,&canonical);ensure(canonical==insetColor,"canonical observer pixels remain opaque after PiP");
     ensure(glGetError()==GL_NO_ERROR,"survivor AA execution");glDeleteTextures(1,&hi);
     glDeleteBuffers(1,&rowBuffer);glDeleteTextures(1,&input);glDeleteTextures(1,&compactTexture);glDeleteTextures(1,&native);glDeleteTextures(1,&fallback);glDeleteTextures(1,&output);glDeleteFramebuffers(1,&fbo);glDeleteVertexArrays(1,&vao);glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);
-    std::puts("General/compact/mixed CPU survivors match native integer effects/route/visibility/windows, native vs wide HUD, scroll clipping, centered margins, and prefix limit");
+    std::puts("General/compact/mixed CPU survivors match native integer effects/route/visibility/windows, native vs wide HUD, scroll clipping, centered margins, prefix limit and inset-only PiP opacity");
 }
 
 void test_native_gl_hd_transport() {

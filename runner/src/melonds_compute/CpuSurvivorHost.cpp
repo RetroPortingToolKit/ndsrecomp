@@ -128,7 +128,7 @@ bool upload(const Frame& f,bool native){
     glBindBuffer(GL_SHADER_STORAGE_BUFFER,rowsBuffer);glBufferData(GL_SHADER_STORAGE_BUFFER,sizeof(f.rows),f.rows.data(),GL_STREAM_DRAW);
     uploadedId=f.identity;uploadedBuffer=f.buffer;uploadedEpoch=epoch;uploadedNative=native;return true;
 }
-bool draw(const Frame& f,int screen,bool native,bool lowres,Source* source,GLuint fbo,int vw,int vh,bool noFlip,const uint32_t* black,const uint32_t* white,unsigned aa,int vx=0,int vy=0){
+bool draw(const Frame& f,int screen,bool native,bool lowres,Source* source,GLuint fbo,int vw,int vh,bool noFlip,const uint32_t* black,const uint32_t* white,unsigned aa,int vx=0,int vy=0,uint8_t opacity=255){
     if(screen<0||screen>1||vw<=0||vh<=0)return false;
     bool gpu=!f.capture&&f.needs_gpu[screen];if(gpu&&!source)return false;
     const unsigned width=native?256:std::clamp<unsigned>(f.widths[screen],256,448);
@@ -138,7 +138,9 @@ bool draw(const Frame& f,int screen,bool native,bool lowres,Source* source,GLuin
     bind(4,source?source->native:0);bind(5,source?source->hi:0);glBindBufferBase(GL_SHADER_STORAGE_BUFFER,2,rowsBuffer);
     glBindFramebuffer(GL_FRAMEBUFFER,fbo);glViewport(vx,vy,vw,vh);glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glDisable(GL_SCISSOR_TEST);glDisable(GL_DITHER);glUseProgram(programs[noFlip?1:0]);glBindVertexArray(vao);
     glUniform1ui(0,screen);glUniform1ui(1,width);glUniform1ui(2,gpu);glUniform1ui(3,black&&white);glUniform1ui(4,aa);glUniform1ui(5,source?source->width:0);glUniform1ui(6,!lowres&&source?source->scale:0);glUniform1ui(7,native);glUniform1ui(8,f.lines<192?f.lines:0);
-    glDrawArrays(GL_TRIANGLES,0,3);return glGetError()==GL_NO_ERROR;
+    glUniform1f(9,float(opacity)/255.0f);
+    if(opacity!=255){glEnable(GL_BLEND);glBlendEquationSeparate(GL_FUNC_ADD,GL_FUNC_ADD);glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);}
+    glDrawArrays(GL_TRIANGLES,0,3);glDisable(GL_BLEND);return glGetError()==GL_NO_ERROR;
 }
 const uint32_t* readFrame(const Frame* f,int screen,bool adaptive,uint16_t* width,Source* overrideSource=nullptr,bool force=false){
     if(width)*width=256;
@@ -241,7 +243,7 @@ bool nds_survivor_host_present_layout(SDL_Window* window,const Frame* f,const Nd
         const int rw=std::max(1,int(r.w*scale)),rh=std::max(1,int(r.h*scale));
         if(!draw(*f,int(screen),false,false,findSource(*f),0,rw,rh,false,
             black?black[screen]:nullptr,white?white[screen]:nullptr,
-            aa,x,h-y-rh))return false;
+            aa,x,h-y-rh,nds_screen_opacity(placement,screen)))return false;
     }
     const auto swap=SDL_GetPerformanceCounter();
 #if defined(NDS_HAVE_SDL3)

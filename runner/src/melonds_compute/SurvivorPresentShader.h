@@ -30,6 +30,7 @@ layout(location=5) uniform uint source3DWidth;
 layout(location=6) uniform uint source3DScale;
 layout(location=7) uniform uint nativeView;
 layout(location=8) uniform uint rowLimit;
+layout(location=9) uniform float presentationOpacity=1.0;
 in vec2 uv;out vec4 outColor;
 const uint Bldcnt=0u,MasterBright=1u,Eva=2u,Evb=3u,Evy=4u,Priority3D=5u;
 const uint RenderX=6u,Screen=7u,LayerWidth=8u,Flags=9u,Backdrop=11u;
@@ -120,7 +121,7 @@ void main(){
             else if(resolveSamples==2u)c=(sampleLcd(f-0.25*(dx+dy),p)+sampleLcd(f+0.25*(dx+dy),p))*0.5;
             else{int cols=resolveSamples>=8u?4:2;c=vec3(0.0);for(int y=0;y<2;++y)for(int x=0;x<cols;++x){vec2 off=vec2((float(x)+0.5)/float(cols)-0.5,(float(y)+0.5)/2.0-0.5);c+=sampleLcd(f+off.x*dx+off.y*dy,p);}c/=float(cols*2);}}
     }else{int x=p.x-(int(width)-256)/2;c=x>=0&&x<256?texelFetch(fallback,ivec2(x,p.y),0).rgb:vec3(0.0);}
-    if(hasOverlay!=0u){vec3 b=texelFetch(overlayBlack,p,0).rgb,w=texelFetch(overlayWhite,p,0).rgb;c=b+c*clamp(w-b,vec3(0.0),vec3(1.0));}outColor=vec4(c,1.0);
+    if(hasOverlay!=0u){vec3 b=texelFetch(overlayBlack,p,0).rgb,w=texelFetch(overlayWhite,p,0).rgb;c=b+c*clamp(w-b,vec3(0.0),vec3(1.0));}outColor=vec4(c,presentationOpacity);
 }
 )GLSL";
 }
