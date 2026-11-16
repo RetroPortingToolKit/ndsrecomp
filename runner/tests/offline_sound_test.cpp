@@ -222,6 +222,58 @@ void pending_queue_tests(bool mph) {
     check(nds_spu_debug_output_produced() == produced);
   }
 }
+void inactive_player_tests(bool mph) {
+  using namespace nds_offline_sound;
+  boot(mph);
+  put<uint32_t>(0x02008038, 1);
+  put<uint32_t>(0x0200803C, (0x40u << 8) | 2);
+  const uint8_t instrument[] = {4, 0, 0, 0, 60, 127, 127, 127, 127, 64};
+  std::memcpy(ptr(0x02008040, 10), instrument, 10);
+  const uint8_t music[] = {60, 127, 0x81, 0x00, 0xFF};
+  const uint8_t ui[] = {0x80, 0x7F, 0xFF};
+  std::memcpy(ptr(0x02009000, sizeof music), music, sizeof music);
+  std::memcpy(ptr(0x02009100, sizeof ui), ui, sizeof ui);
+  commands({{0, 0, 3, 0x02009000, 0, 0x02008000}});
+  now = 174592;
+  nds_offline_sound_advance(now);
+  now += 174592;
+  nds_offline_sound_advance(now);
+  const uint32_t output = 0x0200A000;
+  const auto export_work = [&]() {
+    commands({{0, 33, output, 0, 0, 0}});
+  };
+  export_work();
+  const unsigned music_track = get<uint8_t>(output + PlayerOffset + 3 * PlayerSize + player::Tracks);
+  check(music_track == 0);
+  const uint32_t music_row = output + TrackOffset + music_track * TrackSize;
+  const auto position = get<uint32_t>(music_row + track::Position);
+  const auto voice = get<uint32_t>(music_row + track::Voices);
+  check(position && voice);
+  const auto music_survives = [&]() {
+    export_work();
+    check(get<uint8_t>(music_row + track::Flags) & track::Active);
+    check(get<uint32_t>(music_row + track::Position) == position);
+    check(get<uint32_t>(music_row + track::Voices) == voice);
+  };
+  for (unsigned player_id : {8u, 9u}) {
+    // Retail bootstrap leaves inactive track bytes zero. Public packed writes
+    // recreate that legal state without granting ownership of music track0.
+    commands({{0, 6, player_id, player::Tracks, 0, 4},
+              {0, 1, player_id, 0, 0, 0}});
+    music_survives();
+    commands({{0, 0, player_id, 0x02009100, 0, 0x02008000}});
+    music_survives();
+    const auto ui_track = get<uint8_t>(output + PlayerOffset + player_id * PlayerSize + player::Tracks);
+    check(ui_track != music_track && ui_track < TrackCount);
+    commands({{0, 1, player_id, 0, 0, 0}, {0, 1, player_id, 0, 0, 0}});
+    music_survives();
+  }
+  now += 174592;
+  nds_offline_sound_advance(now);
+  NdsSpuSaveState hardware;
+  check(spu_savestate_export(&hardware));
+  check(hardware.channel[8].cnt & 0x80000000u);
+}
 } // namespace
 bool nds_io_offline_memory(uint32_t a, uint8_t *b, uint32_t n, bool write,
                            uint64_t) {
@@ -275,6 +327,8 @@ void bus_device_write16(int cpu, uint32_t a, uint16_t x, uint64_t) {
 int main() {
   pending_queue_tests(false);
   pending_queue_tests(true);
+  inactive_player_tests(false);
+  inactive_player_tests(true);
   for (bool mph : {false, true}) {
     boot(mph, true);
     check(nds_offline_sound_source_overlap(ptr(0x023FFFF0, 16), 16));

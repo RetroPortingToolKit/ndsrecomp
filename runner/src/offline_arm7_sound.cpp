@@ -246,6 +246,11 @@ void stop_player(unsigned n) {
     return;
   }
   auto a = g.work.player(n);
+  // Inactive SDK players need not initialize their track slots. Both retail
+  // StopSeq and PrepareSeq test Active before releasing those slots; reading
+  // their zero-filled bytes would stop track0 owned by another music player.
+  if (!a.flag(p::Flags, p::Active))
+    return;
   for (unsigned j = 0; j < 16; ++j) {
     int tr = trackid(n, j);
     if (tr >= 0)
