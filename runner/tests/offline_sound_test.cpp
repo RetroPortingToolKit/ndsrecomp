@@ -71,7 +71,7 @@ void commands(std::initializer_list<Command> input) {
   check(nds_offline_sound_receive(0x02001000, false, now));
   check(nds_offline_sound_receive(0, false, now));
 }
-void boot(bool mph = false, bool adopt = false) {
+void boot(bool mph = false, bool adopt = false, bool takeover = true) {
   ram.fill(0);
   wram.fill(0);
   replies.clear();
@@ -107,6 +107,9 @@ void boot(bool mph = false, bool adopt = false) {
   }
   std::memcpy(ptr(base, work.bytes.size()), work.bytes.data(),
               work.bytes.size());
+  const uint32_t queue = base + nds_offline_sound::WorkSize;
+  put<uint32_t>(queue + 0x10, queue + 0x20);
+  put<uint32_t>(queue + 0x14, 8);
   put<int32_t>(mph ? 0x038081E0 : 0x0380759C, -1);
   check(nds_offline_sound_configure(
       mph ? "90164d1ac127ee5f9815ea4ae7de798c7b5fc629"
@@ -121,6 +124,8 @@ void boot(bool mph = false, bool adopt = false) {
   check(nds_offline_sound_snapshot(&after));
   check(before == after);
   put<uint8_t>(base + 15 * nds_offline_sound::VoiceSize, 15);
+  if (!takeover)
+    return;
   check(nds_offline_sound_takeover(0, 174592));
   check(nds_offline_sound_ready());
 }
@@ -128,6 +133,94 @@ std::vector<int16_t> pcm(uint64_t first, unsigned count) {
   std::vector<int16_t> x(count * 2);
   check(nds_spu_debug_copy_output(first, x.data(), count) == count);
   return x;
+}
+void pending_queue_tests(bool mph) {
+  const uint32_t queue = (mph ? 0x03808AEC : 0x03807ECC) +
+                         nds_offline_sound::WorkSize;
+  boot(mph, false, false);
+  put(0x02002000, Command{0, 29, 0x02006000, 0, 0, 0});
+  put<uint32_t>(queue + 0x1C, 1);
+  put<uint32_t>(queue + 0x20, 0x02002000);
+  const std::vector<uint8_t> original_wram(wram.begin(), wram.end());
+  check(nds_offline_sound_takeover(0, 174592));
+  check(nds_offline_sound_json().find("\"queued\":1") != std::string::npos);
+  check(std::equal(original_wram.begin(), original_wram.end(), wram.begin()));
+  check(get<uint32_t>(0x02006000) == 0);
+  std::vector<uint8_t> pending, unchanged;
+  check(nds_offline_sound_snapshot(&pending));
+  check(nds_offline_sound_takeover(0, 174592));
+  check(nds_offline_sound_snapshot(&unchanged));
+  check(unchanged == pending);
+  NdsSpuSaveState hardware;
+  check(spu_savestate_export(&hardware));
+  const std::vector<uint8_t> original_ram(ram.begin(), ram.end());
+  check(nds_offline_sound_receive(0, false, 0));
+  check(get<uint32_t>(0x02006000) == 1);
+  check(nds_offline_sound_takeover(0, 174592));
+  check(nds_offline_sound_receive(0, false, 0));
+  check(get<uint32_t>(0x02006000) == 1);
+  std::copy(original_ram.begin(), original_ram.end(), ram.begin());
+  std::copy(original_wram.begin(), original_wram.end(), wram.begin());
+  std::string error;
+  check(spu_savestate_import(hardware, &error));
+  check(nds_offline_sound_validate(pending, &error));
+  check(nds_offline_sound_import(pending, &error));
+  check(nds_offline_sound_takeover(0, 174592));
+  check(nds_offline_sound_receive(0, false, 0));
+  check(get<uint32_t>(0x02006000) == 1);
+  check(nds_offline_sound_receive(0, false, 0));
+  check(get<uint32_t>(0x02006000) == 1);
+  check(get<uint32_t>(queue + 0x1C) == 1); // obsolete SDK header stays frozen
+
+  // A full wrapped queue must keep all eight submissions and their order.
+  boot(mph, false, false);
+  put<uint32_t>(queue + 0x18, 5);
+  put<uint32_t>(queue + 0x1C, 8);
+  for (unsigned i = 0; i < 8; ++i) {
+    const uint32_t head = 0x02002000 + i * 24;
+    put(head, i ? Command{0, 23, 10 + i, 0, 0, 0}
+                : Command{0, 29, 0x02006000, 0, 0, 0});
+    put<uint32_t>(queue + 0x20 + ((5 + i) & 7) * 4, head);
+  }
+  check(nds_offline_sound_takeover(0, 174592));
+  check(!nds_offline_sound_can_receive(0x02003000, false));
+  check(nds_offline_sound_can_receive(0, false));
+  check(nds_offline_sound_receive(0, false, 0));
+  check(get<uint32_t>(0x02006000) == 8);
+  check(nds_spu_read(0x04000500, 1) == 17);
+  check(nds_offline_sound_takeover(0, 174592));
+  check(nds_offline_sound_receive(0, false, 0));
+  check(get<uint32_t>(0x02006000) == 8);
+  check(nds_offline_sound_can_receive(0x02003000, false));
+
+  for (unsigned invalid = 0; invalid < 6; ++invalid) {
+    boot(mph, false, false);
+    switch (invalid) {
+    case 0: put<uint32_t>(queue + 0x10, queue + 0x24); break;
+    case 1: put<uint32_t>(queue + 0x14, 7); break;
+    case 2: put<uint32_t>(queue + 0x18, 8); break;
+    case 3: put<uint32_t>(queue + 0x1C, 9); break;
+    case 4: put<uint32_t>(queue + 0x1C, 1); break;
+    case 5:
+      put<uint32_t>(queue + 0x1C, 1);
+      put<uint32_t>(queue + 0x20, 0x02002000);
+      put(0x02002000, Command{0x02002018, 29, 0x02006000, 0, 0, 0});
+      put(0x02002018, Command{0, 34, 0, 0, 0, 0});
+      break;
+    }
+    std::vector<uint8_t> before, after;
+    check(nds_offline_sound_snapshot(&before));
+    const std::vector<uint8_t> ram_before(ram.begin(), ram.end());
+    const std::vector<uint8_t> wram_before(wram.begin(), wram.end());
+    const auto produced = nds_spu_debug_output_produced();
+    check(!nds_offline_sound_takeover(0, 174592));
+    check(nds_offline_sound_ready());
+    check(nds_offline_sound_snapshot(&after));
+    check(before == after);
+    check(std::equal(ram_before.begin(), ram_before.end(), ram.begin()));
+    check(std::equal(wram_before.begin(), wram_before.end(), wram.begin()));
+    check(nds_spu_debug_output_produced() == produced);
+  }
 }
 } // namespace
 bool nds_io_offline_memory(uint32_t a, uint8_t *b, uint32_t n, bool write,
@@ -180,6 +273,8 @@ void bus_device_write16(int cpu, uint32_t a, uint16_t x, uint64_t) {
 }
 
 int main() {
+  pending_queue_tests(false);
+  pending_queue_tests(true);
   for (bool mph : {false, true}) {
     boot(mph, true);
     check(nds_offline_sound_source_overlap(ptr(0x023FFFF0, 16), 16));
