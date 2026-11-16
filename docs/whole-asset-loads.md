@@ -34,7 +34,8 @@ observations. They are loading measurements, not presentation or FPS results.
 | MKDS course 33 | 5.3125 to 3.0313 (-42.9%) | 4.5068 to 2.3300 (-48.3%) | 13 files, 1,531,604 output bytes |
 | MPH room 92 | 5.0313 to 4.4688 (-11.2%) | 4.4147 to 3.9697 (-10.1%) | 7 archives, 718,112 output bytes |
 
-Both games use the same build/host/settings within their pair. Completion has
+Both legs use the same host and settings; each package uses its own
+current-build fixture. Completion has
 up to ten guest frames of polling overshoot; timing-seeded trajectories can
 differ. These single shared-host samples do not establish a general speedup
 for every course, room or machine.
