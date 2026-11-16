@@ -1869,6 +1869,10 @@ int main(int argc, char** argv) {
     // with no flags produces one. Prefer the save's directory (the launcher
     // keeps it next to the ROM), then the ROM's, then the working directory.
     std::string coverage_manifest_path;
+    // Live compilation also consumes resident snapshots when disk dumps are
+    // disabled. Their ROM/build identity is independent of diagnostic output.
+    coverage_manifest_set_identity(rom_sha1.c_str(), rom_name.c_str(),
+                                   NDS_RUNNER_BUILD_ID);
     if (!coverage_manifest_disabled) {
         if (!cli_coverage_manifest.empty()) {
             coverage_manifest_path = cli_coverage_manifest;
@@ -1894,8 +1898,6 @@ int main(int argc, char** argv) {
             coverage_manifest_set_output(
                 base.empty() ? "nds" : base.string().c_str());
         }
-        coverage_manifest_set_identity(rom_sha1.c_str(), rom_name.c_str(),
-                                       NDS_RUNNER_BUILD_ID);
     }
     // Written from every exit path below. Failure is reported and never
     // changes the process's exit status: losing a diagnostic dump must not
