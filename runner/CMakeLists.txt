@@ -446,8 +446,6 @@ set(NDS_PREBUILT_BANK_ARCHIVE_SHA256 "" CACHE STRING
     "Required SHA256 of NDS_PREBUILT_BANK_ARCHIVE")
 set(NDS_PREBUILT_BANK_PREWRITE_HEADER_SHA256 "" CACHE STRING
     "Runtime header SHA256 recorded by the offline-aware bank archive build")
-option(NDS_PREBUILT_BANK_MSVC_COMPAT
-    "Use the qualified MSVC Win64 C bank archive with a GNU host link" OFF)
 if(NDS_PREBUILT_BANK_ARCHIVE)
     if(NDS_OFFLINE_ARM7 AND NDS_ARM9_DYNARMIC_ENABLED)
         file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t/runtime_arm.h" _prewrite_header_sha256)
@@ -468,17 +466,6 @@ if(NDS_PREBUILT_BANK_ARCHIVE)
     string(APPEND NDS_BUILD_VARIANT "-banks${_bank_profile}")
     add_library(nds_banks STATIC IMPORTED)
     set_target_properties(nds_banks PROPERTIES IMPORTED_LOCATION "${NDS_PREBUILT_BANK_ARCHIVE}")
-    if(NDS_PREBUILT_BANK_MSVC_COMPAT)
-        if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR
-           NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$" OR
-           NOT CMAKE_C_COMPILER_ID STREQUAL "GNU")
-            message(FATAL_ERROR "The MSVC bank compatibility profile is qualified only for a Windows x64 GNU host link")
-        endif()
-        # Both stack probes take the size in RAX, preserve RAX/RCX/RSP, and
-        # probe without allocating. A 128KiB MSVC frame qualified this alias.
-        target_link_options(nds_banks INTERFACE "-Wl,-u,___chkstk_ms"
-            "-Wl,--defsym,__chkstk=___chkstk_ms")
-    endif()
     message(STATUS "Reusing bank archive ${_bank_archive_sha256}; release inventory checks remain required")
 else()
 add_library(nds_banks STATIC
