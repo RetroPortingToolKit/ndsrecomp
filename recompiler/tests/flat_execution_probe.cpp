@@ -73,6 +73,7 @@ extern "C" void nds_region_finish(uint32_t single_step,uint32_t) {
 extern "C" void runtime_note_code_write() {
     ++code_writes;if(invalidate)g_nds_fast_limit=0;
 }
+extern "C" void runtime_note_code_write_pages(const uint32_t*,uint32_t) { runtime_note_code_write(); }
 extern "C" void runtime_note_live_write(uint32_t,uint32_t,uint32_t,uint32_t) {}
 extern "C" uint32_t runtime_code_cycles(uint32_t pc) {g_last_code_pc[0]=pc;return 1;}
 extern "C" uint32_t runtime_mem_cycles_slow(uint32_t a,uint32_t,uint32_t) {g_last_data_addr[0]=a;return 1;}
@@ -127,7 +128,7 @@ int main() {
            pack(c)!=g_cpu.cpsr || memcmp(reference.data(),ram,sizeof(ram)) ||
            g_insn_count[0]!=reference_count || fallback_calls<1 || fallback_calls>2) {
             std::fprintf(stderr,"flat mismatch test=%u pc=%08X expected=%08X insns=%llu/%u fallback=%u cpsr=%08X/%08X\n",
-                test,g_cpu.R[15],c.R[15],g_insn_count[0],reference_count,fallback_calls,g_cpu.cpsr,pack(c));
+                test,g_cpu.R[15],c.R[15],static_cast<unsigned long long>(g_insn_count[0]),reference_count,fallback_calls,g_cpu.cpsr,pack(c));
             return 1;
         }
         if(test&1)check(io_calls>0);
@@ -139,5 +140,5 @@ int main() {
     g_nds_fast_limit=100000;g_insn_count[0]=0;invalidate=true;
     g_dispatch_flat_fixture[0].fn();
     check(g_cpu.R[15]==0x02010004 && g_cpu.R[13]==0x02000EFC && g_insn_count[0]==1);
-    std::printf("flat execution/interpreter: %llu cases plus code-invalidation boundary passed\n",checks);
+    std::printf("flat execution/interpreter: %llu cases plus code-invalidation boundary passed\n",static_cast<unsigned long long>(checks));
 }
