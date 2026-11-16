@@ -43,9 +43,9 @@ void nds_native_3d_raster(const nds_native_3d::Frame& frame,
         // A reset/zero projection can yield an entirely collapsed polygon.
         // Its vertices are legal, but must never divide by zero on the host.
         const int64_t x = w > 0 ? ((int64_t(v.clip[0]) + w) * span * 16) / (2 * w) : 0;
-        const int64_t y = w > 0 ? ((int64_t(v.clip[1]) + w) * height * 16) / (2 * w) : 0;
+        const int64_t y = w > 0 ? ((w - int64_t(v.clip[1])) * height * 16) / (2 * w) : height * 16;
         out.HiresPosition[0] = static_cast<int32_t>(left * 16 + x);
-        out.HiresPosition[1] = static_cast<int32_t>((192 - y1) * 16 - y);
+        out.HiresPosition[1] = static_cast<int32_t>((192 - y1 - height) * 16 + y);
         out.FinalPosition[0] = out.HiresPosition[0] >> 4;
         out.FinalPosition[1] = out.HiresPosition[1] >> 4;
     }
@@ -66,12 +66,15 @@ void nds_native_3d_raster(const nds_native_3d::Frame& frame,
         uint32_t max_w = 0;
         for (unsigned i = 0; i < p.count; ++i)
             max_w = std::max(max_w, static_cast<uint32_t>(std::max(0, frame.vertices[p.indices[i]].clip[3])));
-        const unsigned shift = max_w > 0xFFFF ? (std::bit_width(max_w) - 16 + 3) & ~3u : 0;
+        // Keep the largest W in the 13..16-bit range, in whole nibbles.
+        // Small near-view polygons need the same precision as distant ones.
+        const int shift = max_w ? ((int(std::bit_width(max_w)) - 1) & ~3) - 12 : 0;
         for (unsigned i = 0; i < p.count; ++i) {
             auto& v = vertices[p.indices[i]]; out.Vertices[i] = &v;
             const int64_t w = v.Position[3];
             const int64_t z = w > 0 ? (int64_t(v.Position[2]) * 0x4000) / w + 0x3FFF : 0;
-            out.FinalW[i] = static_cast<int32_t>(std::max<int64_t>(0, w) >> shift);
+            const int64_t positive_w = std::max<int64_t>(0, w);
+            out.FinalW[i] = static_cast<int32_t>(shift >= 0 ? positive_w >> shift : positive_w << -shift);
             out.FinalZ[i] = out.WBuffer ? static_cast<int32_t>(std::clamp<int64_t>(w, 0, 0xFFFFFF)) :
                 static_cast<int32_t>(std::clamp<int64_t>(z * 512, 0, 0xFFFFFF));
             const int x = v.FinalPosition[0], y = v.FinalPosition[1];

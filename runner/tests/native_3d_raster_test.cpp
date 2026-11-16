@@ -57,6 +57,24 @@ int main() {
         compare("normalized W",wa.FinalW[0],wb.FinalW[0]);
         compare("W depth",wa.FinalZ[0],wb.FinalZ[0]);
         if(!equal)throw std::runtime_error("native W-buffer raster ABI mismatch");
+        // Near-view perspective polygons also normalize W upward. Uneven
+        // homogeneous depths expose both the missing precision and inverted
+        // viewport division's subpixel rounding.
+        op(0x10,{0});op(0x16,{512,0,0,0,0,512,0,0,0,0,uint32_t(-512),uint32_t(-512),0,0,uint32_t(-64),0});
+        op(0x10,{2});op(0x15);op(0x2A,{0});op(0x29,{0x001F10C0});op(0x40,{0});
+        vertex(-257,-99,-511);vertex(257,-99,-1001);vertex(17,101,-4001);op(0x50,{0});
+        r.VBlank();service.VBlank();nds_native_3d_raster(service.Display(),n,false);
+        if(r.RenderNumPolygons!=1||n.RenderNumPolygons!=1)throw std::runtime_error("near perspective triangle missing");
+        const auto& near_ref=*r.RenderPolygonRAM[0];const auto& near_native=*n.RenderPolygonRAM[0];
+        for(unsigned i=0;i<3;++i){
+            compare("near normalized W",near_ref.FinalW[i],near_native.FinalW[i]);
+            compare("near depth",near_ref.FinalZ[i],near_native.FinalZ[i]);
+            for(unsigned c=0;c<2;++c){
+                compare("near pixel",near_ref.Vertices[i]->FinalPosition[c],near_native.Vertices[i]->FinalPosition[c]);
+                compare("near subpixel",near_ref.Vertices[i]->HiresPosition[c],near_native.Vertices[i]->HiresPosition[c]);
+            }
+        }
+        if(!equal)throw std::runtime_error("native near perspective raster ABI mismatch");
         for(const auto [address,value] : {std::pair{0x04000060u,0x678u},std::pair{0x04000340u,17u},
             std::pair{0x04000350u,0x1F001234u},std::pair{0x04000354u,0x7ABCu},
             std::pair{0x04000358u,0x001F03E0u},std::pair{0x0400035Cu,0x1234u},
