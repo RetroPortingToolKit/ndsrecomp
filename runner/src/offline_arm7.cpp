@@ -27,18 +27,21 @@ bool nds_offline_sound_import(const std::vector<uint8_t>&,std::string*);
 
 namespace {
 constexpr uint64_t Never=UINT64_MAX,Line=2130,Frame=Line*263;
+constexpr uint64_t PadPeriod=2094u*64u;
 struct Addresses {uint32_t touch,power,mic,firmware,rtc,queue,led,patterns;};
 constexpr Addresses address[2]={
     {0x03809DD4,0x03809EB8,0x03809EEC,0x03809F64,0x03809F88,0x03809BDC,0x03809EE8,0x038075D4},
     {0x0380A9F4,0x0380AAD8,0x0380BA7C,0x027F958C,0x027F95B0,0x0380A7FC,0x0380AB08,0x038081F4}};
 struct Proof {uint32_t pc,size;const char* hash;};
-constexpr Proof proofs[2][5]={
+constexpr Proof proofs[2][6]={
     {{0x0380121C,0x70,"46139cc6e31279ee0b85a4327489ec3e27e5512e"},{0x03801B14,0x1B8,"afb5ac9ed010fc851ea003f9675f52e7bfbde505"},
      {0x03802510,0x1CC,"77ac7a982b0d31e755b141e6e5042b5168a85f5a"},{0x03804338,0x1A0,"6341d6d3bbcd1f2fd357d426544ab848062a7b17"},
-     {0x03805584,0x134,"b801e3ec3f4d9d395997b8857447753190674ef7"}},
+     {0x03805584,0x134,"b801e3ec3f4d9d395997b8857447753190674ef7"},
+     {0x037FB808,0x7C,"c133887bb6e567bddc7a1718d0d16d0f81203c86"}},
     {{0x03804660,0x70,"95fe1d3e65a21fc6afab277064b1cca8ae350e15"},{0x03804F58,0x1B8,"afb5ac9ed010fc851ea003f9675f52e7bfbde505"},
      {0x03805954,0x1CC,"77ac7a982b0d31e755b141e6e5042b5168a85f5a"},{0x027F5A70,0x1A0,"17d5837dc373e5ca894326b8873dafeef7d7da79"},
-     {0x027F6CBC,0x134,"bd6e84be741f0d368bc271b8945dc330b7bbdecf"}}};
+     {0x027F6CBC,0x134,"bd6e84be741f0d368bc271b8945dc330b7bbdecf"},
+     {0x037FEBC0,0x7C,"3cf4fe48a761061c65e54301acfae2991d5d0f21"}}};
 struct State {
     bool active=false,touch_auto=false,mic_auto=false,sleep=false,reset_pending=false;
     std::array<std::array<uint16_t,16>,4> packets{}; // firmware,touch,power,mic
@@ -47,7 +50,7 @@ struct State {
     uint32_t sleep_flags=0,sleep_pm=0,sleep_rcnt=0;
     uint32_t wireless_phase=0,wireless_source=0,wireless_size=0;
     uint32_t touch_pending=0,touch_raw=0;
-    uint64_t led_next=Never,mic_next=Never;
+    uint64_t led_next=Never,mic_next=Never,pad_next=Never;
     std::array<uint64_t,4> touch_next{Never,Never,Never,Never};
     std::array<std::array<uint32_t,3>,12> patterns{};
 } state;
@@ -259,6 +262,16 @@ bool sound_deadline(uint64_t now,uint64_t* deadline){
     const uint64_t period=uint64_t(load32(alarm+0x1C))|(uint64_t(load32(alarm+0x20))<<32);
     return period==2728u&&nds_io_offline_tick_deadline(fire,now,deadline)&&*deadline>now;
 }
+bool pad_deadline(uint64_t now,uint64_t* deadline){
+    // Both retail SDKs schedule the shared extended-pad publisher every 2094
+    // OS ticks. Adopt that alarm's fire time, preserving its Timer0 phase.
+    const uint32_t alarm=game==1?0x03807940u:0x03808560u;
+    const uint32_t handler=game==1?0x037FB844u:0x037FEBFCu;
+    const uint64_t fire=uint64_t(load32(alarm+0xC))|(uint64_t(load32(alarm+0x10))<<32);
+    return load32(alarm)==handler && !load32(alarm+4) &&
+        load32(alarm+0x1C)==2094u && !load32(alarm+0x20) &&
+        nds_io_offline_tick_deadline(fire,now,deadline);
+}
 }
 
 bool nds_offline_arm7_configure(const std::string& sha,bool offline,std::string* error){
@@ -316,6 +329,7 @@ bool nds_offline_arm7_try_takeover(uint64_t now,std::string* error){
     if(next.mic_auto){next.mic_flags=load32(a.mic+0x24)&0xFFFF;next.mic_base=load32(a.mic+0x28);next.mic_pos=load32(a.mic+0x2C);next.mic_size=load32(a.mic+0x30);const uint32_t reload=load32(a.mic+0x34);const unsigned shifts[4]={0,6,8,10};next.mic_period=(65536-(reload&65535))<<shifts[(reload>>16)&3];if(!next.mic_size||next.mic_pos>=next.mic_size||!ram(next.mic_base,next.mic_size))return fail(error,"ARM7 microphone schedule is invalid");next.mic_next=now+next.mic_period;}
     uint64_t driver_tick;
     if(!sound_deadline(now,&driver_tick))return fail(error,"ARM7 SDK sound alarm is not at an idle known epoch");
+    if(!pad_deadline(now,&next.pad_next))return fail(error,"ARM7 SDK pad alarm is not at a known epoch");
     // The timer probe may raise a wake; do not commit a now-runnable peer.
     if(nds_halt_wake_pending(1)||nds_dma_cpu_stalled(1))return fail(error,"ARM7 woke during takeover observation");
     if(!nds_offline_sound_takeover(now,driver_tick))return fail(error,"ARM7 sound takeover declined");
@@ -363,7 +377,7 @@ uint64_t nds_offline_arm7_next_event(uint64_t now){
     if(!state.active||state.reset_pending||nds_offline_card_terminated()||nds_powered_off())return Never;
     // PM_Sleep masks every callback IRQ except the selected wake sources.
     if(state.sleep)return (state.sleep_flags&2)?nds_io_offline_rtc_next_event(now):Never;
-    uint64_t next=state.led_next;
+    uint64_t next=std::min(state.led_next,state.pad_next);
     const bool reply_room=nds_io_offline_reply_capacity(1);
     auto event=[&](uint64_t at){if(at>now||reply_room)next=std::min(next,at);};
     event(state.mic_next);for(auto at:state.touch_next)event(at);
@@ -385,6 +399,10 @@ void nds_offline_arm7_advance(uint64_t now){
             nds_offline_sound_advance(now); // Hardware SPU only while software sleeps.
             return;
         }
+        // The retail IRQ dispatcher acknowledges IF before its handler
+        // (MKDS038037AC / MPH03806D20). Consume the opening edge we handled,
+        // so the next close/sleep cannot wake from the preceding opening.
+        nds_io_offline_irq_clear(mask&nds_io_offline_wake_flags()&0x400000u);
         pm_write(0,uint8_t(state.sleep_pm));
         power_switch((state.sleep_flags&0x20)?6:7);power_switch((state.sleep_flags&0x40)?4:5);
         nds_io_offline_sleep_leave(state.sleep_flags,uint16_t(state.sleep_rcnt));
@@ -401,6 +419,12 @@ void nds_offline_arm7_advance(uint64_t now){
         if(state.mic_next!=Never&&state.mic_next<=now)state.mic_next=now-(now-state.mic_next)%state.mic_period;
         if(state.led_next!=Never&&state.led_next<=now)state.led_next=now-(now-state.led_next)%Frame;
         nds_offline_sound_sleep(false,now);
+    }
+    if(state.pad_next<=now){
+        // SDK PAD publisher: X/Y/debug retain active-low levels in bits10/11/13;
+        // hinge is separately high-closed at bit15. Do not overwrite touch AA+.
+        if(!store(0x027FFFA8u,nds_io_offline_pad(),2,now))return;
+        state.pad_next+=((now-state.pad_next)/PadPeriod+1u)*PadPeriod;
     }
     for(unsigned count=0;count<4;++count){
         unsigned i=state.touch_pending?state.touch_pending-1:unsigned(std::min_element(state.touch_next.begin(),state.touch_next.end())-state.touch_next.begin());
@@ -442,7 +466,7 @@ struct Reader {
     bool blob(std::vector<uint8_t>* out){const uint32_t size=word();if(!valid||size>0x800000||size>in.size()-std::min(at,in.size()))return false;out->assign(in.begin()+at,in.begin()+at+size);at+=size;return true;}
 };
 bool decode(const std::vector<uint8_t>& in,State* out,std::vector<uint8_t>* sound,std::vector<uint8_t>* card,std::string* error){
-    Reader r{in};if(r.word()!=0x3746464Fu||r.word()!=3||r.word()!=game)return fail(error,"Offline ARM7 state identity is invalid");
+    Reader r{in};if(r.word()!=0x3746464Fu||r.word()!=4||r.word()!=game)return fail(error,"Offline ARM7 state identity is invalid");
     State next;
     uint32_t booleans[5];for(auto& value:booleans)value=r.word();
     for(auto value:booleans)if(value>1)return fail(error,"Offline ARM7 state has invalid flags");
@@ -450,10 +474,10 @@ bool decode(const std::vector<uint8_t>& in,State* out,std::vector<uint8_t>* soun
     for(auto& packet:next.packets)for(auto& value:packet){const auto cell=r.word();if(cell>65535)return fail(error,"Offline ARM7 packet cell is invalid");value=uint16_t(cell);}
     uint32_t* fields[]={&next.samples,&next.phase,&next.filter,&next.led,&next.led_frame,&next.led_actual,&next.mic_flags,&next.mic_base,&next.mic_size,&next.mic_pos,&next.mic_period,&next.mic_half,&next.sleep_flags,&next.sleep_pm,&next.sleep_rcnt,&next.wireless_phase,&next.wireless_source,&next.wireless_size,&next.touch_pending,&next.touch_raw};
     for(auto* field:fields)*field=r.word();
-    next.led_next=r.wide();next.mic_next=r.wide();
+    next.led_next=r.wide();next.mic_next=r.wide();next.pad_next=r.wide();
     for(auto& at:next.touch_next)at=r.wide();
     for(auto& pattern:next.patterns)for(auto& value:pattern)value=r.word();
-    if(!r.valid||(!game&&next.active)||next.samples>4||next.phase>=263||next.filter>255||next.led>15||next.led_actual>3||next.mic_flags>255||next.mic_half>65535||next.sleep_pm>255||next.sleep_rcnt>65535||next.touch_pending>next.samples||
+    if(!r.valid||(!game&&next.active)||(next.active&&next.pad_next>Never-PadPeriod)||next.samples>4||next.phase>=263||next.filter>255||next.led>15||next.led_actual>3||next.mic_flags>255||next.mic_half>65535||next.sleep_pm>255||next.sleep_rcnt>65535||next.touch_pending>next.samples||
        (next.touch_auto&&!next.samples)||(next.mic_auto&&(!next.mic_period||!next.mic_size||next.mic_pos>=next.mic_size||!ram(next.mic_base,next.mic_size))))return fail(error,"Offline ARM7 driver state is invalid");
     if((game!=1&&(next.wireless_phase||next.wireless_source||next.wireless_size))||
        (game==1&&next.active&&next.wireless_phase!=1&&next.wireless_phase!=3)||!wireless_image(next.wireless_source,next.wireless_size))return fail(error,"Offline ARM7 wireless lifecycle state is invalid");
@@ -467,11 +491,11 @@ bool decode(const std::vector<uint8_t>& in,State* out,std::vector<uint8_t>* soun
 bool nds_offline_arm7_snapshot(std::vector<uint8_t>* out,std::string* error){
     if(!out)return fail(error,"Offline ARM7 snapshot output is null");
     std::vector<uint8_t> sound,card;if(!nds_offline_sound_snapshot(&sound)||!nds_offline_card_snapshot(&card))return fail(error,"Offline ARM7 component snapshot failed");
-    std::vector<uint8_t> bytes;put32(bytes,0x3746464F);put32(bytes,3);put32(bytes,game);
+    std::vector<uint8_t> bytes;put32(bytes,0x3746464F);put32(bytes,4);put32(bytes,game);
     for(bool value:{state.active,state.touch_auto,state.mic_auto,state.sleep,state.reset_pending})put32(bytes,value);
     for(const auto& packet:state.packets)for(auto value:packet)put32(bytes,value);
     for(auto value:{state.samples,state.phase,state.filter,state.led,state.led_frame,state.led_actual,state.mic_flags,state.mic_base,state.mic_size,state.mic_pos,state.mic_period,state.mic_half,state.sleep_flags,state.sleep_pm,state.sleep_rcnt,state.wireless_phase,state.wireless_source,state.wireless_size,state.touch_pending,state.touch_raw})put32(bytes,value);
-    put64(bytes,state.led_next);put64(bytes,state.mic_next);for(auto at:state.touch_next)put64(bytes,at);
+    put64(bytes,state.led_next);put64(bytes,state.mic_next);put64(bytes,state.pad_next);for(auto at:state.touch_next)put64(bytes,at);
     for(const auto& pattern:state.patterns)for(auto value:pattern)put32(bytes,value);
     put32(bytes,uint32_t(sound.size()));bytes.insert(bytes.end(),sound.begin(),sound.end());put32(bytes,uint32_t(card.size()));bytes.insert(bytes.end(),card.begin(),card.end());
     *out=std::move(bytes);return true;

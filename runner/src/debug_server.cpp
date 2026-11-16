@@ -522,6 +522,11 @@ std::string handle(const std::string& line) {
         return std::string("{\"ok\":true,\"paused\":") +
             (nds_frontend_paused() ? "true}" : "false}");
     }
+    if (cmd == "lid") {
+        nds_set_lid_closed(json_bool(line, "closed", nds_lid_closed()));
+        return std::string("{\"ok\":true,\"closed\":") +
+            (nds_lid_closed() ? "true}" : "false}");
+    }
     if (cmd == "offline_arm7") {
 #if defined(NDS_OFFLINE_ARM7)
         return std::string("{\"available\":true,\"selected\":")+

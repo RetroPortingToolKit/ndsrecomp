@@ -2324,6 +2324,23 @@ void nds_set_key_mask(uint32_t mask) {
     check_key_irq(1, oldkey, g_keyinput);
 }
 
+uint16_t nds_extended_keys() { return uint16_t(g_keyinput >> 16); }
+uint16_t nds_io_offline_pad() {
+    // SDK PAD sampling selects GPIO mode without changing the lower RCNT bits.
+    g_rcnt = uint16_t((g_rcnt & ~0xC000u) | 0x8000u);
+    const uint16_t ext = nds_extended_keys();
+    return uint16_t((ext & 0xBu) << 10) | ((ext & 0x80u) ? 0x8000u : 0u);
+}
+bool nds_lid_closed() { return (g_keyinput & (1u << 23)) != 0; }
+void nds_set_lid_closed(bool closed) {
+    const bool was_closed = nds_lid_closed();
+    if (closed) g_keyinput |= 1u << 23;
+    else g_keyinput &= ~(1u << 23);
+    // EXTKEYIN hinge is high when closed; only opening raises ARM7 IRQ22.
+    // Repeating the same input is not another physical edge.
+    if (was_closed && !closed) nds_raise_irq(1, 1u << 22);
+}
+
 // Debug-server-driven throttle override (the `turbo` command). Same role as
 // the frontend's opt-in Tab turbo, but reachable from a probe that has no
 // window focus. Read once per frontend loop iteration; atomic because the
