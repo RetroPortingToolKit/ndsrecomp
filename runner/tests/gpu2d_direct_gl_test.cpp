@@ -8,6 +8,7 @@
 #include "glad/glad.h"
 #include "melonds_compute/PresentShaders.h"
 #include "melonds_compute/SurvivorPresentShader.h"
+#include "melonds_compute/PipBlendState.h"
 #include "screen_layout.h"
 #include "GPU3D_OpenGL_Output.h"
 #include <stdexcept>
@@ -302,8 +303,7 @@ void test_cpu_survivors() {
     glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,fallback);glTexSubImage2D(GL_TEXTURE_2D,0,0,0,256,192,GL_RGBA,GL_UNSIGNED_BYTE,base.data());
     glViewport(inset.x,192-inset.y-inset.h,inset.w,inset.h);
     glUniform1f(9,float(nds_screen_opacity(placement,1))/255.0f);
-    glEnable(GL_BLEND);glBlendEquationSeparate(GL_FUNC_ADD,GL_FUNC_ADD);glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
-    glDrawArrays(GL_TRIANGLES,0,3);glDisable(GL_BLEND);
+    {nds_survivor_present::PipBlendState blend(true);glDrawArrays(GL_TRIANGLES,0,3);}
     std::vector<uint32_t> composed(sw*192);glReadPixels(0,0,sw,192,GL_RGBA,GL_UNSIGNED_BYTE,composed.data());
     const auto blended=nds_screen_blend_pixel(mainColor,insetColor,nds_screen_opacity(placement,1));
     for(int y=0;y<192;++y)for(int x=0;x<256;++x){
@@ -314,6 +314,21 @@ void test_cpu_survivors() {
     }
     glUniform1f(9,1.0f);glViewport(0,0,256,192);glDrawArrays(GL_TRIANGLES,0,3);
     glReadPixels(5,96,1,1,GL_RGBA,GL_UNSIGNED_BYTE,&canonical);ensure(canonical==insetColor,"canonical observer pixels remain opaque after PiP");
+    const GLenum blendNames[]{GL_BLEND_SRC_RGB,GL_BLEND_DST_RGB,GL_BLEND_SRC_ALPHA,GL_BLEND_DST_ALPHA,GL_BLEND_EQUATION_RGB,GL_BLEND_EQUATION_ALPHA};
+    const GLint blendValues[]{GL_DST_COLOR,GL_ONE_MINUS_DST_COLOR,GL_DST_ALPHA,GL_ONE_MINUS_DST_ALPHA,GL_FUNC_REVERSE_SUBTRACT,GL_FUNC_SUBTRACT};
+    for(bool enabled:{false,true}){
+        if(enabled)glEnable(GL_BLEND);else glDisable(GL_BLEND);
+        glBlendFuncSeparate(blendValues[0],blendValues[1],blendValues[2],blendValues[3]);glBlendEquationSeparate(blendValues[4],blendValues[5]);
+        auto restored=[&]{
+            ensure(bool(glIsEnabled(GL_BLEND))==enabled,"PiP restores prior blend enable");
+            for(unsigned i=0;i<6;++i){GLint value{};glGetIntegerv(blendNames[i],&value);ensure(value==blendValues[i],"PiP restores every blend factor and equation");}
+        };
+        {nds_survivor_present::PipBlendState blend(true);ensure(glIsEnabled(GL_BLEND),"PiP blending enabled for inset");}
+        restored();
+        [&]{nds_survivor_present::PipBlendState blend(true);return;}();
+        restored();
+    }
+    glDisable(GL_BLEND);
     ensure(glGetError()==GL_NO_ERROR,"survivor AA execution");glDeleteTextures(1,&hi);
     glDeleteBuffers(1,&rowBuffer);glDeleteTextures(1,&input);glDeleteTextures(1,&compactTexture);glDeleteTextures(1,&native);glDeleteTextures(1,&fallback);glDeleteTextures(1,&output);glDeleteFramebuffers(1,&fbo);glDeleteVertexArrays(1,&vao);glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);
     std::puts("General/compact/mixed CPU survivors match native integer effects/route/visibility/windows, native vs wide HUD, scroll clipping, centered margins, prefix limit and inset-only PiP opacity");

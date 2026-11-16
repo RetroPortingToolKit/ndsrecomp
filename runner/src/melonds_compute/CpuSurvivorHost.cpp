@@ -31,6 +31,7 @@ bool nds_survivor_host_requested(){
 #include "../gpu3d.h"
 #include "../savestate.h"
 #include "glad/glad.h"
+#include "PipBlendState.h"
 #if defined(NDS_HAVE_SDL3)
 #include <SDL3/SDL.h>
 #else
@@ -136,11 +137,11 @@ bool draw(const Frame& f,int screen,bool native,bool lowres,Source* source,GLuin
     bind(0,layerTexture);bind(6,objectTexture);bind(1,fallbackTexture);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,256,192,0,GL_BGRA,GL_UNSIGNED_BYTE,f.native_base[screen]);parameters();
     if(black&&white)for(unsigned i=0;i<2;++i){bind(2+i,overlayTextures[i]);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,width,192,0,GL_BGRA,GL_UNSIGNED_BYTE,i?white:black);parameters();}
     bind(4,source?source->native:0);bind(5,source?source->hi:0);glBindBufferBase(GL_SHADER_STORAGE_BUFFER,2,rowsBuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER,fbo);glViewport(vx,vy,vw,vh);glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glDisable(GL_SCISSOR_TEST);glDisable(GL_DITHER);glUseProgram(programs[noFlip?1:0]);glBindVertexArray(vao);
+    glBindFramebuffer(GL_FRAMEBUFFER,fbo);glViewport(vx,vy,vw,vh);if(opacity==255)glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glDisable(GL_SCISSOR_TEST);glDisable(GL_DITHER);glUseProgram(programs[noFlip?1:0]);glBindVertexArray(vao);
+    nds_survivor_present::PipBlendState blend(opacity!=255);
     glUniform1ui(0,screen);glUniform1ui(1,width);glUniform1ui(2,gpu);glUniform1ui(3,black&&white);glUniform1ui(4,aa);glUniform1ui(5,source?source->width:0);glUniform1ui(6,!lowres&&source?source->scale:0);glUniform1ui(7,native);glUniform1ui(8,f.lines<192?f.lines:0);
     glUniform1f(9,float(opacity)/255.0f);
-    if(opacity!=255){glEnable(GL_BLEND);glBlendEquationSeparate(GL_FUNC_ADD,GL_FUNC_ADD);glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);}
-    glDrawArrays(GL_TRIANGLES,0,3);glDisable(GL_BLEND);return glGetError()==GL_NO_ERROR;
+    glDrawArrays(GL_TRIANGLES,0,3);return glGetError()==GL_NO_ERROR;
 }
 const uint32_t* readFrame(const Frame* f,int screen,bool adaptive,uint16_t* width,Source* overrideSource=nullptr,bool force=false){
     if(width)*width=256;
