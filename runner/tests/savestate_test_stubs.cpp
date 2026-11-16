@@ -127,7 +127,7 @@ NdsGpu2dSaveState default_gpu2d_state() {
 }
 NdsVramSaveState g_test_vram_state = default_vram_state();
 NdsGpu2dSaveState g_test_gpu2d_state = default_gpu2d_state();
-NdsGpu3dSaveState g_test_gpu3d_state{{0x47u, 0x50u, 0x33u, 0x44u}, 0u};
+NdsGpu3dSaveState g_test_gpu3d_state{{0x47u, 0x50u, 0x33u, 0x44u}, {}, 0u};
 bool g_fail_next_io_import = false;
 bool g_fail_next_peripheral_import_after_apply = false;
 }
@@ -137,7 +137,7 @@ void savestate_test_reset_io_state() {
     g_test_peripheral_state = default_peripheral_state();
     g_test_vram_state = default_vram_state();
     g_test_gpu2d_state = default_gpu2d_state();
-    g_test_gpu3d_state = {{0x47u, 0x50u, 0x33u, 0x44u}, 0u};
+    g_test_gpu3d_state = {{0x47u, 0x50u, 0x33u, 0x44u}, {}, 0u};
     g_fail_next_io_import = false;
     g_fail_next_peripheral_import_after_apply = false;
 }
