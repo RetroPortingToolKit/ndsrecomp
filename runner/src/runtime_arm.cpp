@@ -1756,6 +1756,13 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
         // preserve the interworking bit in their target value; generated bank
         // prologues and the architectural register view require aligned R15.
         g_cpu.R[15] = pc;
+        // A native whole-operation replacement does not execute generated
+        // instruction hooks. Honor the existing debug breakpoint before any
+        // such entry can mutate its continuation or caller-visible output.
+        if (g_runtime_break_pc && pc == (g_runtime_break_pc & ~1u)) {
+            nds_halt("break pc");
+            return;
+        }
         runtime_trace_event(RUNTIME_TRACE_DISPATCH, pc, target_pc, 0, 0);
         const CpuCtx& c = g_ctx[g_nds_active];
         StaticGuardScope guard_scope;
