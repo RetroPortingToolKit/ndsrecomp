@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "CpuSurvivorHost.h"
+#include "../screen_layout.h"
 #include "../gpu3d_survivors.h"
 #include "../cpu_render_handoff.h"
 #include <atomic>
@@ -220,6 +221,38 @@ bool nds_survivor_host_present_top(SDL_Window* window,const Frame* f,const uint3
 #endif
     if(ticks){ticks->draw+=swap-begin;ticks->swap+=SDL_GetPerformanceCounter()-swap;}if(ok)nds_compute_host_note_presented_width(width);return ok;
 }
+bool nds_survivor_host_present_layout(SDL_Window* window,const Frame* f,const NdsScreenPlacement& placement,
+    const uint32_t* const black[2],const uint32_t* const white[2],unsigned aa,NdsComputePresentTicks* ticks){
+    if(!active||!window||!f||!nds_compute_host_make_current())return false;
+    State state;const auto begin=SDL_GetPerformanceCounter();int w{},h{};
+#if defined(NDS_HAVE_SDL3)
+    if(!SDL_GetWindowSizeInPixels(window,&w,&h))return false;
+#else
+    SDL_GL_GetDrawableSize(window,&w,&h);
+#endif
+    const double scale=std::min(double(w)/placement.width,double(h)/placement.height);
+    if(scale<=0)return false;
+    const int left=int((w-placement.width*scale)/2),top=int((h-placement.height*scale)/2);
+    glBindFramebuffer(GL_FRAMEBUFFER,0);glViewport(0,0,w,h);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+    for(unsigned layer=0;layer<2;++layer){
+        const unsigned screen=layer?placement.main_screen^1u:placement.main_screen;
+        const auto& r=placement.screens[screen];
+        const int x=left+int(r.x*scale),y=top+int(r.y*scale);
+        const int rw=std::max(1,int(r.w*scale)),rh=std::max(1,int(r.h*scale));
+        if(!draw(*f,int(screen),false,false,findSource(*f),0,rw,rh,false,
+            black?black[screen]:nullptr,white?white[screen]:nullptr,
+            aa,x,h-y-rh))return false;
+    }
+    const auto swap=SDL_GetPerformanceCounter();
+#if defined(NDS_HAVE_SDL3)
+    const bool ok=SDL_GL_SwapWindow(window);
+#else
+    SDL_GL_SwapWindow(window);const bool ok=true;
+#endif
+    if(ticks){ticks->draw+=swap-begin;ticks->swap+=SDL_GetPerformanceCounter()-swap;}
+    if(ok)nds_compute_host_note_presented_width(placement.width);
+    return ok;
+}
 SDL_Texture* nds_survivor_host_present_bottom(const Frame* f,int w,int h,const uint32_t* black,const uint32_t* white,unsigned aa,NdsComputePresentTicks* ticks){
     if(!active||!interop||!f||w<=0||h<=0||!nds_compute_host_make_current())return nullptr;
     State state;const auto begin=SDL_GetPerformanceCounter();std::string error;
@@ -240,6 +273,7 @@ bool nds_survivor_host_snapshot(NdsGpu2dSaveState*){return true;}
 const uint32_t* nds_survivor_host_read(const nds_survivors::Frame*,int,bool,uint16_t*){return nullptr;}
 const uint32_t* nds_survivor_host_observe(int,bool,uint16_t*){return nullptr;}
 bool nds_survivor_host_present_top(SDL_Window*,const nds_survivors::Frame*,const uint32_t*,const uint32_t*,unsigned,NdsComputePresentTicks*){return false;}
+bool nds_survivor_host_present_layout(SDL_Window*,const nds_survivors::Frame*,const NdsScreenPlacement&,const uint32_t* const[2],const uint32_t* const[2],unsigned,NdsComputePresentTicks*){return false;}
 SDL_Texture* nds_survivor_host_present_bottom(const nds_survivors::Frame*,int,int,const uint32_t*,const uint32_t*,unsigned,NdsComputePresentTicks*){return nullptr;}
 std::string nds_survivor_host_json(){return "{\"enabled\":false,\"interop_available\":false,\"frames\":0,\"observer_readbacks\":0}";}
 #endif

@@ -7,6 +7,7 @@ struct SDL_Texture;
 struct SDL_Window;
 struct NdsGpu2dSaveState;
 struct NdsComputePresentTicks;
+struct NdsScreenPlacement;
 namespace nds_survivors { struct Frame; }
 bool nds_survivor_host_requested();
 bool nds_survivor_host_start(SDL_Renderer* bottom=nullptr);
@@ -26,4 +27,6 @@ const uint32_t* nds_survivor_host_observe(int screen,bool adaptive,uint16_t* wid
 const uint32_t* nds_survivor_host_read(const nds_survivors::Frame*,int screen,bool adaptive,uint16_t* width);
 std::string nds_survivor_host_json();
 bool nds_survivor_host_present_top(SDL_Window*,const nds_survivors::Frame*,const uint32_t* black,const uint32_t* white,unsigned antialiasing,NdsComputePresentTicks*);
+bool nds_survivor_host_present_layout(SDL_Window*,const nds_survivors::Frame*,const NdsScreenPlacement&,
+    const uint32_t* const black[2],const uint32_t* const white[2],unsigned antialiasing,NdsComputePresentTicks*);
 SDL_Texture* nds_survivor_host_present_bottom(const nds_survivors::Frame*,int viewportWidth,int viewportHeight,const uint32_t* black,const uint32_t* white,unsigned antialiasing,NdsComputePresentTicks*);

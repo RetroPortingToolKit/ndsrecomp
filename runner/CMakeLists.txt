@@ -1323,6 +1323,10 @@ target_include_directories(frontend_config_test PRIVATE src)
 ndsrecomp_link_tomlpp(frontend_config_test)
   add_test(NAME frontend_config_test COMMAND frontend_config_test)
 
+  add_executable(screen_layout_test tests/screen_layout_test.cpp)
+  target_include_directories(screen_layout_test PRIVATE src)
+  add_test(NAME screen_layout_test COMMAND screen_layout_test)
+
   add_executable(wfc_provider_test
       tests/wfc_provider_test.cpp
       src/net/wfc_provider.cpp)

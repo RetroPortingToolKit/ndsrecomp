@@ -407,6 +407,7 @@ int main(int argc, char** argv) {
     std::string rom_path;
     std::string config_path = "game.toml";
     std::string cli_screen_layout;
+    std::string cli_pip_corner, cli_pip_main;
     std::string cli_fullscreen;
     std::string cli_adaptive_screens;
     std::string cli_widescreen_width;
@@ -547,6 +548,10 @@ int main(int argc, char** argv) {
             frontend_options.start_paused = true;
         } else if (a == "--screen-layout" && i + 1 < argc) {
             cli_screen_layout = argv[++i];
+        } else if (a == "--pip-corner" && i + 1 < argc) {
+            cli_pip_corner = argv[++i];
+        } else if (a == "--pip-main-screen" && i + 1 < argc) {
+            cli_pip_main = argv[++i];
         } else if (a == "--window-scale" && i + 1 < argc) {
             const std::string value = argv[++i];
             if (value.size() != 1 || value[0] < '1' || value[0] > '8') {
@@ -719,7 +724,9 @@ int main(int argc, char** argv) {
                 "[--firmware-path firmware.bin] "
                 "[--firmware-state-path mutable-firmware.bin] "
                 "[--config game.toml] "
-                "[--screen-layout stacked|separate] "
+                "[--screen-layout stacked|separate|pip] "
+                "[--pip-corner top-left|top-right|bottom-left|bottom-right] "
+                "[--pip-main-screen top|bottom] "
                 "[--fullscreen off|borderless|exclusive] [--start-paused] "
                 "[--adaptive-widescreen none|top|bottom|both] "
                 "[--widescreen-width even:256..448] "
@@ -829,7 +836,7 @@ int main(int argc, char** argv) {
                                      &frontend_options.screen_layout)) {
             std::fprintf(stderr,
                          "invalid NDS_SCREEN_LAYOUT "
-                         "(expected stacked or separate)\n");
+                         "(expected stacked, separate, or pip)\n");
             return 2;
         }
     }
@@ -969,7 +976,12 @@ int main(int argc, char** argv) {
                                  &frontend_options.screen_layout)) {
         std::fprintf(stderr,
                      "invalid --screen-layout "
-                     "(expected stacked or separate)\n");
+                     "(expected stacked, separate, or pip)\n");
+        return 2;
+    }
+    if ((!cli_pip_corner.empty() && !nds_parse_pip_corner(cli_pip_corner, &frontend_options.pip_corner)) ||
+        (!cli_pip_main.empty() && !nds_parse_pip_main_screen(cli_pip_main, &frontend_options.pip_main_screen))) {
+        std::fprintf(stderr, "invalid PiP corner or main screen\n");
         return 2;
     }
     if (!cli_adaptive_screens.empty() &&
@@ -1855,6 +1867,11 @@ int main(int argc, char** argv) {
                 ? std::string(savestate_id_override) + "-" + nds_execution_model_identity()
                 : execution_build_id;
         frontend_options.savestate_rom_sha1 = rom_sha1;
+    }
+    if (!nds_pip_swap_allowed(frontend_options) &&
+        frontend_options.pip_main_screen != NdsPipMainScreen::Top) {
+        std::fprintf(stderr, "This title keeps the top screen as the main PiP screen.\n");
+        return 2;
     }
     nds_diagnostics_set_versions(NDS_FRAMEWORK_VERSION, NDS_GAME_VERSION);
     std::string rom_game_code;
