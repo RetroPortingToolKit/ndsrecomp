@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <string>
 
 #include "state.h"
 #include "savestate.h"
@@ -23,6 +24,9 @@
 #include "pc_profile.h"
 #include "spu.h"
 #include "wifi.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 #if defined(NDS_ARM9_DYNARMIC)
 #include "arm9_native.h"
 #endif
@@ -45,6 +49,9 @@ int     g_cur = -1;           // currently-loaded CPU (-1 = none)
 
 NdsSchedulerProfile g_profile{};
 uint64_t g_profile_rounds = 0;
+#if defined(NDS_OFFLINE_ARM7)
+std::string offline_takeover_status;
+#endif
 
 // NDS_PROFILE_SCHED: unset = off; "1" or any non-numeric value = the
 // established 1-in-1009 round sampler; a number >= 2 = sample 1 round in
@@ -217,6 +224,7 @@ void run_slice(int cpu, uint32_t quantum) {
     NdsEmuScope emu_region(cpu == 0 ? NDS_EMU_EXEC_ARM9 : NDS_EMU_EXEC_ARM7);
     nds_slice_begin(cap);
     if (nds_cpu_halted(cpu)) {
+        if (cpu == 1) ++g_profile.arm7_wakes;
         nds_cpu_wake(cpu);
         if (!(g_cpu.cpsr & CPSR_I_BIT) && nds_irq_pending(cpu))
             runtime_irq(g_cpu.R[15]);
@@ -299,6 +307,91 @@ void run_slice(int cpu, uint32_t quantum) {
 #endif
 }
 
+#if defined(NDS_OFFLINE_ARM7)
+void advance_offline_services(uint64_t timestamp) {
+    NdsEmuScope scope(NDS_EMU_ARM7_SERVICE);
+    nds_offline_arm7_advance(timestamp);
+}
+
+// There is no second instruction stream after the guarded driver takeover.
+// LCD edges and real ARM9/device/service events replace the lockstep grid.
+uint64_t offline_event_horizon() {
+    constexpr uint64_t line_cycles = 2130;
+    const uint64_t line_base = (g_sys_timestamp / line_cycles) * line_cycles;
+    const uint64_t lcd = line_base +
+        (g_sys_timestamp - line_base < 1584 ? 1584 : line_cycles);
+    uint64_t target = std::min(lcd, std::min(nds_next_system_event_time(),
+        std::min(nds_next_timer_overflow_time_for_cpu(0),
+                 nds_offline_arm7_next_event(g_sys_timestamp))));
+    // Capture writes RAM independently of ARM9. Its publication cannot be
+    // deferred until a future CPU IO read when direct RAM access is enabled.
+    if (nds_spu_read(0x04000508u, 2) & 0x8080u)
+        target = std::min(target, (g_sys_timestamp / 1024u + 1u) * 1024u);
+    return target;
+}
+
+void run_offline_round(bool sample, ProfileClock::time_point round_start) {
+    ++g_profile.offline_rounds;
+    performance_window_active = true;
+    ++performance_windows;
+    struct WindowEnd { ~WindowEnd() { performance_window_active = false; } } window_end;
+    advance_offline_services(g_sys_timestamp);
+    if (nds_powered_off()) {
+        g_slot[0].halted = g_slot[1].halted = true;
+        g_slot[0].reason = g_slot[1].reason = "power off";
+        return;
+    }
+    auto phase_start = sample ? ProfileClock::now() : ProfileClock::time_point{};
+    const uint64_t planned = [] {
+        NdsEmuScope scope(NDS_EMU_NEXTEV);
+        return offline_event_horizon();
+    }();
+    if (sample) profile_add(g_profile.next_event_ns, phase_start);
+    if (planned <= g_sys_timestamp) {
+        g_slot[0].halted = g_slot[1].halted = true;
+        g_slot[0].reason = g_slot[1].reason = "expired offline service event";
+        return;
+    }
+    const uint64_t arm9_target = planned << kArm9ClockShift;
+    if (sample) phase_start = ProfileClock::now();
+    if (g_slot[0].started && !g_slot[0].halted && g_slot[0].cycles < arm9_target)
+        run_slice(0, static_cast<uint32_t>(arm9_target - g_slot[0].cycles));
+    nds_tick_timers(0, g_slot[0].cycles);
+    nds_gpu3d_run(g_slot[0].cycles);
+    if (sample) profile_add(g_profile.arm9_ns, phase_start);
+    const uint64_t rendezvous = g_slot[0].cycles >> kArm9ClockShift;
+    // Keep the peripheral timeline available to existing observers without
+    // executing or dispatching any ARM7 instruction.
+    g_slot[1].cycles = rendezvous;
+    advance_offline_services(rendezvous);
+    if (nds_powered_off()) {
+        g_slot[0].halted = g_slot[1].halted = true;
+        g_slot[0].reason = g_slot[1].reason = "power off";
+        g_sys_timestamp = rendezvous;
+        return;
+    }
+    if (sample) phase_start = ProfileClock::now();
+    nds_tick_timers(1, rendezvous);
+    nds_tick_display(rendezvous);
+    nds_tick_spu(rendezvous);
+    nds_tick_rtc(rendezvous);
+    nds_run_system_events(rendezvous);
+    advance_offline_services(rendezvous);
+    if (sample) {
+        profile_add(g_profile.devices_ns, phase_start);
+        profile_add(g_profile.sampled_round_ns, round_start);
+        ++g_profile.sampled_rounds;
+        g_sample_active = false;
+    }
+    g_sys_timestamp = rendezvous;
+    if (nds_powered_off()) {
+        g_slot[0].halted = g_slot[1].halted = true;
+        g_slot[0].reason = g_slot[1].reason = "power off";
+    }
+    live_overlay_poll();
+}
+#endif
+
 }  // namespace
 
 void scheduler_init() {
@@ -306,6 +399,9 @@ void scheduler_init() {
     g_slot[1] = CpuSlot{};
     g_cur = -1;
     g_sys_timestamp = 0;
+#if defined(NDS_OFFLINE_ARM7)
+    offline_takeover_status.clear();
+#endif
     g_owner_thread = std::this_thread::get_id();
     scheduler_profile_reset();
 }
@@ -342,6 +438,17 @@ void scheduler_set_cpu_boot(int cpu, uint32_t entry, uint32_t sp,
 
 void scheduler_run_round() {
     RoundActivityGuard round_activity;
+#if defined(NDS_OFFLINE_ARM7)
+    if (nds_offline_arm7_selected() && !nds_offline_arm7_active()) {
+        std::string reason;
+        if (nds_offline_arm7_try_takeover(g_sys_timestamp,&reason)) {
+            offline_takeover_status="active";
+#if defined(NDS_ARM9_DYNARMIC)
+            nds_arm7_native_release();
+#endif
+        } else if (!reason.empty()) offline_takeover_status=std::move(reason);
+    }
+#endif
     // melonDS-faithful interleave (docs/scheduler_design.md, Commit A). Each
     // outer iteration is capped at kIterCap SYSTEM cycles (or the next scheduled
     // event, whichever is sooner). ARM9 runs FIRST up to its target and may
@@ -389,6 +496,13 @@ void scheduler_run_round() {
     const auto round_start = sample ? ProfileClock::now()
                                     : ProfileClock::time_point{};
     auto phase_start = round_start;
+
+#if defined(NDS_OFFLINE_ARM7)
+    if (nds_offline_arm7_active()) {
+        run_offline_round(sample, round_start);
+        return;
+    }
+#endif
 
     const uint64_t quantum=nds_native_event_quantum(
         nds_performance_execution()&&nds_native_options().events&&g_slot[0].started&&g_slot[1].started,
@@ -572,6 +686,14 @@ void scheduler_performance_io_fence() {
         nds_reschedule_slice((g_runtime_cycles+1u)>>1u);
     }
 }
+
+const char* scheduler_offline_takeover_status() {
+#if defined(NDS_OFFLINE_ARM7)
+    return offline_takeover_status.c_str();
+#else
+    return "not compiled";
+#endif
+}
 void scheduler_performance_window_counts(uint64_t* windows,uint64_t* fences) {
     *windows=performance_windows;*fences=performance_fences;
 }
@@ -607,6 +729,13 @@ void scheduler_debug_state(NdsSchedulerDebugState* out) {
         out->halt_reason[cpu] = g_slot[cpu].reason ? g_slot[cpu].reason : "";
     }
     out->system_timestamp = g_sys_timestamp;
+#if defined(NDS_OFFLINE_ARM7)
+    if (nds_offline_arm7_active()) {
+        out->next_event_timestamp = offline_event_horizon();
+        out->next_timer_overflow = nds_next_timer_overflow_time_for_cpu(0);
+        return;
+    }
+#endif
     out->next_event_timestamp = next_scheduled_event_time();
     out->next_timer_overflow = nds_next_timer_overflow_time();
 }
@@ -659,7 +788,12 @@ uint64_t scheduler_cpu_cycles(int cpu) {
 }
 
 uint64_t scheduler_system_timestamp() { return g_sys_timestamp; }
-uint64_t scheduler_next_event_timestamp() { return next_scheduled_event_time(); }
+uint64_t scheduler_next_event_timestamp() {
+#if defined(NDS_OFFLINE_ARM7)
+    if (nds_offline_arm7_active()) return offline_event_horizon();
+#endif
+    return next_scheduled_event_time();
+}
 bool scheduler_cpu_terminal_halted(int cpu) { return g_slot[cpu & 1].halted; }
 const char* scheduler_cpu_halt_reason(int cpu) {
     return g_slot[cpu & 1].reason ? g_slot[cpu & 1].reason : "";

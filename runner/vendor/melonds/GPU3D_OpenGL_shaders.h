@@ -2,6 +2,8 @@
     Copyright 2016-2024 melonDS team
     Modified 2026-11-12 by ndsrecomp: two-sided Z/W depth-equality bands.
     See patches/0025-native-gl-depth-equality.patch.
+    Modified 2026-11-16: signed screen-coordinate transport.
+    See patches/0026-native-gl-signed-screen-coordinates.patch.
 
     This file is part of melonDS.
 
@@ -236,6 +238,11 @@ in uvec4 vPosition;
 in uvec4 vColor;
 in ivec2 vTexcoord;
 in ivec3 vPolygonAttr;
+
+vec2 ScreenPosition()
+{
+    return vec2(ivec2(vPosition.xy << 16) >> 16);
+}
 
 smooth out vec4 fColor;
 smooth out vec2 fTexcoord;
@@ -674,7 +681,7 @@ void main()
     int zshift = (attr >> 16) & 0x1F;
 
     vec4 fpos;
-    fpos.xy = (((vec2(vPosition.xy) ) * 2.0) / uScreenSize) - 1.0;
+    fpos.xy = ((ScreenPosition() * 2.0) / uScreenSize) - 1.0;
     fpos.z = (float(vPosition.z << zshift) / 8388608.0) - 1.0;
     fpos.w = float(vPosition.w) / 65536.0f;
     fpos.xyz *= fpos.w;
@@ -697,7 +704,7 @@ void main()
     int zshift = (attr >> 16) & 0x1F;
 
     vec4 fpos;
-    fpos.xy = (((vec2(vPosition.xy) ) * 2.0) / uScreenSize) - 1.0;
+    fpos.xy = ((ScreenPosition() * 2.0) / uScreenSize) - 1.0;
     fpos.z = 0.0;
     fZ = float(vPosition.z << zshift) / 16777216.0;
     fpos.w = float(vPosition.w) / 65536.0f;

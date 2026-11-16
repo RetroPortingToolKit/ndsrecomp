@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include "gpu3d_survivors.h"
 
 // ---- Threaded scanline rendering -----------------------------------------
 // Per-scanline rendering can run on worker threads driven from a per-line
@@ -97,6 +98,7 @@ struct NdsGpu2dDirectFrame {
     const uint32_t* object_pixels;  // RGBA8UI: RGB6/priority + OBJ alpha code
     // Optional 1x192 RGBA32UI scanline parameters: backdrop, BLDCNT/brightness,
     // EVA/EVB/EVY/3D priority, RenderXPos. Object R[6]/G[6] carry window masks.
+    // RenderXPos bit31 marks an already composed BGRA8 fallback row instead.
     const uint32_t* raster_params;
     uint16_t width;
     uint32_t backdrop_color;        // RGB6 channels in bits 0/8/16

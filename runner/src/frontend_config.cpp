@@ -108,7 +108,46 @@ bool nds_parse_screen_layout(const std::string& value,
         *out = NdsScreenLayout::Separate;
         return true;
     }
+    if (normalized == "pip" || normalized == "picture-in-picture") {
+        *out = NdsScreenLayout::PictureInPicture;
+        return true;
+    }
     return false;
+}
+
+bool nds_parse_pip_corner(const std::string& value, NdsPipCorner* out) {
+    if (!out) return false;
+    const auto v = lower_ascii(value);
+    if (v == "top-left") *out = NdsPipCorner::TopLeft;
+    else if (v == "top-right") *out = NdsPipCorner::TopRight;
+    else if (v == "bottom-left") *out = NdsPipCorner::BottomLeft;
+    else if (v == "bottom-right") *out = NdsPipCorner::BottomRight;
+    else return false;
+    return true;
+}
+bool nds_parse_pip_main_screen(const std::string& value, NdsPipMainScreen* out) {
+    if (!out) return false;
+    const auto v = lower_ascii(value);
+    if (v == "top") *out = NdsPipMainScreen::Top;
+    else if (v == "bottom") *out = NdsPipMainScreen::Bottom;
+    else return false;
+    return true;
+}
+const char* nds_pip_corner_name(NdsPipCorner value) {
+    switch (value) {
+        case NdsPipCorner::TopLeft: return "top-left";
+        case NdsPipCorner::TopRight: return "top-right";
+        case NdsPipCorner::BottomLeft: return "bottom-left";
+        default: return "bottom-right";
+    }
+}
+const char* nds_pip_main_screen_name(NdsPipMainScreen value) {
+    return value == NdsPipMainScreen::Bottom ? "bottom" : "top";
+}
+bool nds_pip_swap_allowed(const NdsFrontendOptions& options) {
+    return options.pip_allow_swap &&
+        options.savestate_rom_sha1 != "691e00d9a5dd80b04f80cc7559503e8b06848785" &&
+        options.savestate_rom_sha1 != "90164d1ac127ee5f9815ea4ae7de798c7b5fc629";
 }
 
 bool nds_parse_fullscreen_mode(const std::string& value,
@@ -488,7 +527,8 @@ bool nds_parse_local_wireless_base_port(const std::string& value,
 }
 
 const char* nds_screen_layout_name(NdsScreenLayout value) {
-    return value == NdsScreenLayout::Separate ? "separate" : "stacked";
+    return value == NdsScreenLayout::Separate ? "separate" :
+           value == NdsScreenLayout::PictureInPicture ? "pip" : "stacked";
 }
 
 const char* nds_frame_interpolation_name(NdsFrameInterpolation value) {
@@ -620,11 +660,25 @@ bool nds_load_frontend_config(const std::string& path,
                                          &options->screen_layout)) {
                 if (error) {
                     *error =
-                        "display.screen_layout must be stacked or separate";
+                        "display.screen_layout must be stacked, separate, or pip";
                 }
                 return false;
             }
         }
+        if (const auto value = (*display)["pip_corner"].value<std::string>()) {
+            if (!nds_parse_pip_corner(*value, &options->pip_corner)) {
+                if (error) *error = "display.pip_corner must be top-left, top-right, bottom-left, or bottom-right";
+                return false;
+            }
+        }
+        if (const auto value = (*display)["pip_main_screen"].value<std::string>()) {
+            if (!nds_parse_pip_main_screen(*value, &options->pip_main_screen)) {
+                if (error) *error = "display.pip_main_screen must be top or bottom";
+                return false;
+            }
+        }
+        if (const auto value = (*display)["pip_allow_swap"].value<bool>())
+            options->pip_allow_swap = *value;
         if (const auto value =
                 (*display)["adaptive_widescreen"].value<std::string>()) {
             if (!nds_parse_adaptive_screens(*value,

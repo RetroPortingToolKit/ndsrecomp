@@ -14,6 +14,7 @@ void nds_spu_stop();
 uint32_t nds_spu_read(uint32_t addr, uint32_t width);
 void nds_spu_write(uint32_t addr, uint32_t value, uint32_t width);
 void nds_tick_spu(uint64_t system_cycles);
+bool nds_spu_mixing();
 
 // Stereo signed-16 output retained for the eventual SDL host. Returns frames.
 uint32_t nds_spu_read_output(int16_t* stereo, uint32_t frames);

@@ -53,6 +53,9 @@ struct NdsNativeRam {
         // shared physical publication authority used by slow/AOT/HLE stores.
         if (address+sizeof(T)>0x027e0000u && address<0x027e0040u)
             runtime_note_live_write(address,sizeof(T),read<T>(),value);
+#if defined(NDS_OFFLINE_ARM7)
+        runtime_before_ram_write(window->data+offset,sizeof(T),runtime_ram_write_time());
+#endif
         std::memcpy(window->data+offset,&value,sizeof(T));
         nds_busf_note_write(window,offset,sizeof(T));
     }

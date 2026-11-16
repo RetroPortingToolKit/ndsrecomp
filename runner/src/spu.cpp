@@ -12,6 +12,8 @@
 #include "emu_profile.h"
 
 namespace {
+bool g_mixing = false;
+uint64_t g_sample_timestamp = 0;
 
 constexpr int8_t kAdpcmIndex[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
 constexpr uint16_t kAdpcmStep[89] = {
@@ -253,7 +255,7 @@ struct Capture {
         for (uint32_t i = 0; i < 4 && fifo_level >= 4; ++i) {
             uint32_t value = 0;
             std::memcpy(&value, &fifo[fifo_read], 4);
-            bus_device_write32(7, dst + write_offset, value);
+            bus_device_write32(7, dst + write_offset, value, g_sample_timestamp);
             fifo_read = (fifo_read + 4) & 0xFu;
             fifo_level -= 4;
             write_offset += 4;
@@ -495,6 +497,7 @@ void nds_spu_reset() {
     g_cnt = 0; g_master_volume = 0; g_bias = 0; g_mix_count = 0;
     g_output.fill(0); g_output_read = g_output_write = g_output_count = 0;
     g_debug_output_produced = 0;
+    g_presentation_epoch.fetch_add(1u, std::memory_order_release);
 }
 
 void nds_spu_stop() {
@@ -521,8 +524,13 @@ void nds_tick_spu(uint64_t system_cycles) {
     // cycle rendezvous grid the overwhelming majority of calls are no-ops.
     if (g_mix_count >= due) return;
     NdsEmuScope emu_region(NDS_EMU_SPU);
-    while (g_mix_count < due) { mix(); ++g_mix_count; }
+    struct MixingScope { MixingScope() { g_mixing=true; } ~MixingScope() { g_mixing=false; } } mixing_scope;
+    while (g_mix_count < due) {
+        g_sample_timestamp=(g_mix_count+1u)*1024u;
+        mix(); ++g_mix_count;
+    }
 }
+bool nds_spu_mixing() { return g_mixing; }
 
 uint32_t nds_spu_read_output(int16_t* stereo, uint32_t frames) {
     if (!stereo) return 0;

@@ -5,6 +5,8 @@
     See patches/0022-native-gl-runner-adapter.patch for the applied changes.
     Modified 2026-11-12: two-sided depth equality and ordered depth reads.
     See patches/0025-native-gl-depth-equality.patch.
+    Modified 2026-11-16: signed screen-coordinate transport.
+    See patches/0026-native-gl-signed-screen-coordinates.patch.
 
     This file is part of melonDS.
 
@@ -483,7 +485,7 @@ u32* GLRenderer::SetupVertex(const Polygon* poly, int vid, const Vertex* vtx, u3
     u32 zshift = 0;
     while (z > 0xFFFF) { z >>= 1; zshift++; }
 
-    u32 x, y;
+    s32 x, y;
     if (ScaleFactor > 1)
     {
         x = (vtx->HiresPosition[0] * ScaleFactor) >> 4;
@@ -516,7 +518,7 @@ u32* GLRenderer::SetupVertex(const Polygon* poly, int vid, const Vertex* vtx, u3
         }
     }*/
 
-    *vptr++ = x | (y << 16);
+    *vptr++ = u32(u16(x)) | (u32(u16(y)) << 16);
     *vptr++ = z | (w << 16);
 
     *vptr++ =  (vtx->FinalColor[0] >> 1) |
@@ -639,7 +641,7 @@ void GLRenderer::BuildPolygons(GLRenderer::RendererPolygon* polygons, int npolys
                 // this doesn't get rid of the error while splitting a bigger polygon into triangles
                 // but we can attempt to reduce it
 
-                u32 cX = 0, cY = 0;
+                s64 cX = 0, cY = 0;
                 float cZ = 0;
                 float cW = 0;
 
@@ -692,7 +694,7 @@ void GLRenderer::BuildPolygons(GLRenderer::RendererPolygon* polygons, int npolys
                 while (z > 0xFFFF) { z >>= 1; zshift++; }
 
                 // build center vertex
-                *vptr++ = cX | (cY << 16);
+                *vptr++ = u32(u16(cX)) | (u32(u16(cY)) << 16);
                 *vptr++ = z | (w << 16);
 
                 *vptr++ =  (u32)cR |

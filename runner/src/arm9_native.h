@@ -6,10 +6,13 @@
 // implementation and owns device behavior, exceptions and unsupported opcodes.
 bool nds_arm9_native_run();
 bool nds_arm9_native_supported();
+bool nds_arm9_observation_service();
 void nds_arm9_native_note_write();
 void nds_arm9_native_note_write_pages(const uint32_t* first, uint32_t count);
 void nds_arm9_native_flush_writes();
 void nds_arm9_native_clear();
+// Release obsolete guest ARM7 translation/watch state after native takeover.
+void nds_arm7_native_release();
 void nds_arm9_native_census(bool enabled, bool reset);
 std::string nds_arm9_native_json();
 // Explicit diagnostic export of the bounded, default-off compilation census.

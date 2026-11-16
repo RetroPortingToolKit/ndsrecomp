@@ -32,6 +32,11 @@
 #include "wifi.h"
 #include "vram.h"
 #include "emu_profile.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#include "offline_arm7_sound.h"
+#include "spu.h"
+#endif
 
 namespace {
 
@@ -510,6 +515,16 @@ void bus_debug_history_reset() {
 
 extern "C" {
 NdsBusFastWin g_busf_main = {};
+uint64_t g_bus_master_write_timestamp = UINT64_MAX;
+
+extern "C" void runtime_before_ram_write(const uint8_t* bytes, uint32_t size, uint64_t time) {
+#if defined(NDS_OFFLINE_ARM7)
+    if (nds_offline_arm7_active() && !nds_spu_mixing())
+        nds_offline_sound_before_write(bytes, size, time);
+#else
+    (void)bytes; (void)size; (void)time;
+#endif
+}
 NdsBusFastWin g_busf_wram_lo[2] = {};
 NdsBusFastWin g_busf_wram_hi[2] = {};
 NdsBusFastWin g_busf_itcm = {};
@@ -950,6 +965,9 @@ extern "C" void bus_write_u32_slow(uint32_t addr, uint32_t val) {
             std::memcpy(&old_value, p, 4);
             runtime_note_live_write(addr, 4u, old_value, val);
         }
+#if defined(NDS_OFFLINE_ARM7)
+        runtime_before_ram_write(p, 4u, runtime_ram_write_time());
+#endif
         std::memcpy(p, &val, 4);
         note_ram_write(p, 4u);
     }
@@ -970,6 +988,9 @@ extern "C" void bus_write_u16_slow(uint32_t addr, uint16_t val) {
             std::memcpy(&old_value, p, 2);
             runtime_note_live_write(addr, 2u, old_value, val);
         }
+#if defined(NDS_OFFLINE_ARM7)
+        runtime_before_ram_write(p, 2u, runtime_ram_write_time());
+#endif
         std::memcpy(p, &val, 2);
         note_ram_write(p, 2u);
     }
@@ -987,6 +1008,9 @@ extern "C" void bus_write_u8_slow(uint32_t addr, uint8_t val) {
     if (uint8_t* p = resolve(addr, 1)) {
         if (addr >= 0x027E0000u && addr < 0x027E0040u)
             runtime_note_live_write(addr, 1u, *p, val);
+#if defined(NDS_OFFLINE_ARM7)
+        runtime_before_ram_write(p, 1u, runtime_ram_write_time());
+#endif
         *p = val;
         note_ram_write(p, 1u);
     }
@@ -1006,18 +1030,49 @@ uint32_t bus_device_read32(int cpu, uint32_t addr) {
     return value;
 }
 
-void bus_device_write32(int cpu, uint32_t addr, uint32_t value) {
-    const NdsCpu old = g_nds_active;
-    g_nds_active = cpu == 7 ? NDS_ARM7 : NDS_ARM9;
-    bus_write_u32(addr, value);
-    g_nds_active = old;
+namespace {
+struct DeviceWriteScope {
+    const NdsCpu cpu=g_nds_active;
+    const unsigned long long cycles=g_runtime_cycles;
+    const uint64_t master=g_bus_master_write_timestamp;
+    DeviceWriteScope(int target,uint64_t time) {
+        g_bus_master_write_timestamp=time!=UINT64_MAX?time:
+            master!=UINT64_MAX?master:(cpu==NDS_ARM9?cycles>>1u:cycles);
+        g_nds_active=target==7?NDS_ARM7:NDS_ARM9;
+        g_runtime_cycles=g_nds_active==NDS_ARM9?
+            g_bus_master_write_timestamp<<1u:g_bus_master_write_timestamp;
+    }
+    ~DeviceWriteScope() {
+        g_nds_active=cpu;g_runtime_cycles=cycles;g_bus_master_write_timestamp=master;
+    }
+};
 }
 
-void bus_device_write16(int cpu, uint32_t addr, uint16_t value) {
+void bus_device_write32(int cpu, uint32_t addr, uint32_t value, uint64_t time) {
+    DeviceWriteScope context(cpu,time);
+    bus_write_u32(addr, value);
+}
+
+void bus_device_write16(int cpu, uint32_t addr, uint16_t value, uint64_t time) {
+    DeviceWriteScope context(cpu,time);
+    bus_write_u16(addr, value);
+}
+
+bool bus_device_resolve_ram(int cpu, uint32_t addr, uint32_t size, const uint8_t** data) {
+    if (!data || !size || uint64_t{addr}+size > uint64_t{UINT32_MAX}+1u) return false;
     const NdsCpu old = g_nds_active;
     g_nds_active = cpu == 7 ? NDS_ARM7 : NDS_ARM9;
-    bus_write_u16(addr, value);
+    uint32_t first=0, last=0;
+    const auto* window=nds_busf_classify(addr, &first);
+    const auto* end=nds_busf_classify(addr+size-1u, &last);
+    const bool valid=window && window==end && window->data &&
+        uint64_t{first}+size <= uint64_t{window->mask}+1u && last==first+size-1u &&
+        !(cpu != 7 && window != &g_busf_dtcm && window != &g_busf_itcm &&
+          g_busf_dtcm_limit && uint64_t{addr}<uint64_t{g_busf_dtcm_base}+g_busf_dtcm_limit &&
+          uint64_t{addr}+size>g_busf_dtcm_base);
+    if (valid) *data=window->data+first;
     g_nds_active = old;
+    return valid;
 }
 
 void bus_patch_arm9_bios(uint32_t offset, const uint8_t* p, uint32_t n) {

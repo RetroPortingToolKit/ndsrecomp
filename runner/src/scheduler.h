@@ -51,6 +51,8 @@ struct NdsSchedulerProfile {
     // Total rounds observed while profiling (exact, not sampled) — the
     // denominator for switches/round in the report.
     uint64_t rounds;
+    uint64_t arm7_wakes;
+    uint64_t offline_rounds;
 };
 
 // Opt-in coarse sampler used by the release profiler. It samples one complete
@@ -78,6 +80,7 @@ void scheduler_debug_state(NdsSchedulerDebugState* out);
 // have terminally halted. ARM9 runs ~2× the cycles per round (clock ratio).
 SchedResult scheduler_run(uint64_t arm9_cycle_budget);
 void scheduler_run_round();
+const char* scheduler_offline_takeover_status();
 
 // Terminally halt both CPU slots for a fatal device/frontend failure raised
 // outside CPU dispatch. Unlike nds_halt(), this survives the next slice setup.

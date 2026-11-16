@@ -9,6 +9,9 @@
 
 #include "runtime_arm.h"
 #include "physical_write.h"
+#if defined(NDS_WHOLE_ASSETS)
+#include "whole_asset_service.h"
+#endif
 #if defined(NDS_ARM9_DYNARMIC)
 #include "arm9_native.h"
 #endif
@@ -622,6 +625,27 @@ const CachedStaticLookup* lookup_static_cached_impl(const CpuCtx& c,
             if (cache_validation_pages(expanded, replacement.validation)) {
                 expanded.fn = replacement.function;
                 slot = expanded;
+            }
+        }
+    }
+#endif
+#if defined(NDS_WHOLE_ASSETS)
+    if(hit||nds_assets::is_entry(g_nds_active,pc,thumb)) {
+        const auto replacement=nds_assets::resolve(g_nds_active,pc,thumb);
+        if(replacement.guard_size) {
+            const uint32_t last=(replacement.guard_start+replacement.guard_size-1)&~0xfffu;
+            for(uint32_t page=replacement.guard_start&~0xfffu;;page+=4096) {
+                if(!cache_page_generation(slot,page)){slot={};return nullptr;}
+                if(page==last)break;
+            }
+            if(replacement.validation&&!cache_validation_pages(slot,replacement.validation)){
+                slot={};return nullptr;
+            }
+        }
+        if(replacement.function) {
+            CachedStaticLookup expanded=slot;expanded.validation=replacement.validation;expanded.page_count=0;
+            if(cache_validation_pages(expanded,replacement.validation)){
+                expanded.fn=replacement.function;slot=expanded;
             }
         }
     }
@@ -1732,6 +1756,13 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
         // preserve the interworking bit in their target value; generated bank
         // prologues and the architectural register view require aligned R15.
         g_cpu.R[15] = pc;
+        // A native whole-operation replacement does not execute generated
+        // instruction hooks. Honor the existing debug breakpoint before any
+        // such entry can mutate its continuation or caller-visible output.
+        if (g_runtime_break_pc && pc == (g_runtime_break_pc & ~1u)) {
+            nds_halt("break pc");
+            return;
+        }
         runtime_trace_event(RUNTIME_TRACE_DISPATCH, pc, target_pc, 0, 0);
         const CpuCtx& c = g_ctx[g_nds_active];
         StaticGuardScope guard_scope;

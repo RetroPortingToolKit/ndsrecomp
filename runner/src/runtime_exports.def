@@ -20,6 +20,8 @@ EXPORTS
     bus_write_u8_slow
     bus_write_u16_slow
     bus_write_u32_slow
+    runtime_before_ram_write
+    g_bus_master_write_timestamp DATA
     g_cp15_class_ready DATA
     g_cp15_dcache_page DATA
     g_cp15_icache_page DATA

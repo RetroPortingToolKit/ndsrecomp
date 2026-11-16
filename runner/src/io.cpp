@@ -22,6 +22,9 @@
 #include "title_patches.h"
 #include "vram.h"
 #include "emu_profile.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 
 // Runner-only rare-condition hint owned by runtime_arm.cpp. Generated banks
 // keep calling the unchanged runtime_should_yield ABI.
@@ -351,10 +354,12 @@ uint32_t g_div_denom[2] = {};
 uint32_t g_div_quot[2] = {};
 uint32_t g_div_rem[2] = {};
 uint64_t g_div_deadline = UINT64_MAX;
+bool g_div_native_owned = false;
 uint16_t g_sqrtcnt = 0;
 uint32_t g_sqrt_val[2] = {};
 uint32_t g_sqrt_res = 0;
 uint64_t g_sqrt_deadline = UINT64_MAX;
+bool g_sqrt_native_owned = false;
 
 uint32_t card_block_words(uint32_t romctrl) {
     uint32_t n = (romctrl >> 24) & 7u;       // block-size field
@@ -401,14 +406,16 @@ void store_s64(uint32_t words[2], int64_t value) {
     words[1] = static_cast<uint32_t>(bits >> 32u);
 }
 
-void start_div() {
+void start_div(uint64_t timestamp, bool native_owned) {
     g_divcnt |= 0x8000u;
-    g_div_deadline = active_system_timestamp() +
+    g_div_deadline = timestamp +
                      ((g_divcnt & 0x3u) == 0u ? 18u : 34u);
-    nds_reschedule_slice(g_div_deadline);
+    g_div_native_owned = native_owned;
+    if (!native_owned) nds_reschedule_slice(g_div_deadline);
 }
 
 void finish_div() {
+    g_div_native_owned = false;
     g_divcnt &= ~0xC000u;
     switch (g_divcnt & 0x3u) {
         case 0: {
@@ -462,13 +469,15 @@ void finish_div() {
         g_divcnt |= 0x4000u;
 }
 
-void start_sqrt() {
+void start_sqrt(uint64_t timestamp, bool native_owned) {
     g_sqrtcnt |= 0x8000u;
-    g_sqrt_deadline = active_system_timestamp() + 13u;
-    nds_reschedule_slice(g_sqrt_deadline);
+    g_sqrt_deadline = timestamp + 13u;
+    g_sqrt_native_owned = native_owned;
+    if (!native_owned) nds_reschedule_slice(g_sqrt_deadline);
 }
 
 void finish_sqrt() {
+    g_sqrt_native_owned = false;
     g_sqrtcnt &= ~0x8000u;
     uint64_t val = (g_sqrtcnt & 1u) ? words_u64(g_sqrt_val)
                                      : uint64_t{g_sqrt_val[0]};
@@ -484,6 +493,17 @@ void finish_sqrt() {
         if (rem >= prod) { rem -= prod; ++res; }
     }
     g_sqrt_res = res;
+}
+
+void finish_math_at(uint64_t timestamp, bool native_only = false) {
+    if ((!native_only || g_div_native_owned) && g_div_deadline <= timestamp) {
+        g_div_deadline = UINT64_MAX;
+        finish_div();
+    }
+    if ((!native_only || g_sqrt_native_owned) && g_sqrt_deadline <= timestamp) {
+        g_sqrt_deadline = UINT64_MAX;
+        finish_sqrt();
+    }
 }
 
 uint32_t math_reg_read32(uint32_t addr) {
@@ -510,7 +530,9 @@ bool math_addr(uint32_t addr) {
            (addr >= 0x04000290u && addr < 0x040002C0u);
 }
 
-void math_reg_write(uint32_t addr, uint32_t value, uint32_t width) {
+void math_reg_write(uint32_t addr, uint32_t value, uint32_t width,
+                    uint64_t timestamp = active_system_timestamp(),
+                    bool native_owned = false) {
     const uint32_t base = addr & ~3u;
     const uint32_t shift = (addr & 3u) * 8u;
     const uint32_t raw_mask = width >= 4u ? 0xFFFFFFFFu
@@ -518,14 +540,14 @@ void math_reg_write(uint32_t addr, uint32_t value, uint32_t width) {
     const uint32_t bits = raw_mask << shift;
     auto merge = [&](uint32_t old) { return (old & ~bits) | ((value << shift) & bits); };
     switch (base) {
-        case 0x04000280u: g_divcnt = static_cast<uint16_t>(merge(g_divcnt)); start_div(); break;
-        case 0x04000290u: g_div_numer[0] = merge(g_div_numer[0]); start_div(); break;
-        case 0x04000294u: g_div_numer[1] = merge(g_div_numer[1]); start_div(); break;
-        case 0x04000298u: g_div_denom[0] = merge(g_div_denom[0]); start_div(); break;
-        case 0x0400029Cu: g_div_denom[1] = merge(g_div_denom[1]); start_div(); break;
-        case 0x040002B0u: g_sqrtcnt = static_cast<uint16_t>(merge(g_sqrtcnt)); start_sqrt(); break;
-        case 0x040002B8u: g_sqrt_val[0] = merge(g_sqrt_val[0]); start_sqrt(); break;
-        case 0x040002BCu: g_sqrt_val[1] = merge(g_sqrt_val[1]); start_sqrt(); break;
+        case 0x04000280u: g_divcnt = static_cast<uint16_t>(merge(g_divcnt)); start_div(timestamp,native_owned); break;
+        case 0x04000290u: g_div_numer[0] = merge(g_div_numer[0]); start_div(timestamp,native_owned); break;
+        case 0x04000294u: g_div_numer[1] = merge(g_div_numer[1]); start_div(timestamp,native_owned); break;
+        case 0x04000298u: g_div_denom[0] = merge(g_div_denom[0]); start_div(timestamp,native_owned); break;
+        case 0x0400029Cu: g_div_denom[1] = merge(g_div_denom[1]); start_div(timestamp,native_owned); break;
+        case 0x040002B0u: g_sqrtcnt = static_cast<uint16_t>(merge(g_sqrtcnt)); start_sqrt(timestamp,native_owned); break;
+        case 0x040002B8u: g_sqrt_val[0] = merge(g_sqrt_val[0]); start_sqrt(timestamp,native_owned); break;
+        case 0x040002BCu: g_sqrt_val[1] = merge(g_sqrt_val[1]); start_sqrt(timestamp,native_owned); break;
         default: break; // result registers are read-only
     }
 }
@@ -1782,6 +1804,232 @@ bool g_nds_insn_stop = false;
 // --rtc-host (see io.h): main.cpp sets this before the initial boot.
 bool g_nds_rtc_host = false;
 
+namespace {
+struct OfflineArm7Context {
+    const NdsCpu cpu=g_nds_active;
+    const unsigned long long cycles=g_runtime_cycles;
+    explicit OfflineArm7Context(uint64_t now) {g_nds_active=NDS_ARM7;g_runtime_cycles=now;}
+    ~OfflineArm7Context() {g_nds_active=cpu;g_runtime_cycles=cycles;}
+};
+uint32_t g_offline_tick_epoch_address=0; // fixed host profile, survives device reset
+}
+
+bool nds_io_offline_reply_capacity(uint32_t count) {
+    return count==0u || ((g_fifocnt[1]&0x8000u) && count<=uint32_t(16-g_fifo_cnt[1]));
+}
+bool nds_io_offline_reply(uint32_t word, uint64_t now) {
+    if (!nds_io_offline_reply_capacity(1)) return false;
+    OfflineArm7Context context(now);fifo_send(1,word);return true;
+}
+bool nds_io_offline_receive_word(uint32_t expected, uint64_t now) {
+    if (!g_fifo_cnt[0] || g_fifo[0][g_fifo_head[0]]!=expected) return false;
+    OfflineArm7Context context(now);fifo_recv(1);return true;
+}
+bool nds_io_offline_peek(uint32_t* word) {
+    if (!word || !g_fifo_cnt[0]) return false;
+    *word=g_fifo[0][g_fifo_head[0]];return true;
+}
+uint32_t nds_io_offline_wake_flags() {return g_if[1];}
+void nds_io_offline_wireless_power(bool enabled,uint64_t now) {
+    if(enabled){g_powercontrol7|=2u;nds_wifi_reset();}
+    else g_powercontrol7&=~2u;
+    nds_wifi_set_power_control(enabled,now); // Preserve the independent SPU bit.
+}
+bool nds_io_offline_wireless_vram(uint32_t source,uint32_t size,bool clear,uint64_t now) {
+    if(size>0x40000u)return false;
+    size=(size+3u)&~3u;
+    std::vector<uint8_t> bytes;
+    if(!clear){bytes.resize(size);if(size&&!bus_debug_copy(7,source,bytes.data(),size))return false;}
+    OfflineArm7Context context(now);
+    for(uint32_t at=0;at<size;at+=4)bus_device_write32(7,0x06000000u+at,clear?0u:load_le32(bytes.data()+at),now);
+    return true;
+}
+bool nds_io_offline_card_idle() {
+    return !(g_romctrl&0x80000000u)&&!(g_auxspicnt&0x80u)&&!g_auxspi_hold;
+}
+bool nds_io_asset_cartridge(const uint8_t** bytes,uint32_t* size,bool require_idle) {
+    if(!bytes||!size||g_card_rom.empty()||g_card_rom.size()>UINT32_MAX||
+       g_card_mode!=CardCommandMode::Normal||(require_idle&&
+       (!nds_io_offline_card_idle()||g_card_deadline!=UINT64_MAX)))return false;
+    *bytes=g_card_rom.data();*size=uint32_t(g_card_rom.size());return true;
+}
+bool nds_io_offline_card_spi(const uint8_t* tx,uint8_t* rx,uint32_t size,uint64_t now) {
+    if(!tx||!size||size>0x800004u||!nds_io_offline_card_idle())return false;
+    OfflineArm7Context context(now);
+    // A complete SDK operation owns chip select. Reuse the canonical cartridge
+    // protocol and its original dirty/persistence hook; no second save image.
+    for(uint32_t i=0;i<size;++i){g_auxspi_data=cart_spi_write(tx[i],i,i+1==size);if(rx)rx[i]=g_auxspi_data;}
+    g_auxspicnt=0;g_auxspi_hold=false;g_auxspi_pos=0;g_auxspi_deadline=UINT64_MAX;
+    return true;
+}
+bool nds_io_offline_card_read(uint8_t command,uint32_t address,uint8_t* bytes,uint32_t size,uint64_t now) {
+    if((command!=0xB7&&command!=0xB8)||(!bytes&&size)||size>0x800000u||!nds_io_offline_card_idle())return false;
+    OfflineArm7Context context(now);
+    uint8_t control_bytes[4]{};nds_io_offline_memory(0x027FFE60u,control_bytes,4,false,now);
+    const uint32_t control=load_le32(control_bytes);
+    while(size){
+        const uint32_t offset=command==0xB7?(address&511u):0u;
+        const uint32_t amount=std::min(size,(command==0xB7?512u:4u)-offset);
+        std::memset(g_card_command,0,sizeof(g_card_command));g_card_command[0]=command;
+        if(command==0xB7)for(unsigned i=0;i<4;++i)g_card_command[i+1]=uint8_t((address&~511u)>>(24-8*i));
+        g_card_transfer_len=command==0xB7?512u:4u;
+        card_prepare_response(); // Same normal/KEY1/raw and ROM-wrap authority as MMIO.
+        std::memcpy(bytes,g_card_response.data()+offset,amount);
+        g_card_transfer_pos=g_card_transfer_len;
+        g_romctrl=(control&~0x07000000u)|(command==0xB7?0x21000000u:0x27000000u);
+        if(command==0xB8)g_romctrl&=~0x1FFFu;
+        g_romctrl&=~0x80800000u;
+        g_auxspicnt=0xC000;g_card_irq_cpu=1;g_card_deadline=UINT64_MAX;g_card_end_event=false;
+        nds_raise_irq(1,1u<<19);
+        address+=amount;bytes+=amount;size-=amount;
+    }
+    return true;
+}
+uint16_t nds_io_offline_sleep_enter(uint32_t flags,uint16_t keys,uint64_t now) {
+    OfflineArm7Context context(now);nds_tick_rtc(now);
+    const uint16_t previous=g_rcnt;
+    // The same canonical register assignments as KEYCNT/RCNT MMIO writes.
+    if(flags&1u)g_keycnt[1]=uint16_t((keys|0x4000u)&0xC3FFu);
+    if(flags&2u)g_rcnt=uint16_t((g_rcnt&~0xC000u)|0x8140u);
+    return previous;
+}
+void nds_io_offline_sleep_leave(uint32_t flags,uint16_t rcnt) {
+    if(flags&2u)g_rcnt=rcnt;
+}
+void nds_io_offline_irq_clear(uint32_t bits) {nds_clear_irq(1,bits);}
+void nds_io_offline_set_tick_epoch_address(uint32_t address) {g_offline_tick_epoch_address=address;}
+bool nds_io_offline_tick_deadline(uint64_t absolute_os_tick,uint64_t now,uint64_t* deadline) {
+    if(!deadline||!g_offline_tick_epoch_address||now<g_timer_last[1])return false;
+    nds_tick_timers(1,now);
+    const Timer& timer=g_timer[1][0];
+    if(timer.ctrl!=0xC1u||timer.reload||timer.accum>=64u)return false;
+    uint8_t bytes[8];
+    if(!nds_io_offline_memory(g_offline_tick_epoch_address,bytes,8,false,now))return false;
+    uint64_t overflow=0;for(unsigned i=0;i<8;++i)overflow|=uint64_t(bytes[i])<<(i*8);
+    if((g_if[1]&8u)&&!(timer.counter&0x8000u))++overflow;
+    const uint64_t tick=((overflow&0x0000FFFFFFFFFFFFull)<<16)|timer.counter;
+    if(absolute_os_tick>=tick){
+        const uint64_t delta=absolute_os_tick-tick;
+        if(delta>(UINT64_MAX-now)/64u)return false;
+        const uint64_t at=now+delta*64u;
+        if(at<timer.accum)return false;
+        *deadline=at-timer.accum;
+    }else{
+        const uint64_t delta=tick-absolute_os_tick;
+        if(now<timer.accum||delta>(now-timer.accum)/64u)return false;
+        *deadline=now-delta*64u-timer.accum;
+    }
+    return true;
+}
+bool nds_io_offline_memory(uint32_t addr, uint8_t* bytes, uint32_t size,
+                            bool write, uint64_t now) {
+    const bool main=addr>=0x02000000u && addr<0x02800000u && size<=0x02800000u-addr;
+    const bool arm7_read=!write && addr>=0x037F8000u && addr<0x03810000u && size<=0x03810000u-addr;
+    const bool arm7_state=write&&addr>=0x03800000u&&addr<0x03810000u&&size<=0x03810000u-addr;
+    if (!bytes || !size || (!main&&!arm7_read&&!arm7_state)) return false;
+    if (!write) return bus_debug_copy(7,addr,bytes,size);
+    OfflineArm7Context context(now);
+    while (size && (addr&3u)) {bus_write_u8(addr++,*bytes++);--size;}
+    while (size>=4u) {uint32_t value;std::memcpy(&value,bytes,4);bus_write_u32(addr,value);addr+=4;bytes+=4;size-=4;}
+    while (size) {bus_write_u8(addr++,*bytes++);--size;}
+    return true;
+}
+
+bool nds_io_offline_spi_idle() {
+    return !(g_spicnt&0x0080u) && !g_fw_hold && !g_pm_hold && !g_tsc_datapos && !(g_rtc_io&4u);
+}
+
+bool nds_io_offline_spi(uint32_t device, const uint8_t* tx, uint8_t* rx,
+                         uint32_t size) {
+    if (device>2u || !tx || !size || size>0x800005u || !nds_io_offline_spi_idle())
+        return false;
+    for (uint32_t i=0;i<size;++i) {
+        const uint8_t value=device==0u?pm_write(tx[i]):device==1u?fw_write(tx[i]):tsc_write(tx[i]);
+        g_spi_resp=value;
+        if (rx) rx[i]=value;
+    }
+    if (device==0u) pm_release();
+    else if (device==1u) fw_release();
+    else tsc_release();
+    // The service completes the whole transaction. No guest instruction can
+    // observe an intermediate BUSY byte or an asserted chip-select.
+    g_spicnt=uint16_t(device==0u?0x8002u:device==1u?0x8100u:0x8201u);
+    g_spi_deadline=UINT64_MAX;
+    return true;
+}
+
+bool nds_io_offline_rtc(uint8_t reg, bool write, uint8_t* bytes, uint32_t size) {
+    const bool valid_reg=(reg&~0x70u)==0u;
+    const uint32_t limit=(reg==0x20u)?7u:(reg==0x60u||reg==0x10u||reg==0x50u)?3u:1u;
+    if (!valid_reg || !bytes || !size || size>limit || (g_rtc_io&0x04u)) return false;
+    const uint8_t previous_cmd=g_rtc_cmd;
+    const int previous_pos=g_rtc_inpos;
+    uint8_t previous_output[8];std::memcpy(previous_output,g_rtc_output,8);
+    g_rtc_cmd=uint8_t(0x06u|reg|(write?0u:0x80u));
+    if (write) {
+        for (uint32_t i=0;i<size;++i) {g_rtc_inpos=int(i+1);rtc_cmd_write(bytes[i]);}
+    } else {
+        std::memset(g_rtc_output,0,8);rtc_cmd_read();std::memcpy(bytes,g_rtc_output,size);
+    }
+    g_rtc_cmd=previous_cmd;g_rtc_inpos=previous_pos;
+    std::memcpy(g_rtc_output,previous_output,8);
+    return true;
+}
+
+uint32_t nds_io_offline_touch() {
+    return (g_keyinput&(1u<<22))?0x06000000u:
+        (uint32_t(g_tsc_x)&0xFFFu)|((uint32_t(g_tsc_y)&0xFFFu)<<12u)|0x01000000u;
+}
+
+uint64_t nds_io_offline_rtc_next_event(uint64_t now) {
+    if ((g_rcnt&0xC100u)!=0x8100u) return UINT64_MAX;
+    const uint32_t phase=g_rtc_clock_count&0x7FFFu;
+    const unsigned seconds=std::min(59u,unsigned((g_rtc_datetime[6]>>4)*10u+(g_rtc_datetime[6]&15u)));
+    const uint32_t minute=(60u-seconds)*32768u-phase;
+    uint32_t delta=(g_rtc_status2&0x40u)?minute:UINT32_MAX;
+    switch (g_rtc_status2&15u) {
+        case 0: break;
+        case 1:case 5:
+            if(g_rtc_alarm1[2]&31u) delta=std::min(delta,1024u-(g_rtc_clock_count&1023u));
+            break;
+        case 2:case 4:case 6: delta=std::min(delta,minute);break;
+        case 3: delta=std::min(delta,(seconds<30u?(30u-seconds)*32768u-phase:minute));break;
+        case 7: delta=std::min(delta,seconds==0u&&phase<256u?256u-phase:minute);break;
+        default: delta=1;break;
+    }
+    if(delta==UINT32_MAX) return UINT64_MAX;
+    if(g_rtc_processed_ticks>UINT64_MAX-delta)return UINT64_MAX;
+    const uint64_t ordinal=g_rtc_processed_ticks+delta;
+    constexpr uint64_t numerator=33513982u,denominator=32768u;
+    if(ordinal/denominator>UINT64_MAX/numerator) return UINT64_MAX;
+    const uint64_t at=(ordinal/denominator)*numerator+((ordinal%denominator)*numerator)/denominator;
+    return std::max(now,at);
+}
+
+bool nds_io_native_math_address(uint32_t addr, uint32_t width) {
+    return (width==1u || width==2u || width==4u) &&
+        (addr&3u)+width<=4u && math_addr(addr) && math_addr(addr+width-1u);
+}
+
+bool nds_io_native_math_read(uint32_t addr, uint32_t width,
+                             uint64_t arm9_cycles, uint32_t* value) {
+    if (g_nds_active!=NDS_ARM9 || !value || !nds_io_native_math_address(addr,width))
+        return false;
+    finish_math_at(arm9_cycles>>1u);
+    *value=(math_reg_read32(addr&~3u)>>((addr&3u)*8u))&mask_for(width);
+    return true;
+}
+
+bool nds_io_native_math_write(uint32_t addr, uint32_t value, uint32_t width,
+                              uint64_t arm9_cycles) {
+    if (g_nds_active!=NDS_ARM9 || !nds_io_native_math_address(addr,width))
+        return false;
+    const uint64_t timestamp=arm9_cycles>>1u;
+    finish_math_at(timestamp);
+    math_reg_write(addr,value,width,timestamp,true);
+    return true;
+}
+
 void nds_io_reset() {
     for (int i = 0; i < 2; ++i) {
         g_ipcsync_out[i] = 0; g_postflg[i] = 0;
@@ -1820,12 +2068,12 @@ void nds_io_reset() {
     nds_cart_backup_reset_command(g_cart_backup);
     g_cart_ir_cmd = 0;   // melonDS CartRetailIR::Reset; the IR-ness itself
                          // is cartridge identity and survives reset
-    g_divcnt = 0; g_div_deadline = UINT64_MAX;
+    g_divcnt = 0; g_div_deadline = UINT64_MAX; g_div_native_owned = false;
     std::memset(g_div_numer, 0, sizeof(g_div_numer));
     std::memset(g_div_denom, 0, sizeof(g_div_denom));
     std::memset(g_div_quot, 0, sizeof(g_div_quot));
     std::memset(g_div_rem, 0, sizeof(g_div_rem));
-    g_sqrtcnt = 0; g_sqrt_res = 0; g_sqrt_deadline = UINT64_MAX;
+    g_sqrtcnt = 0; g_sqrt_res = 0; g_sqrt_deadline = UINT64_MAX; g_sqrt_native_owned = false;
     std::memset(g_sqrt_val, 0, sizeof(g_sqrt_val));
     for (auto& cpu : g_timer) for (auto& t : cpu) t = Timer{};
     g_timer_last[0] = g_timer_last[1] = 0;
@@ -1907,6 +2155,13 @@ bool nds_io_replace_firmware(const uint8_t* p, uint32_t n) {
     g_fw_dirty = true;
     nds_wifi_rebind_firmware(g_fw.data(), static_cast<uint32_t>(g_fw.size()));
     return nds_io_flush_firmware_save();
+}
+
+void nds_io_reset_firmware(const uint8_t* p, uint32_t n) {
+    if (g_fw.empty()) { nds_io_load_firmware(p,n); return; }
+    // Flash contents/dirty state and historical-session detachment survive a
+    // console reset, just as the inserted cartridge's native backup does.
+    nds_wifi_load_firmware(g_fw.data(),static_cast<uint32_t>(g_fw.size()));
 }
 
 void nds_io_set_firmware_save_path(const char* path) {
@@ -2072,6 +2327,23 @@ void nds_set_key_mask(uint32_t mask) {
     check_key_irq(1, oldkey, g_keyinput);
 }
 
+uint16_t nds_extended_keys() { return uint16_t(g_keyinput >> 16); }
+uint16_t nds_io_offline_pad() {
+    // SDK PAD sampling selects GPIO mode without changing the lower RCNT bits.
+    g_rcnt = uint16_t((g_rcnt & ~0xC000u) | 0x8000u);
+    const uint16_t ext = nds_extended_keys();
+    return uint16_t((ext & 0xBu) << 10) | ((ext & 0x80u) ? 0x8000u : 0u);
+}
+bool nds_lid_closed() { return (g_keyinput & (1u << 23)) != 0; }
+void nds_set_lid_closed(bool closed) {
+    const bool was_closed = nds_lid_closed();
+    if (closed) g_keyinput |= 1u << 23;
+    else g_keyinput &= ~(1u << 23);
+    // EXTKEYIN hinge is high when closed; only opening raises ARM7 IRQ22.
+    // Repeating the same input is not another physical edge.
+    if (was_closed && !closed) nds_raise_irq(1, 1u << 22);
+}
+
 // Debug-server-driven throttle override (the `turbo` command). Same role as
 // the frontend's opt-in Tab turbo, but reachable from a probe that has no
 // window focus. Read once per frontend loop iteration; atomic because the
@@ -2195,9 +2467,13 @@ uint32_t nds_card_debug_trace_copy(NdsCardTraceEntry* out,
 }
 
 uint64_t nds_next_system_event_time() {
+    // Native math has no IRQ/DMA side effects. Its exact result deadline is
+    // retained, but observation completes it lazily rather than ending a JIT
+    // run just to publish a register value. Other device deadlines stay live.
     return std::min(std::min(g_card_deadline, g_spi_deadline),
                     std::min(g_auxspi_deadline,
-                             std::min(g_div_deadline, g_sqrt_deadline)));
+                             std::min(g_div_native_owned?UINT64_MAX:g_div_deadline,
+                                      g_sqrt_native_owned?UINT64_MAX:g_sqrt_deadline)));
 }
 
 uint64_t nds_next_timer_overflow_time() {
@@ -2217,6 +2493,19 @@ uint64_t nds_next_timer_overflow_time() {
             const uint64_t when = g_timer_last[cpu] + (span * pre - T.accum);
             best = std::min(best, when);
         }
+    }
+    return best;
+}
+
+uint64_t nds_next_timer_overflow_time_for_cpu(int cpu) {
+    cpu &= 1;
+    uint64_t best = UINT64_MAX;
+    for (int t = 0; t < 4; ++t) {
+        const Timer& timer = g_timer[cpu][t];
+        if (!(timer.ctrl & 0x80u) || (timer.ctrl & 0x4u)) continue;
+        const uint64_t prescale = kPrescaler[timer.ctrl & 3u];
+        const uint64_t span = 0x10000ull - timer.counter;
+        best = std::min(best, g_timer_last[cpu] + span * prescale - timer.accum);
     }
     return best;
 }
@@ -2289,14 +2578,7 @@ void nds_run_system_events(uint64_t timestamp) {
                             g_card_irq_cpu == 0 ? 5u : 0x12u);
         }
     }
-    if (g_div_deadline <= timestamp) {
-        g_div_deadline = UINT64_MAX;
-        finish_div();
-    }
-    if (g_sqrt_deadline <= timestamp) {
-        g_sqrt_deadline = UINT64_MAX;
-        finish_sqrt();
-    }
+    finish_math_at(timestamp);
 }
 
 void nds_note_insn_retired(int cpu) {
@@ -2386,6 +2668,17 @@ uint32_t nds_io_debug_read(int cpu, uint32_t addr, uint32_t width) {
 
 uint16_t nds_exmemcnt(int cpu) { return g_exmemcnt[cpu & 1]; }
 uint16_t nds_powercontrol7() { return g_powercontrol7; }
+void nds_io_offline_card_stop(uint64_t now) {
+    nds_tick_spu(now);
+    nds_spu_write(0x04000500u, nds_spu_read(0x04000500u, 2) & ~0x8000u, 2);
+    nds_spu_write(0x04000504u, 0, 2);
+    pm_release();
+    pm_write(0);
+    pm_write(static_cast<uint8_t>(g_pm_regs[0] & ~0x11u));
+    pm_release();
+    g_powercontrol7 &= ~0x0003u;
+    nds_wifi_set_power_control(false, now);
+}
 uint16_t nds_powercontrol9() {
     return static_cast<uint16_t>(io_mem_read(0x04000304u, 2));
 }
@@ -2512,6 +2805,7 @@ void nds_dump_irq() {
 
 bool io_savestate_export(NdsIoCoreSaveState* out) {
     if (!out) return false;
+    finish_math_at(active_system_timestamp(),true);
     *out = NdsIoCoreSaveState{};
     for (int cpu = 0; cpu < 2; ++cpu) {
         out->ipcsync_out[cpu] = g_ipcsync_out[cpu];
@@ -2687,10 +2981,14 @@ bool io_savestate_import(const NdsIoCoreSaveState& in, std::string* error) {
     std::memcpy(g_div_quot, in.div_quot, sizeof(g_div_quot));
     std::memcpy(g_div_rem, in.div_rem, sizeof(g_div_rem));
     g_div_deadline = in.div_deadline;
+    // Ownership is host scheduling state, not part of the guest arithmetic
+    // payload. Restored pending operations conservatively rejoin scheduling.
+    g_div_native_owned = false;
     g_sqrtcnt = in.sqrtcnt;
     std::memcpy(g_sqrt_val, in.sqrt_value, sizeof(g_sqrt_val));
     g_sqrt_res = in.sqrt_result;
     g_sqrt_deadline = in.sqrt_deadline;
+    g_sqrt_native_owned = false;
 
     g_powercontrol7 = in.powercontrol7;
     g_keyinput = in.keyinput;
@@ -2997,6 +3295,31 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
         // Gamecard: one word per data-ready request. GXFIFO: at most 112
         // units per FIFO-level request (melonDS DMA::Start IterCount cap).
         uint32_t request_units = gamecard ? 1u : gxfifo ? 112u : UINT32_MAX;
+#if defined(NDS_NATIVE_3D)
+        const bool native_geometry = cpu == 0 && width == 4u && !gamecard &&
+            d.cur_dst >= 0x04000400u && d.cur_dst < 0x04000440u && d.dst_inc == 0;
+        if (native_geometry) {
+            const uint64_t end = uint64_t{d.cur_src} + uint64_t{d.remaining} * 4u;
+            const bool dtcm = g_busf_dtcm_limit && d.cur_src < uint64_t{g_busf_dtcm_base} + g_busf_dtcm_limit && end > g_busf_dtcm_base;
+            if (d.src_inc == 1 && !(d.cur_src & 3) && d.cur_src >= 0x02000000u &&
+                end <= 0x03000000u && d.cur_src >= g_busf_itcm_limit && !dtcm &&
+                g_busf_main.data && uint64_t{d.cur_src & g_busf_main.mask} + uint64_t{d.remaining} * 4u <= uint64_t{g_busf_main.mask} + 1u) {
+                nds_gpu3d_command_batch(d.cur_src, d.remaining, 0, d.remaining, false);
+                d.cur_src += d.remaining * 4u;
+                d.remaining = 0;
+            } else {
+                // Keep actual mapped reads for unusual sources. Complete the
+                // whole operation without per-word DMA/FIFO cycle pacing.
+                while (d.remaining) {
+                    bus_write_u32(d.cur_dst, bus_read_u32(d.cur_src & ~3u));
+                    d.cur_src = static_cast<uint32_t>(int64_t{d.cur_src} + int64_t{d.src_inc} * 4);
+                    --d.remaining;
+                }
+                nds_gpu3d_check_fifo_irq();
+            }
+            d.burst_start = false;
+        }
+#endif
         while (d.remaining && g_runtime_cycles < target_cycles) {
 #if defined(NDS_GX_COMMAND_CACHE)
             // A native stream joins Main RAM directly to decoded GXFIFO
@@ -3172,6 +3495,9 @@ void nds_tick_display(unsigned long long cyc) {
             if (g_dispstat[1] & 0x0008u) {
                 ++g_counts.vblank7;
                 nds_raise_irq(1, 0x00000001u);
+#if defined(NDS_OFFLINE_ARM7)
+                nds_offline_arm7_vblank(i * SCAN);
+#endif
             }
             // melonDS StartScanline order: 2D units first (capture-enable
             // auto-clear), then the 3D engine's polygon sort, render-state
@@ -3290,6 +3616,7 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
         return cpu == 1 ? (nds_spu_read(addr, width) & m) : 0u;
     if (dma_reg_addr(addr)) return dma_reg_read(cpu, addr, width) & m;
     if (cpu == 0 && math_addr(addr)) {
+        finish_math_at(active_system_timestamp(),true);
         const uint32_t reg = math_reg_read32(addr & ~3u);
         return (reg >> ((addr & 3u) * 8u)) & m;
     }
@@ -3462,6 +3789,7 @@ void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {
         return;
     }
     if (cpu == 0 && math_addr(addr)) {
+        finish_math_at(active_system_timestamp(),true);
         math_reg_write(addr, value, width);
         return;
     }

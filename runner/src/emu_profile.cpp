@@ -76,7 +76,7 @@ const char* const kBucketNames[NDS_EMU_BUCKET_COUNT] = {
     "spu", "wifi", "rtc", "sysev", "next_event", "ctx_switch",
     "overlay_poll", "sched_other",
     "geometry", "tier3_arm9", "tier3_arm7", "dma_arm9", "dma_arm7",
-    "raster2d", "gpu3d_frame",
+    "raster2d", "gpu3d_frame", "arm7_service",
 };
 
 const char* const kBusNames[NDS_EMU_BUS_PATH_COUNT] = {

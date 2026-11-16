@@ -25,7 +25,7 @@ void write(uint32_t address, uint32_t value, unsigned width = 4) {
 } // namespace
 
 uint32_t bus_device_read32(int, uint32_t) { return 0x34343434u; }
-void bus_device_write32(int cpu, uint32_t address, uint32_t value) {
+void bus_device_write32(int cpu, uint32_t address, uint32_t value, uint64_t) {
     expect(cpu == 7 && address >= 0x02200000u && address < 0x02200400u,
            "capture stays inside synthetic guest destination");
     writes.emplace_back(address, value);

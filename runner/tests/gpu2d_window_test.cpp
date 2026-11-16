@@ -24,6 +24,11 @@ std::array<uint8_t, 0x20000> g_capture_bank{};
 bool g_lcdc_mapped = false;
 uint16_t g_3d_output_width = 256;
 uint64_t g_wide_line_reads = 0;
+uint64_t g_native_line_reads = 0, g_attribute_line_reads = 0, g_capture_line_reads = 0;
+bool g_3d_visible = true;
+uint64_t g_display_sync_requests = 0;
+bool g_capture_copy_pending = false, g_capture_saw_stale_copy = false;
+uint16_t g_test_powercontrol = 0x8002u;
 uint16_t g_3d_render_xpos = 0;
 uint32_t g_3d_render_polygon_count = 0;
 bool g_3d_projection_has_perspective = false;
@@ -915,7 +920,10 @@ bool test_adaptive_helpers_match_serial() {
 }
 
 // Minimal device implementations required by the production renderer object.
-uint16_t nds_powercontrol9() { return 0x8002u; }
+uint16_t nds_powercontrol9() { return g_test_powercontrol; }
+void nds_gpu3d_sync_display_frame() {
+    ++g_display_sync_requests;g_capture_copy_pending=false;
+}
 const uint8_t* nds_vram_renderer_palette(int) { return g_palette.data(); }
 const uint8_t* nds_vram_renderer_oam(int) { return g_oam.data(); }
 const NdsVramRendererView* nds_vram_renderer_view(int) { return &g_view; }
@@ -927,8 +935,10 @@ bool nds_vram_lcdc_mapped(unsigned) { return g_lcdc_mapped; }
 uint8_t* nds_vram_bank_data(unsigned) { return g_capture_bank.data(); }
 void nds_vram_note_capture_write() {}
 uint32_t nds_video_read(int, uint32_t, uint32_t) { return 0; }
-const uint32_t* nds_gpu3d_line(int) { return g_3d_line.data(); }
+const uint32_t* nds_gpu3d_line(int) { ++g_native_line_reads; return g_3d_line.data(); }
 const uint32_t* nds_gpu3d_capture_line(int) {
+    g_capture_saw_stale_copy|=g_capture_copy_pending;
+    ++g_capture_line_reads;
     return g_capture_reference_override ? g_capture_reference_line.data() : g_3d_line.data();
 }
 uint16_t nds_gpu3d_output_width() { return g_3d_output_width; }
@@ -936,7 +946,8 @@ const uint32_t* nds_gpu3d_wide_line(int) {
     ++g_wide_line_reads;
     return g_3d_line.data();
 }
-const uint32_t* nds_gpu3d_wide_attr_line(int) { return g_3d_line.data(); }
+const uint32_t* nds_gpu3d_wide_attr_line(int) { ++g_attribute_line_reads; return g_3d_line.data(); }
+bool nds_gpu3d_display_visible() { return g_3d_visible; }
 uint16_t nds_gpu3d_render_xpos() { return g_3d_render_xpos; }
 uint32_t nds_gpu3d_render_polygon_count() { return g_3d_render_polygon_count; }
 bool nds_gpu3d_display_readback_latency() { return false; }
@@ -985,6 +996,196 @@ bool test_direct_window_scanline_latch() {
 }
 
 #ifndef NDS_GPU2D_REFERENCE_ONLY
+bool test_direct_window_late_fallback() {
+    std::array<uint8_t,0x4000> obj_vram{};
+    reset_obj_fixture(obj_vram);
+    g_unit[0].dispcnt = 0x00010108u;
+    g_unit[1].dispcnt = 0x00010000u;
+    g_direct_windows_enabled = g_direct_present_enabled = true;
+    g_3d_output_width = 448;
+    g_adaptive_skybox_fill = false;
+    g_direct_force_cpu_frames = 0;
+    g_3d_line.fill(0x1F072513u);
+    nds_gpu2d_start_frame();
+    if (!require(g_direct_frame_active)) return false;
+    const uint64_t sync_before = g_display_sync_requests;
+    LineJob line{};
+    LineScratch scratch{};
+    auto check_fallback = [&](int y) {
+        latch_line(y, line);
+        if (!require(line.direct_fallback && line.engine_active[0])) return false;
+        render_line_job(line, scratch);
+        if (!require(line.direct_params[3] == 0x80000000u)) return false;
+        if (!require(line.direct_pixels[0] == 0xFF000000u)) return false;
+        return require(std::equal(line.direct_pixels + 96,
+            line.direct_pixels + 96 + 256,
+            g_fb[line.buffer][0].data() + y * 256));
+    };
+    // A new background cannot silently disappear from an admitted frame.
+    g_unit[0].dispcnt |= 0x200u;
+    if (!check_fallback(40)) return false;
+    // A route change must copy engine B, now occupying the top LCD.
+    g_test_powercontrol = 0x0002u;
+    g_unit[1].dispcnt |= 0x80u;
+    if (!check_fallback(41)) return false;
+    if (!require(line.direct_pixels[96] == 0xFFFFFFFFu)) return false;
+    g_test_powercontrol = 0x8002u;
+    g_unit[0].dispcnt &= ~0x200u;
+    // A capture enabled after frame-start still latches and uses the CPU path.
+    g_unit[0].capture = 0x80000000u;
+    if (!check_fallback(0) || !require(line.cap)) return false;
+    if (!require(g_display_sync_requests == sync_before + 3)) return false;
+    g_unit[0].capture = 0;
+    g_unit[0].capture_latch = false;
+    latch_line(42, line);
+    if (!require(!line.direct_fallback && !line.engine_active[0])) return false;
+    render_line_job(line, scratch);
+    if (!require((line.direct_params[3] & 0x80000000u) == 0u)) return false;
+    g_direct_windows_enabled = g_direct_present_enabled = false;
+    g_3d_output_width = 256;
+    g_unit = {};
+    return true;
+}
+
+bool test_survivor_line_ownership() {
+    namespace s=nds_survivors;
+    nds_gpu2d_reset();
+    std::array<uint8_t,0x4000> obj_vram{},bg_vram{};
+    reset_obj_fixture(obj_vram);
+    std::fill_n(obj_vram.data(),32,0x11);std::fill_n(bg_vram.data(),32,0x11);
+    g_view.bg[0]=bg_vram.data();
+    write16(g_palette,0,0x7C00);write16(g_palette,2,0x03E0);write16(g_palette,0x202,0x001F);
+    set_obj(0,0,10,0);
+    g_unit[0].dispcnt=0x00013308u;g_unit[0].bgcnt[1]=1u<<8;
+    g_unit[0].win[0]=16;g_unit[0].win[1]=8;g_unit[0].win[4]=192;g_unit[0].win[5]=0;
+    g_unit[0].win[8]=0x32;g_unit[0].win[10]=0x3F;
+    g_test_powercontrol=0x8202;g_3d_output_width=448;g_3d_render_xpos=0;g_3d_visible=true;
+    g_adaptive_hud_anchor=true;g_adaptive_hud_center_width=64;g_adaptive_hud_gap_fill=false;
+    g_adaptive_center_native=false;g_adaptive_center_max_polygons=0;g_adaptive_skybox_fill=true;
+    nds_gpu2d_set_survivor_widths(448,448);nds_gpu2d_set_survivors(true);
+    nds_gpu2d_set_threaded(true,2);nds_gpu2d_start_frame();
+    const auto native_reads=g_native_line_reads,wide_reads=g_wide_line_reads,attr_reads=g_attribute_line_reads;
+    const auto ordinary_syncs=g_display_sync_requests;
+    nds_gpu2d_render_scanline(0);
+    g_test_powercontrol=0x0202;g_unit[0].bldcnt=0x0841;g_unit[0].eva=7;g_unit[0].evb=9;
+    g_unit[0].master_bright=0x4003;g_3d_render_xpos=5;g_3d_visible=false;
+    nds_gpu2d_render_scanline(1);
+    g_3d_render_xpos=0;g_3d_visible=true;
+    for(int y=2;y<192;++y)nds_gpu2d_render_scanline(y);
+    nds_gpu2d_vblank();
+    const auto* pending=nds_gpu2d_survivor_pending();
+    if(!require(pending&&pending->lines==192&&!pending->capture&&nds_gpu2d_jobs_outstanding.load()!=0))return false;
+    if(!require(nds_gpu2d_survivor_pending()==pending&&nds_gpu2d_jobs_outstanding.load()!=0))return false;
+    if(!require(pending->row(0)[s::Screen]==0&&pending->row(1)[s::Screen]==1&&pending->needs_gpu[0]&&pending->needs_gpu[1]))return false;
+    if(!require(pending->row(0)[s::MasterBright]==0&&pending->row(1)[s::MasterBright]==0x4003&&pending->row(1)[s::RenderX]==5))return false;
+    if(!require((pending->row(0)[s::Flags]&s::SkyboxFill)&&!(pending->row(0)[s::Flags]&s::CenterNative)&&
+                (pending->row(1)[s::Flags]&s::CenterNative)&&!(pending->row(1)[s::Flags]&(s::Visible3D|s::SkyboxFill))))return false;
+    const uint64_t identity=pending->identity;
+    // Actual IO calls StartFrame before FinishFrame at the 263->0 boundary.
+    nds_gpu2d_start_frame();nds_gpu2d_finish_frame();
+    const auto* current=nds_gpu2d_survivor_current();
+    if(!require(current==pending&&current->identity==identity&&nds_gpu2d_jobs_outstanding.load()==0))return false;
+    const auto* native=current->native_layers.data()+10*4;
+    const auto* wide=current->wide_layers.data()+10*4;
+    if(!require(native[0]==rgb6(0x001F)&&native[2]==rgb6(0x03E0)&&native[0]==wide[0]&&(native[1]&0xC0u)==0xC0u))return false;
+    // The anchored OBJ stays at x10; cropping x106 from wide would lose it.
+    if(!require(current->wide_layers[(96+10)*4]!=native[0]))return false;
+    if(!require(current->native_base[0]==g_fb[current->buffer][0].data()&&current->native_base[1]==g_fb[current->buffer][1].data()))return false;
+    if(!require(g_native_line_reads==native_reads&&g_wide_line_reads==wide_reads&&g_attribute_line_reads==attr_reads))return false;
+    if(!require(g_display_sync_requests==ordinary_syncs))return false;
+    nds_gpu2d_render_scanline(0);
+    if(!require(nds_gpu2d_survivor_current()==current&&current->identity==identity&&current->native_layers[10*4]==rgb6(0x001F)))return false;
+    NdsGpu2dSaveState saved;
+    if(!require(gpu2d_savestate_export(&saved)))return false;
+    constexpr uint32_t marker=0xFF123456u;
+    const unsigned back=saved.front^1;
+    saved.framebuffers[back*2*256*192]=marker;
+    std::string error;
+    if(!require(gpu2d_savestate_import(saved,&error)&&!nds_gpu2d_survivor_building()&&!nds_gpu2d_survivor_pending()))return false;
+    if(!require(g_fb[back][0][0]==marker))return false;
+    // A partial restore stays canonical until the next row zero.
+    nds_gpu2d_render_scanline(1);
+    if(!require(!nds_gpu2d_survivor_building()&&g_fb[back][0][0]==marker))return false;
+    nds_gpu2d_reset();g_unit[0].dispcnt=0x00010108;g_test_powercontrol=0x8202;
+    nds_gpu2d_start_frame();g_unit[0].capture=0x80000000u;
+    // Simulate a capture armed after GPU submission: the CPU image is stale
+    // until the explicit observer synchronizes it, before the first fetch.
+    g_capture_copy_pending=true;g_capture_saw_stale_copy=false;
+    const auto cap_reads=g_capture_line_reads;
+    for(int y=0;y<192;++y)nds_gpu2d_render_scanline(y);
+    nds_gpu2d_vblank();
+    if(!require(nds_gpu2d_survivor_pending()&&nds_gpu2d_survivor_pending()->capture&&g_capture_line_reads>cap_reads))return false;
+    if(!require(!(nds_gpu2d_survivor_pending()->row(0)[s::Flags]&s::CompactObj)))return false;
+    if(!require(!g_capture_copy_pending&&!g_capture_saw_stale_copy))return false;
+    nds_gpu2d_set_survivors(false);nds_gpu2d_set_threaded(false,1);
+    g_adaptive_hud_anchor=g_adaptive_skybox_fill=false;g_3d_output_width=256;g_test_powercontrol=0x8002;
+    return true;
+}
+
+bool test_compact_survivor_rows() {
+    namespace s=nds_survivors;
+    nds_gpu2d_reset();
+    std::array<uint8_t,0x4000> obj_vram{},bg_vram{};
+    reset_obj_fixture(obj_vram);g_view.bg[0]=bg_vram.data();
+    std::fill_n(obj_vram.data(),32,0x11);std::fill_n(bg_vram.data(),32,0x11);
+    write16(g_palette,0,0x7C00);write16(g_palette,2,0x03E0);write16(g_palette,0x202,0x001F);
+    set_obj(0,0,10,0);set_obj(1,0x0400,232,2u<<10);set_obj(2,0x0800,24,0);
+    g_unit[0].dispcnt=0x0001B108u;g_unit[0].bgcnt[1]=1u<<8;
+    g_unit[0].win[0]=16;g_unit[0].win[1]=8;g_unit[0].win[4]=192;g_unit[0].win[5]=0;
+    g_unit[0].win[8]=0x32;g_unit[0].win[10]=0x3F;g_unit[0].win[11]=0x10;
+    g_test_powercontrol=0x8202;g_3d_output_width=448;g_3d_render_xpos=0;g_3d_visible=true;
+    g_adaptive_hud_anchor=true;g_adaptive_hud_center_width=64;g_adaptive_hud_gap_fill=true;
+    g_adaptive_center_native=false;g_adaptive_center_max_polygons=0;g_adaptive_skybox_fill=true;
+    nds_gpu2d_set_survivor_widths(448,448);nds_gpu2d_set_survivors(true);nds_gpu2d_set_threaded(true,2);
+    nds_gpu2d_start_frame();
+    const auto native_reads=g_native_line_reads,wide_reads=g_wide_line_reads,attr_reads=g_attribute_line_reads,syncs=g_display_sync_requests;
+    const unsigned back=g_front^1;
+    constexpr uint32_t base_marker=0xFF123456u,layer_marker=0xBADC0DEu;
+    g_fb[back][0].fill(base_marker);
+    nds_gpu2d_render_scanline(0);
+    // The row's registers are immutable even when the next line changes route,
+    // visibility, color effects and its center/wide placement decision.
+    g_test_powercontrol=0x0202;g_3d_visible=false;g_3d_render_xpos=5;
+    g_unit[0].bldcnt=0x0841;g_unit[0].master_bright=0x4003;g_unit[0].eva=7;g_unit[0].evb=9;
+    nds_gpu2d_render_scanline(1);
+    g_test_powercontrol=0x8202;g_3d_visible=true;g_3d_render_xpos=0;
+    g_unit[0].dispcnt|=0x200;nds_gpu2d_render_scanline(2);
+    g_unit[0].dispcnt&=~0x200u;
+    // Compact rows must not touch the general four-word transport.
+    std::fill_n(g_survivors[back].native_layers.data()+3*s::NativeWidth*4,s::NativeWidth*4,layer_marker);
+    std::fill_n(g_survivors[back].wide_layers.data()+3*s::MaxWidth*4,s::MaxWidth*4,layer_marker);
+    for(int y=3;y<192;++y)nds_gpu2d_render_scanline(y);
+    nds_gpu2d_vblank();nds_gpu2d_start_frame();nds_gpu2d_finish_frame();
+    const auto* frame=nds_gpu2d_survivor_current();
+    if(!require(frame&&!frame->capture))return false;
+    if(!require((frame->row(0)[s::Flags]&s::CompactObj)&&(frame->row(1)[s::Flags]&s::CompactObj)&&
+        !(frame->row(2)[s::Flags]&s::CompactObj)&&(frame->row(3)[s::Flags]&s::CompactObj)))return false;
+    if(!require(frame->row(0)[s::Backdrop]==rgb6(0x7C00)&&frame->row(0)[s::Screen]==0&&frame->row(1)[s::Screen]==1))return false;
+    if(!require(frame->row(1)[s::MasterBright]==0x4003&&frame->row(1)[s::Bldcnt]==0x0841&&frame->row(1)[s::RenderX]==5&&
+        !(frame->row(1)[s::Flags]&s::Visible3D)&&(frame->row(1)[s::Flags]&s::CenterNative)))return false;
+    const uint32_t red=nds_gpu2d_pack_direct_pixel(rgb6(0x001F),0,0,true,0x32);
+    const uint32_t alpha=nds_gpu2d_pack_direct_pixel(rgb6(0x001F),2,0xFF,true,0x3F);
+    if(!require(frame->native_objects[10]==red&&frame->wide_objects[10]==red&&frame->wide_objects[106]!=red))return false;
+    if(!require(frame->native_objects[232]==alpha&&frame->wide_objects[424]==alpha))return false;
+    if(!require(frame->native_objects[24]==0x4040u&&frame->wide_objects[24]==0x4040u))return false;
+    const auto* center=frame->wide_objects.data()+s::MaxWidth;
+    const uint32_t black=nds_gpu2d_pack_direct_pixel(0,0,0,true,0x10);
+    if(!require(center[0]==black&&center[95]==black&&center[96+10]==red&&center[352]==black&&center[447]==black))return false;
+    if(!require(frame->native_layers[2*s::NativeWidth*4+10*4]==rgb6(0x001F)&&
+        frame->native_layers[2*s::NativeWidth*4+10*4+2]==rgb6(0x03E0)))return false;
+    if(!require(std::all_of(frame->native_layers.begin()+3*s::NativeWidth*4,frame->native_layers.begin()+4*s::NativeWidth*4,
+        [](uint32_t value){return value==layer_marker;})&&
+        std::all_of(frame->wide_layers.begin()+3*s::MaxWidth*4,frame->wide_layers.begin()+4*s::MaxWidth*4,
+        [](uint32_t value){return value==layer_marker;})))return false;
+    if(!require(g_fb[back][0][0]==base_marker&&g_fb[back][0][3*256]==base_marker))return false;
+    if(!require(g_native_line_reads==native_reads&&g_wide_line_reads==wide_reads&&g_attribute_line_reads==attr_reads&&g_display_sync_requests==syncs))return false;
+    nds_gpu2d_set_survivors(false);nds_gpu2d_set_threaded(false,1);
+    g_adaptive_hud_anchor=g_adaptive_hud_gap_fill=g_adaptive_skybox_fill=false;
+    g_3d_output_width=256;g_3d_render_xpos=0;g_test_powercontrol=0x8002;
+    std::puts("[compact survivors] independent native/wide OBJ+windows, mixed rows, center margins and zero ordinary 3D reads");
+    return true;
+}
+
 int main() {
     if (!test_window_raw_decode()) return 1;
     if (!test_window_enable_and_precedence()) return 2;
@@ -1006,6 +1207,9 @@ int main() {
     if (!test_adaptive_hud_gap_fill()) return 18;
     if (!test_adaptive_hud_gap_composition()) return 19;
     if (!test_fixed_16_9_composition()) return 20;
+    if (!test_direct_window_late_fallback()) return 21;
+    if (!test_survivor_line_ownership()) return 22;
+    if (!test_compact_survivor_rows()) return 23;
     return 0;
 }
 #endif

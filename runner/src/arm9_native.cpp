@@ -3,10 +3,12 @@
 #if !defined(NDS_ARM9_DYNARMIC)
 bool nds_arm9_native_run() { return false; }
 bool nds_arm9_native_supported() { return false; }
+bool nds_arm9_observation_service() { return false; }
 void nds_arm9_native_note_write() {}
 void nds_arm9_native_note_write_pages(const uint32_t*, uint32_t) {}
 void nds_arm9_native_flush_writes() {}
 void nds_arm9_native_clear() {}
+void nds_arm7_native_release() {}
 void nds_arm9_native_census(bool, bool) {}
 std::string nds_arm9_native_json() { return "{\"available\":false}"; }
 std::string nds_arm9_native_compilation_json(bool) { return "{\"available\":false}"; }
@@ -27,7 +29,7 @@ std::string nds_arm9_native_preparation_json() { return "{\"available\":false}";
 #include "arm9_native_ir.h"
 #include "arm9_native_watch.h"
 #include "arm9_native_options.h"
-#if defined(NDS_NATIVE_CONTROL)
+#if defined(NDS_NATIVE_CONTROL) || defined(NDS_ARM9_OBSERVATION_SERVICE)
 #include "native_control.h"
 #endif
 #include "io.h"
@@ -47,11 +49,26 @@ std::string nds_arm9_native_preparation_json() { return "{\"available\":false}";
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 #if defined(_MSC_VER)
 #include <intrin.h>
 #else
 #include <cpuid.h>
 #endif
+
+bool nds_arm9_observation_service() {
+#if defined(NDS_ARM9_OBSERVATION_SERVICE)
+    static const bool enabled=[] {
+        const char* value=std::getenv("NDS_ARM9_OBSERVATION_SERVICE");
+        return !value||std::strcmp(value,"0")!=0;
+    }();
+    return enabled&&nds_performance_execution();
+#else
+    return false;
+#endif
+}
 
 namespace {
 // Explicit simulated-timing profiles: two cycles of the executing CPU per
@@ -140,6 +157,8 @@ public:
     uint64_t precise_notifications=0,precise_code_hits=0;
     uint32_t pending_pc=0;
     bool pending=false,known_write=false,running=false,device_halted=false;
+    bool observation_service=false;
+    uint64_t math_reads=0,math_writes=0,irq_control_writes=0,irq_observation_exits=0;
 #if defined(NDS_NATIVE_PUBLISHED_STORES)
     std::unique_ptr<NdsNativeStorePages<Dynarmic::PublishedMemoryWrites::Page>> store_pages;
     Dynarmic::PublishedMemoryWrites store_publication{};
@@ -173,7 +192,7 @@ public:
     using ReadPages=std::array<uint8_t*,Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
     std::unique_ptr<ReadPages> read_pages;
     uint64_t read_mapping_generation=~uint64_t(0),read_sites=0,read_callbacks=0;
-    uint64_t data_coalesced=0,gx_coalesced=0,slow_reads=0,slow_writes=0;
+    uint64_t data_coalesced=0,gx_coalesced=0,gx_boundary_handoffs=0,slow_reads=0,slow_writes=0;
     uint64_t arithmetic_cap_splits=0;
     void refresh_reads() {
         if(!read_pages||read_mapping_generation==g_busf_mapping_generation)return;
@@ -208,10 +227,35 @@ public:
             i.op==armv4t::IrOp::STRH||i.op==armv4t::IrOp::STM;
     }
     explicit Native(NdsCpu cpu):cpu(cpu) {
+        observation_service=cpu==NDS_ARM9&&nds_arm9_observation_service();
         Dynarmic::A32::UserConfig conf;
         conf.callbacks=this;conf.arch_version=cpu==NDS_ARM9?Dynarmic::A32::ArchVersion::v5TE:Dynarmic::A32::ArchVersion::v4T;
-#if defined(NDS_NATIVE_CONTROL)
-        if(cpu==NDS_ARM9)conf.coprocessors[15]=std::make_shared<NdsNativeCacheMaintenance>();
+#if defined(NDS_NATIVE_CONTROL) || defined(NDS_ARM9_OBSERVATION_SERVICE)
+        if(cpu==NDS_ARM9&&controls())
+            conf.coprocessors[15]=std::make_shared<NdsNativeCacheMaintenance>(observation_service);
+#endif
+#if defined(NDS_ARM9_OBSERVATION_SERVICE)
+        if(observation_service) {
+            // Linked retirement blocks stay native. Only slow actual-I/O
+            // callbacks publish their live prefix; ordinary RAM callbacks
+            // and direct page accesses retain their existing path.
+            conf.memory_access_tick_prefix=[](uint64_t block,uint64_t access) {
+                const Dynarmic::A32::LocationDescriptor first{Dynarmic::IR::LocationDescriptor{block}};
+                const Dynarmic::A32::LocationDescriptor at{Dynarmic::IR::LocationDescriptor{access}};
+                return uint64_t(uint32_t(at.PC()-first.PC()))/(at.TFlag()?2u:4u);
+            };
+            conf.memory_tick_address_mask=0xFF000000u;
+            conf.memory_tick_address_value=0x04000000u;
+#if defined(NDS_OFFLINE_ARM7)
+            // Mutable PCM is observed before actual RAM callback stores.
+            // Direct read pages still bypass callback timing entirely.
+            if (nds_offline_arm7_selected()) {
+                conf.memory_tick_address_mask=0;
+                conf.memory_tick_address_value=0;
+            }
+#endif
+            conf.enable_native_cpsr_control=true;
+        }
 #endif
         conf.code_cache_size=32*1024*1024;
         // Normal bus callbacks use address/value arguments, current PC and
@@ -281,14 +325,22 @@ public:
         using Op=armv4t::IrOp;
         return (i.op>=Op::LDR&&i.op<=Op::STM)||i.op==Op::SWP||i.op==Op::SWPB;
     }
+    bool controls() const {
+#if defined(NDS_NATIVE_CONTROL)
+        return true;
+#else
+        return observation_service;
+#endif
+    }
     bool floor(const armv4t::Instr& i,bool thumb) {
         using Op=armv4t::IrOp;
-#if defined(NDS_NATIVE_CONTROL)
-        if(!i.is_undefined) {
+#if defined(NDS_NATIVE_CONTROL) || defined(NDS_ARM9_OBSERVATION_SERVICE)
+        if(controls()&&!i.is_undefined) {
             if(i.op==Op::MRS&&!i.psr.spsr&&i.rd<15)return false;
             if(i.op==Op::MSR&&!i.psr.spsr&&i.psr.mask==8)return false;
+            if(observation_service&&i.op==Op::MSR&&!i.psr.spsr&&i.psr.mask==1)return false;
             if(cpu==NDS_ARM7&&i.op==Op::MUL&&!thumb&&!i.set_flags&&i.rd<15)return false;
-            if(cpu==NDS_ARM9&&i.op==Op::MCR&&nds_native_stateless_cache_encoding(i.raw))return false;
+            if(cpu==NDS_ARM9&&i.op==Op::MCR&&nds_native_stateless_cache_encoding(i.raw,observation_service))return false;
         }
 #else
         (void)thumb;
@@ -338,8 +390,8 @@ public:
             }
         }
         if(bytes&&!thumb&&(*bytes&0x0c000000u)==0x0c000000u)native_encoding=false;
-#if defined(NDS_NATIVE_CONTROL)
-        if(bytes&&!thumb&&cpu==NDS_ARM9&&nds_native_stateless_cache_encoding(*bytes))native_encoding=true;
+#if defined(NDS_NATIVE_CONTROL) || defined(NDS_ARM9_OBSERVATION_SERVICE)
+        if(bytes&&!thumb&&cpu==NDS_ARM9&&controls()&&nds_native_stateless_cache_encoding(*bytes,observation_service))native_encoding=true;
 #endif
         if(!native_encoding||floor(decode(thumb,pc),thumb)||nds_native_service_entry(cpu,pc,thumb)) {
             ir.SetTerm(Dynarmic::IR::Term::Interpret{ir.current_location});return false;
@@ -369,6 +421,14 @@ public:
             const NdsNativeRam view=NdsNativeRam::map<T>(a);
             if(view)return view.read<T>();
         }
+        if(observation_service&&nds_io_native_math_address(a,sizeof(T))) {
+            context();uint32_t value{};
+            if(nds_io_native_math_read(a,sizeof(T),g_runtime_cycles,&value)) {
+                ++math_reads;++slow_reads;
+                if(census_enabled)census(read_census,access_key(a));
+                return T(value);
+            }
+        }
         read_boundary(a,sizeof(T));
         if constexpr(sizeof(T)==1)return bus_read_u8(a);
         if constexpr(sizeof(T)==2)return bus_read_u16(a);
@@ -394,17 +454,30 @@ public:
     template<class T> void write(uint32_t a,T value) {
         constexpr unsigned width=sizeof(T);
         a&=~(width-1u);
+        if(observation_service&&nds_io_native_math_address(a,width)) {
+            context();
+            if(nds_io_native_math_write(a,uint32_t(value),width,g_runtime_cycles)) {
+                ++math_writes;++slow_writes;
+                if(census_enabled)census(write_census,access_key(a));
+                return;
+            }
+        }
         const NdsNativeRam view=ram_transactions()?NdsNativeRam::map<T>(a):NdsNativeRam{};
         uint32_t off=0;
         const auto* w=view?view.window:nds_busf_classify(a,&off);
         if(view)off=view.offset;
         const uint32_t* generation=w&&w->data&&w->gen? w->gen+(off>>12):nullptr;
         const bool ordinary_ram=bool(view)||ram(a,width);
+#if defined(NDS_NATIVE_3D)
+        const bool batch_gx=!ordinary_ram&&nds_native_gx_command(a,width);
+#else
         const bool batch_gx=!ordinary_ram&&nds_native_options().gx&&nds_native_gx_command(a,width);
+#endif
         const bool batch_data=!ordinary_ram&&nds_native_options().data&&nds_native_plain_video(a,width);
         if(!ordinary_ram) {
             if(census_enabled)census(write_census,access_key(a));
             ++slow_writes;
+            if(!batch_gx&&nds_native_gx_command(a,width))++gx_boundary_handoffs;
             if(batch_gx||batch_data)context();else device();
         } else {g_cpu.R[15]=(*registers)[15];g_cpu.R[14]=(*registers)[14];}
         // Only this inline RAM store is covered by the exact generation test
@@ -419,12 +492,13 @@ public:
         }
         if(batch_data)++data_coalesced;
         if(batch_gx) {
-            // The modeled FIFO IS the ordered queue. Submit each command once
-            // at the current guest timestamp, retaining decoding/status/IRQ/DMA.
-            // Avoid an additional host queue and synchronize on actual effects.
+            // Native geometry accepts the input directly; the reference batch
+            // uses its FIFO. Both synchronize on actual observable effects.
             ++gx_coalesced;
             if(nds_gxfifo_stalled()||nds_dma_cpu_stalled(0)||nds_cpu_halted(0)||
-               g_nds_irq_pending_cache[0]||nds_event_break_hit()||nds_slice_over())device();
+               g_nds_irq_pending_cache[0]||nds_event_break_hit()||nds_slice_over()) {
+                ++gx_boundary_handoffs;device();
+            }
         }
         if(generation&&watches.contains(generation))clear();
     }
@@ -439,11 +513,29 @@ public:
     }
     void CallSVC(uint32_t) override {pending=true;pending_pc=jit->Regs()[15];jit->HaltExecution();}
     void ExceptionRaised(uint32_t pc,Dynarmic::A32::Exception) override {pending=true;pending_pc=pc;jit->HaltExecution();}
+#if defined(NDS_ARM9_OBSERVATION_SERVICE)
+    Dynarmic::A32::CpsrControlWriteResult CpsrControlWrite(uint32_t,uint32_t current,uint32_t value) override {
+        using Result=Dynarmic::A32::CpsrControlWriteResult;
+        if(!observation_service)return Result::Unsupported;
+        ++irq_control_writes;
+        if((current&0x80u)&&!(value&0x80u)&&g_nds_irq_pending_cache[0]) {
+            ++irq_observation_exits;++devices;device_halted=true;
+            return Result::Observe;
+        }
+        return Result::Continue;
+    }
+#endif
     void AddTicks(uint64_t n) override {
         remaining=n<remaining?remaining-n:0;instructions+=n;g_insn_count[cpu]+=n;
         g_runtime_cycles+=n*cycles_per_instruction;
     }
-    uint64_t GetTicksRemaining() override {return remaining;}
+    uint64_t GetTicksRemaining() override {
+        if(!observation_service)return remaining;
+        if(device_halted||g_runtime_cycles>=g_nds_fast_limit)return 0;
+        // Preserve the original rendezvous budget while honoring a newly
+        // shortened external deadline. One odd CPU tick still makes progress.
+        return std::min(remaining,std::max<uint64_t>(1,(g_nds_fast_limit-g_runtime_cycles)/cycles_per_instruction));
+    }
     void validate_writes() {
         const uint64_t before=watches.checks;
         const bool changed=watches.changed();
@@ -565,6 +657,7 @@ void nds_arm9_native_note_write_pages(const uint32_t* first,uint32_t count) {
     nds_arm9_native_note_write();
 }
 void nds_arm9_native_flush_writes() {for(auto& n:natives)if(n)n->flush_writes();}
+void nds_arm7_native_release() { natives[NDS_ARM7].reset(); }
 void nds_arm9_native_clear() {
 #if defined(NDS_NATIVE_PUBLISHED_STORES)
     store_protected_pages.clear();
@@ -742,17 +835,23 @@ std::string nds_arm9_native_json() {
         ",\"event_window_rounds\":"+std::to_string(windows)+
         ",\"event_window_fences\":"+std::to_string(fences)+
         ",\"cycles_per_instruction\":"+std::to_string(cycles_per_instruction);
+    out+=",\"observation_service\":"+std::string(nds_arm9_observation_service()?"true":"false");
 #if defined(NDS_NATIVE_PRECISE_WRITES)
     out+=",\"precise_ram_writes\":true,\"physical_write_publication\":true";
 #else
     out+=",\"precise_ram_writes\":false,\"physical_write_publication\":false";
 #endif
     if(native)out+=",\"entries\":"+std::to_string(native->entries)+
+        ",\"math_reads\":"+std::to_string(native->math_reads)+
+        ",\"math_writes\":"+std::to_string(native->math_writes)+
+        ",\"irq_control_writes\":"+std::to_string(native->irq_control_writes)+
+        ",\"irq_observation_exits\":"+std::to_string(native->irq_observation_exits)+
         ",\"read_callbacks\":"+std::to_string(native->read_callbacks)+
         ",\"arithmetic_cap_splits\":"+std::to_string(native->arithmetic_cap_splits)+
         ",\"direct_read_sites\":"+std::to_string(native->read_sites)+
         ",\"data_coalesced\":"+std::to_string(native->data_coalesced)+
         ",\"gx_coalesced\":"+std::to_string(native->gx_coalesced)+
+        ",\"gx_boundary_handoffs\":"+std::to_string(native->gx_boundary_handoffs)+
         ",\"slow_reads\":"+std::to_string(native->slow_reads)+
         ",\"slow_writes\":"+std::to_string(native->slow_writes)+
         ",\"instructions\":"+std::to_string(native->instructions)+

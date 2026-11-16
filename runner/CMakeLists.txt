@@ -36,6 +36,14 @@ include("${CMAKE_CURRENT_LIST_DIR}/../cmake/NdsJobPools.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/NdsTomlPlusPlus.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../external/arm-recomp-core/cmake/ArmRecompCore.cmake")
 enable_testing()
+add_executable(native_3d_test tests/native_3d_test.cpp src/native_3d.cpp)
+target_include_directories(native_3d_test PRIVATE src)
+set_target_properties(native_3d_test PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+add_test(NAME native_3d_test COMMAND native_3d_test)
+add_executable(native_model_test tests/native_model_test.cpp src/native_model.cpp)
+target_include_directories(native_model_test PRIVATE src)
+set_target_properties(native_model_test PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+add_test(NAME native_model_test COMMAND native_model_test)
 add_executable(execution_model_test tests/execution_model_test.cpp src/execution_model.cpp)
 target_include_directories(execution_model_test PRIVATE src)
 add_test(NAME execution_model_test COMMAND execution_model_test)
@@ -72,6 +80,16 @@ option(NDS_LEAN_DIAGNOSTICS "Experiment: diagnostic sampling is explicitly armed
 option(NDS_CAPTURE_VIEW_REUSE "Experiment: reuse unchanged immutable capture texture views" OFF)
 option(NDS_GX_COMMAND_CACHE
     "Use guarded Main-RAM FIFO ingress and exact integer projection reuse" OFF)
+set(NDS_3D_GEOMETRY "REFERENCE" CACHE STRING "Geometry service: REFERENCE or NATIVE")
+set_property(CACHE NDS_3D_GEOMETRY PROPERTY STRINGS REFERENCE NATIVE)
+if(NOT NDS_3D_GEOMETRY MATCHES "^(REFERENCE|NATIVE)$")
+    message(FATAL_ERROR "NDS_3D_GEOMETRY must be REFERENCE or NATIVE")
+endif()
+set(NDS_MKDS_MODEL_IMPLEMENTATION "LLE" CACHE STRING "MKDS simple-model drawing: LLE or HLE")
+set_property(CACHE NDS_MKDS_MODEL_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
+if(NOT NDS_MKDS_MODEL_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
+    message(FATAL_ERROR "NDS_MKDS_MODEL_IMPLEMENTATION must be LLE or HLE")
+endif()
 option(NDS_MKDS_PERFORMANCE
     "Include selectable portable flat-AOT MKDS execution alongside faithful banks" OFF)
 option(NDS_MPH_PERFORMANCE
@@ -84,6 +102,12 @@ option(NDS_NATIVE_PUBLISHED_STORES
     "Candidate: generated ordinary RAM stores with complete physical publication" OFF)
 option(NDS_NATIVE_CONTROL
     "Experiment: native pure status/multiply and stateless ARM9 cache operations" OFF)
+option(NDS_ARM9_OBSERVATION_SERVICE
+    "Native ARM9 math and IRQ/cache control at actual observation boundaries" OFF)
+option(NDS_OFFLINE_ARM7
+    "Native offline ARM7 driver services and ARM9 event-horizon execution" OFF)
+option(NDS_WHOLE_ASSETS
+    "Native complete file-to-decompressed-RAM asset operations" OFF)
 option(NDS_TIER3_CANONICAL_STATE
     "Share canonical registers/banks with faithful execution" ON)
 set(NDS_MKDS_PERFORMANCE_BANK_DIR "" CACHE PATH
@@ -98,6 +122,9 @@ if(NDS_ARM9_DYNARMIC_ROOT)
         file(READ "${NDS_ARM9_DYNARMIC_ROOT}/src/dynarmic/interface/A32/config.h" _nds_dynarmic_config)
         if(NOT _nds_dynarmic_config MATCHES "NDS_READONLY_PAGE_TABLE_V1")
             message(FATAL_ERROR "Pinned Dynarmic needs runner/cmake/dynarmic-readonly-pages.patch; see docs/mkds-boundary-consolidation.md")
+        endif()
+        if(NDS_ARM9_OBSERVATION_SERVICE AND NOT _nds_dynarmic_config MATCHES "NDS_OBSERVATION_CALLBACKS_V1")
+            message(FATAL_ERROR "Native ARM9 observation service requires the observation-callback SDK patch")
         endif()
         if(NDS_NATIVE_PUBLISHED_STORES)
             if(NOT NDS_NATIVE_PRECISE_WRITES OR NOT _nds_dynarmic_config MATCHES "NDS_PUBLISHED_STORES_V1")
@@ -187,11 +214,21 @@ if(NOT NDS_MKDS_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
     message(FATAL_ERROR "NDS_MKDS_IMPLEMENTATION must be LLE or HLE")
 endif()
 set(NDS_BUILD_VARIANT "")
+if(NDS_3D_GEOMETRY STREQUAL "NATIVE")
+    set(NDS_BUILD_VARIANT "native-frame-v1")
+endif()
 if(NDS_GX_COMMAND_CACHE)
-    set(NDS_BUILD_VARIANT "gx-cache-v1")
+    if(NDS_BUILD_VARIANT)
+        string(APPEND NDS_BUILD_VARIANT "-")
+    endif()
+    string(APPEND NDS_BUILD_VARIANT "gx-cache-v1")
 endif()
 if(NDS_MPH_SUBMIT_IMPLEMENTATION STREQUAL "HLE")
-    set(NDS_BUILD_VARIANT "mph-submit-hle-v3")
+    if(NDS_3D_GEOMETRY STREQUAL "NATIVE")
+        set(NDS_BUILD_VARIANT "native-frame-v1-mph-submit-hle-v3")
+    else()
+        set(NDS_BUILD_VARIANT "mph-submit-hle-v3")
+    endif()
 endif()
 if(NDS_ENABLE_COMPUTE_RENDERER AND NDS_ACCELERATED_RENDERER STREQUAL "OPENGL")
     if(NDS_BUILD_VARIANT)
@@ -213,6 +250,12 @@ if(NDS_MKDS_STREAM_IMPLEMENTATION STREQUAL "HLE")
 endif()
 if(NDS_MKDS_CARD_PIO_IMPLEMENTATION STREQUAL "HLE")
     string(APPEND NDS_BUILD_VARIANT "-card-pio-native-v1")
+endif()
+if(NDS_MKDS_MODEL_IMPLEMENTATION STREQUAL "HLE")
+    if(NOT NDS_3D_GEOMETRY STREQUAL "NATIVE" OR NOT NDS_MKDS_IMPLEMENTATION STREQUAL "HLE")
+        message(FATAL_ERROR "Native MKDS models require native geometry and MKDS HLE")
+    endif()
+    string(APPEND NDS_BUILD_VARIANT "-native-model-v1")
 endif()
 if(NDS_TIER3_CANONICAL_STATE)
     string(APPEND NDS_BUILD_VARIANT "-canonical-tier3-v1")
@@ -401,7 +444,15 @@ set(NDS_PREBUILT_BANK_ARCHIVE "" CACHE FILEPATH
     "Developer reuse of an already validated bank archive with matching runtime ABI")
 set(NDS_PREBUILT_BANK_ARCHIVE_SHA256 "" CACHE STRING
     "Required SHA256 of NDS_PREBUILT_BANK_ARCHIVE")
+set(NDS_PREBUILT_BANK_PREWRITE_HEADER_SHA256 "" CACHE STRING
+    "Runtime header SHA256 recorded by the offline-aware bank archive build")
 if(NDS_PREBUILT_BANK_ARCHIVE)
+    if(NDS_OFFLINE_ARM7 AND NDS_ARM9_DYNARMIC_ENABLED)
+        file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t/runtime_arm.h" _prewrite_header_sha256)
+        if(NOT NDS_PREBUILT_BANK_PREWRITE_HEADER_SHA256 STREQUAL _prewrite_header_sha256)
+            message(FATAL_ERROR "Offline audio requires a bank build receipt matching the current prewrite runtime header")
+        endif()
+    endif()
     if(NOT EXISTS "${NDS_PREBUILT_BANK_ARCHIVE}" OR NOT NDS_PREBUILT_BANK_ARCHIVE_SHA256)
         message(FATAL_ERROR "Prebuilt bank archive requires an existing file and expected SHA256")
     endif()
@@ -431,6 +482,9 @@ add_library(nds_banks STATIC
     ${SM64DS_BANK_SOURCES}
     ${TITLE_BANK_SOURCES})
 ndsrecomp_limit_generated_compiles(nds_banks)
+if(NDS_OFFLINE_ARM7 AND NDS_ARM9_DYNARMIC_ENABLED)
+    target_compile_definitions(nds_banks PRIVATE NDS_OFFLINE_ARM7=1)
+endif()
 ndsrecomp_limit_link(nds_banks)
 target_include_directories(nds_banks PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
@@ -551,6 +605,17 @@ endif()
 
 if(NDS_ARM9_DYNARMIC_ENABLED)
     string(APPEND NDS_BUILD_VARIANT "-arm9-native-v2-timing2-dynarmica41c380-narrow-reads-v1")
+    if(NDS_ARM9_OBSERVATION_SERVICE)
+        file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dynarmic-observation-callbacks.patch" _nds_observation_patch_sha)
+        string(SUBSTRING "${_nds_observation_patch_sha}" 0 12 _nds_observation_patch_short)
+        string(APPEND NDS_BUILD_VARIANT "-observation-v1-sdk${_nds_observation_patch_short}")
+    endif()
+    if(NDS_OFFLINE_ARM7)
+        string(APPEND NDS_BUILD_VARIANT "-offline-arm7-v1")
+    endif()
+    if(NDS_WHOLE_ASSETS)
+        string(APPEND NDS_BUILD_VARIANT "-whole-assets-v1")
+    endif()
     if(NDS_NATIVE_PRECISE_WRITES)
         string(APPEND NDS_BUILD_VARIANT "-physical-write-publication-v1")
     endif()
@@ -780,6 +845,18 @@ add_executable(nds_runner
     vendor/melonds/net/PacketDispatcher.cpp
     vendor/melonds/net/Net_Slirp.cpp)
 set_target_properties(nds_runner PROPERTIES ENABLE_EXPORTS ON)
+if(NDS_3D_GEOMETRY STREQUAL "NATIVE")
+    target_sources(nds_runner PRIVATE src/native_3d.cpp src/native_3d_raster.cpp)
+    set_property(SOURCE src/io.cpp src/gpu3d.cpp src/arm9_native.cpp
+        APPEND PROPERTY COMPILE_DEFINITIONS
+        "$<$<STREQUAL:$<TARGET_PROPERTY:NAME>,nds_runner>:NDS_NATIVE_3D=1>")
+endif()
+if(NDS_MKDS_MODEL_IMPLEMENTATION STREQUAL "HLE")
+    target_sources(nds_runner PRIVATE src/native_model.cpp src/hle_mkds_model.cpp)
+    set_property(SOURCE src/hle_mkds.cpp src/gpu3d.cpp src/debug_server.cpp
+        APPEND PROPERTY COMPILE_DEFINITIONS
+        "$<$<STREQUAL:$<TARGET_PROPERTY:NAME>,nds_runner>:NDS_MKDS_MODEL_HLE=1>")
+endif()
 find_package(Threads REQUIRED)
 target_link_libraries(nds_runner PRIVATE Threads::Threads)
 if(NDS_MPH_MATH_IMPLEMENTATION STREQUAL "HLE")
@@ -960,6 +1037,8 @@ if(NDS_ENABLE_COMPUTE_RENDERER)
         src/melonds_compute/GPU_OpenGL.cpp
         src/melonds_compute/PlatformCompute.cpp
         src/melonds_compute/ComputeHost.cpp
+        src/melonds_compute/CpuSurvivorHost.cpp
+        src/melonds_compute/D3D11InteropTarget.cpp
         vendor/melonds/OpenGLSupport.cpp
         vendor/melonds/glad/glad.c
         vendor/melonds/xxhash/xxhash.c)
@@ -1077,10 +1156,29 @@ if(NDS_MKDS_PERFORMANCE)
     target_compile_definitions(nds_runner PRIVATE NDS_MKDS_PERFORMANCE=1)
 endif()
 if(NDS_ARM9_DYNARMIC_ENABLED)
+    if(NDS_WHOLE_ASSETS)
+        if(NOT NDS_OFFLINE_ARM7)
+            message(FATAL_ERROR "Whole asset services require the qualified offline profile")
+        endif()
+        target_sources(nds_runner PRIVATE src/native_asset_data.cpp src/whole_asset_service.cpp
+            src/hle_mkds_assets.cpp src/hle_mph_assets.cpp)
+        target_compile_definitions(nds_runner PRIVATE NDS_WHOLE_ASSETS=1)
+    endif()
+    if(NDS_OFFLINE_ARM7)
+        if(NOT NDS_ARM9_OBSERVATION_SERVICE OR NOT NDS_3D_GEOMETRY STREQUAL "NATIVE")
+            message(FATAL_ERROR "Offline driver services require native geometry and ARM9 observation services")
+        endif()
+        target_sources(nds_runner PRIVATE src/offline_arm7.cpp src/offline_arm7_sound.cpp src/offline_arm7_card.cpp)
+        target_compile_definitions(nds_runner PRIVATE NDS_OFFLINE_ARM7=1)
+    endif()
     if(NDS_MPH_PERFORMANCE)
         target_compile_definitions(nds_runner PRIVATE NDS_MPH_PERFORMANCE=1)
     endif()
     target_compile_definitions(nds_runner PRIVATE NDS_ARM9_DYNARMIC=1)
+    if(NDS_ARM9_OBSERVATION_SERVICE)
+        set_property(SOURCE src/arm9_native.cpp src/execution_model.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+            "$<$<STREQUAL:$<TARGET_PROPERTY:NAME>,nds_runner>:NDS_ARM9_OBSERVATION_SERVICE=1>")
+    endif()
     if(NDS_NATIVE_PRECISE_WRITES)
         set_property(SOURCE src/arm9_native.cpp APPEND PROPERTY COMPILE_DEFINITIONS NDS_NATIVE_PRECISE_WRITES=1)
     endif()
@@ -1225,6 +1323,10 @@ target_include_directories(frontend_config_test PRIVATE src)
 ndsrecomp_link_tomlpp(frontend_config_test)
   add_test(NAME frontend_config_test COMMAND frontend_config_test)
 
+  add_executable(screen_layout_test tests/screen_layout_test.cpp)
+  target_include_directories(screen_layout_test PRIVATE src)
+  add_test(NAME screen_layout_test COMMAND screen_layout_test)
+
   add_executable(wfc_provider_test
       tests/wfc_provider_test.cpp
       src/net/wfc_provider.cpp)
@@ -1321,6 +1423,17 @@ ndsrecomp_link_tomlpp(frontend_config_test)
       ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
   target_link_libraries(hle_mkds_test PRIVATE nds_support)
   add_test(NAME hle_mkds_test COMMAND hle_mkds_test)
+  add_executable(hle_mkds_model_test tests/hle_mkds_model_test.cpp
+      src/hle_mkds_model.cpp src/native_model.cpp src/native_3d.cpp)
+  target_compile_definitions(hle_mkds_model_test PRIVATE NDS_RUNTIME_ABI_SHIMS=1)
+  target_include_directories(hle_mkds_model_test PRIVATE src
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  target_link_libraries(hle_mkds_model_test PRIVATE nds_support)
+  add_test(NAME hle_mkds_model_test COMMAND hle_mkds_model_test)
+
+  add_executable(native_asset_data_test tests/native_asset_data_test.cpp src/native_asset_data.cpp)
+  target_include_directories(native_asset_data_test PRIVATE src)
+  add_test(NAME native_asset_data_test COMMAND native_asset_data_test)
 
   add_executable(hle_mkds_stream_test tests/hle_mkds_stream_test.cpp src/hle_mkds_stream.cpp
       src/hle_mkds_card_pio.cpp)
@@ -1521,6 +1634,31 @@ ndsrecomp_link_tomlpp(frontend_config_test)
       NDS_BUILD_VIDEO_SAVESTATE_TEST=1)
   add_test(NAME video_savestate_test COMMAND video_savestate_test)
   set_tests_properties(video_savestate_test PROPERTIES TIMEOUT 20)
+  if(NDS_OFFLINE_ARM7)
+    add_executable(offline_sound_test tests/offline_sound_test.cpp
+        src/offline_arm7_sound.cpp src/spu.cpp)
+    target_include_directories(offline_sound_test PRIVATE src
+        "${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t" ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+    add_test(NAME offline_sound_test COMMAND offline_sound_test)
+    set_tests_properties(offline_sound_test PROPERTIES TIMEOUT 20)
+  endif()
+  get_target_property(_native_raster_fixture video_savestate_test SOURCES)
+  list(REMOVE_ITEM _native_raster_fixture tests/video_savestate_test.cpp)
+  add_executable(native_3d_raster_test tests/native_3d_raster_test.cpp
+      src/native_3d.cpp src/native_3d_raster.cpp ${_native_raster_fixture})
+  get_target_property(_native_raster_includes video_savestate_test INCLUDE_DIRECTORIES)
+  target_include_directories(native_3d_raster_test PRIVATE ${_native_raster_includes})
+  target_compile_definitions(native_3d_raster_test PRIVATE NDS_BUILD_VIDEO_SAVESTATE_TEST=1)
+  add_test(NAME native_3d_raster_test COMMAND native_3d_raster_test)
+  # Exercise the build-selected production bridge, not just the standalone
+  # geometry service or the reference-only video fixture.
+  add_executable(native_3d_bridge_test tests/native_3d_bridge_test.cpp
+      src/native_3d.cpp src/native_3d_raster.cpp ${_native_raster_fixture})
+  target_include_directories(native_3d_bridge_test PRIVATE ${_native_raster_includes})
+  target_compile_definitions(native_3d_bridge_test PRIVATE
+      NDS_BUILD_VIDEO_SAVESTATE_TEST=1 NDS_NATIVE_3D=1)
+  add_test(NAME native_3d_bridge_test COMMAND native_3d_bridge_test)
+  set_tests_properties(native_3d_bridge_test PROPERTIES TIMEOUT 20)
 
   # AUXSPI backup-chip protocol: pins the write-enable latch's lifetime across
   # chip-select transfers, which is what silently dropped every cartridge save.

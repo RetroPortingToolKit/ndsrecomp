@@ -20,6 +20,9 @@
 
 #include "state.h"
 #include "scheduler.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -46,8 +49,15 @@ constexpr uint32_t kSectionVram = 0x4D415256u; // VRAM
 constexpr uint32_t kSectionGp2d = 0x44325047u; // GP2D
 constexpr uint32_t kSectionGp3d = 0x44335047u; // GP3D
 constexpr uint32_t kSectionSpu = 0x20555053u;  // SPU
+#if defined(NDS_OFFLINE_ARM7)
+constexpr uint32_t kSectionOff7 = 0x3746464fu; // OFF7
+#endif
 constexpr uint32_t kSectionVersion = 1u;
+#if defined(NDS_OFFLINE_ARM7)
+constexpr uint32_t kRequiredSections = 12u;
+#else
 constexpr uint32_t kRequiredSections = 11u;
+#endif
 
 struct Section {
     uint32_t tag = 0;
@@ -75,6 +85,9 @@ struct CoreState {
     NdsGpu2dSaveState gpu2d{};
     NdsGpu3dSaveState gpu3d{};
     NdsSpuSaveState spu{};
+#if defined(NDS_OFFLINE_ARM7)
+    std::vector<uint8_t> offline_arm7;
+#endif
 };
 
 std::atomic_flag g_transaction_active = ATOMIC_FLAG_INIT;
@@ -857,6 +870,7 @@ bool decode_gpu2d(const std::vector<uint8_t>& payload,
 std::vector<uint8_t> encode_gpu3d(const NdsGpu3dSaveState& state) {
     std::vector<uint8_t> out;
     put_vec8(out, state.device);
+    put_vec8(out, state.native_geometry);
     put_u64(out, state.arm9_timestamp);
     return out;
 }
@@ -866,6 +880,7 @@ bool decode_gpu3d(const std::vector<uint8_t>& payload,
     size_t pos = 0;
     *state = NdsGpu3dSaveState{};
     return read_vec8(payload, pos, &state->device) &&
+        read_vec8(payload, pos, &state->native_geometry) &&
         read_u64(payload, pos, &state->arm9_timestamp) &&
         pos == payload.size();
 }
@@ -986,7 +1001,11 @@ bool known_section_tag(uint32_t tag) {
         tag == kSectionMemr || tag == kSectionCp15 ||
         tag == kSectionRtim || tag == kSectionIocr || tag == kSectionIopf ||
         tag == kSectionVram || tag == kSectionGp2d || tag == kSectionGp3d ||
-        tag == kSectionSpu;
+        tag == kSectionSpu
+#if defined(NDS_OFFLINE_ARM7)
+        || tag == kSectionOff7
+#endif
+        ;
 }
 
 bool atomic_write_file(const std::string& path,
@@ -1245,6 +1264,9 @@ bool export_core_state(CoreState* out, std::string* error) {
             *error = "failed to export device savestate sections";
         return false;
     }
+#if defined(NDS_OFFLINE_ARM7)
+    if (!nds_offline_arm7_snapshot(&out->offline_arm7, error)) return false;
+#endif
     return true;
 }
 
@@ -1260,6 +1282,9 @@ bool import_core_state(const CoreState& state, std::string* error) {
         !gpu3d_savestate_import(state.gpu3d, error) ||
         !scheduler_savestate_import(state.scheduler, error))
         return false;
+#if defined(NDS_OFFLINE_ARM7)
+    if (!nds_offline_arm7_import(state.offline_arm7, error)) return false;
+#endif
     bus_fast_refresh();
     runtime_savestate_invalidate_host_caches();
     return true;
@@ -1310,6 +1335,9 @@ bool validate_core_state(const CoreState& state, std::string* error) {
         !gpu3d_savestate_validate(state.gpu3d, error) ||
         !spu_savestate_validate(state.spu, error))
         return false;
+#if defined(NDS_OFFLINE_ARM7)
+    if (!nds_offline_arm7_validate(state.offline_arm7, error)) return false;
+#endif
     const uint64_t now = state.scheduler.system_timestamp;
     auto pending_not_in_past = [&](uint64_t deadline) {
         return deadline == UINT64_MAX || deadline >= now ||
@@ -1395,6 +1423,9 @@ bool publish_core(const std::string& path, const NdsSavestateIdentity& identity,
                         encode_gpu3d(core.gpu3d), error) ||
         !append_section(sections, kSectionSpu, encode_spu(core.spu), error))
         return false;
+#if defined(NDS_OFFLINE_ARM7)
+    if (!append_section(sections, kSectionOff7, core.offline_arm7, error)) return false;
+#endif
 
     return atomic_write_file(path, build_file(sections), error);
 }
@@ -1585,6 +1616,12 @@ bool nds_savestate_load_core(const std::string& path,
         set_error(error, "SPU section is missing or corrupt");
         return false;
     }
+#if defined(NDS_OFFLINE_ARM7)
+    if (!find_section(sections, kSectionOff7, &loaded.offline_arm7)) {
+        set_error(error, "native ARM7 service section is missing");
+        return false;
+    }
+#endif
     // Historical mutable flash is session-local after load. This override is
     // applied after decoding so no state file can opt itself back into
     // replacing canonical battery files. Rollback still restores the prior

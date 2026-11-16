@@ -7,15 +7,11 @@
 #include "cartridge_config.h"
 #include "perf_governor.h"
 #include "../../launcher/nds_input_bindings.h"
+#include "screen_layout.h"
 
 // Run the native, human-facing firmware preview. The emulation remains on the
 // same scheduler/device path used by the deterministic debug verifier; SDL is
 // only the host presentation and input/audio transport.
-enum class NdsScreenLayout : uint8_t {
-    Stacked,
-    Separate,
-};
-
 enum class NdsFullscreenMode : uint8_t {
     Off,
     Borderless,
@@ -195,7 +191,12 @@ struct NdsFrontendOptions {
     // title-owned setting in this config is rejected for any other ROM.
     std::string expected_rom_sha1;
     NdsScreenLayout screen_layout = NdsScreenLayout::Stacked;
+    NdsPipCorner pip_corner = NdsPipCorner::BottomRight;
+    NdsPipMainScreen pip_main_screen = NdsPipMainScreen::Top;
+    bool pip_allow_swap = true;
     NdsFullscreenMode fullscreen = NdsFullscreenMode::Off;
+    // Keep SDL/events/debug/presentation live without retiring guest work.
+    bool start_paused = false;
     // Zero preserves the standalone runner's historical 2x sizing. Title
     // launchers can request 1..8x with display-DPI-aware desktop fitting.
     uint8_t window_scale = 0;
@@ -388,6 +389,11 @@ bool nds_parse_network_backend(const std::string& value, std::string* out);
 bool nds_parse_local_wireless_base_port(const std::string& value,
                                         uint16_t* out);
 const char* nds_screen_layout_name(NdsScreenLayout value);
+bool nds_parse_pip_corner(const std::string&, NdsPipCorner*);
+bool nds_parse_pip_main_screen(const std::string&, NdsPipMainScreen*);
+const char* nds_pip_corner_name(NdsPipCorner);
+const char* nds_pip_main_screen_name(NdsPipMainScreen);
+bool nds_pip_swap_allowed(const NdsFrontendOptions&);
 const char* nds_fullscreen_mode_name(NdsFullscreenMode value);
 const char* nds_startup_mode_name(NdsStartupMode value);
 const char* nds_boot_mode_name(NdsBootMode value);
@@ -404,6 +410,9 @@ bool nds_frontend_request_exit();
 // No window capture or extra per-frame copy; unavailable when the menu is shut.
 bool nds_frontend_read_runtime_menu(std::vector<uint32_t>& pixels,
                                     unsigned* width, unsigned* height);
+// Frontend-owner safe-point control. Unavailable without a live SDL frontend.
+bool nds_frontend_set_paused(bool paused);
+bool nds_frontend_paused();
 
 // Live frontend counters for the play-mode debug surface (`frontend_stats`).
 // Cumulative since frontend start; a client samples twice and derives fps /
@@ -510,6 +519,9 @@ struct NdsFrontendInputDebugState {
     uint32_t bottom_window_id;
     int bottom_content_left;
     int separate;
+    int pip;
+    NdsScreenRect bottom_touch;
+    int canvas_width, canvas_height;
 };
 
 // `shift` sets the Shift modifier on the synthesized event. The savestate

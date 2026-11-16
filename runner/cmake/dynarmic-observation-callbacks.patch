@@ -1,0 +1,651 @@
+diff --git a/src/dynarmic/backend/arm64/emit_arm64_a32.cpp b/src/dynarmic/backend/arm64/emit_arm64_a32.cpp
+index 909dde7..fc72bbf 100644
+--- a/src/dynarmic/backend/arm64/emit_arm64_a32.cpp
++++ b/src/dynarmic/backend/arm64/emit_arm64_a32.cpp
+@@ -22,6 +22,12 @@ namespace Dynarmic::Backend::Arm64 {
+ 
+ using namespace oaknut::util;
+ 
++template<>
++void EmitIR<IR::Opcode::A32CpsrControlWrite>(oaknut::CodeGenerator&, EmitContext&, IR::Inst*) {
++    // This optional opcode is emitted only by the x64-enabled translator.
++    ASSERT_FALSE("x64-only CPSR control hook reached ARM64 lowering");
++}
++
+ oaknut::Label EmitA32Cond(oaknut::CodeGenerator& code, EmitContext&, IR::Cond cond) {
+     oaknut::Label pass;
+     // TODO: Flags in host flags
+diff --git a/src/dynarmic/backend/riscv64/emit_riscv64_a32.cpp b/src/dynarmic/backend/riscv64/emit_riscv64_a32.cpp
+index 95a11be..4467b46 100644
+--- a/src/dynarmic/backend/riscv64/emit_riscv64_a32.cpp
++++ b/src/dynarmic/backend/riscv64/emit_riscv64_a32.cpp
+@@ -17,6 +17,11 @@
+ 
+ namespace Dynarmic::Backend::RV64 {
+ 
++template<>
++void EmitIR<IR::Opcode::A32CpsrControlWrite>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
++    ASSERT_FALSE("x64-only CPSR control hook reached RV64 lowering");
++}
++
+ void EmitA32Cond(biscuit::Assembler& as, EmitContext&, IR::Cond cond, biscuit::Label* label) {
+     as.LWU(Xscratch0, offsetof(A32JitState, cpsr_nzcv), Xstate);
+     as.SRLIW(Xscratch0, Xscratch0, 28);
+diff --git a/src/dynarmic/backend/x64/a32_emit_x64.cpp b/src/dynarmic/backend/x64/a32_emit_x64.cpp
+index fc8e8ba..1d4036a 100644
+--- a/src/dynarmic/backend/x64/a32_emit_x64.cpp
++++ b/src/dynarmic/backend/x64/a32_emit_x64.cpp
+@@ -426,6 +426,46 @@ void A32EmitX64::EmitA32GetCpsr(A32EmitContext& ctx, IR::Inst* inst) {
+     ctx.reg_alloc.DefineValue(inst, result);
+ }
+ 
++static u32 CpsrControlWrite(A32JitState* state, A32::UserCallbacks* callbacks, u32 pc, u32 value) {
++    const u32 current = state->Cpsr();
++    const auto action = callbacks->CpsrControlWrite(pc, current, value);
++    const bool privileged = (current & 31u) != 0x10u;
++    const bool same_state = ((current ^ value) & 0x3Fu) == 0;
++    if (!privileged || !same_state || action == A32::CpsrControlWriteResult::Unsupported) {
++        state->Reg[15] = pc;
++        state->halt_reason |= static_cast<u32>(HaltReason::UserDefined1);
++        callbacks->InterpreterFallback(pc, 1);
++        return static_cast<u32>(A32::CpsrControlWriteResult::Unsupported);
++    }
++    // The control byte alone is written. NZCVQ, GE, E/T and all other
++    // storage remain authoritative, including a preceding native flag write.
++    state->cpsr_jaifm = (state->cpsr_jaifm & ~0xC0u) | (value & 0xC0u);
++    if (action == A32::CpsrControlWriteResult::Observe)
++        state->halt_reason |= static_cast<u32>(HaltReason::UserDefined1);
++    return static_cast<u32>(action);
++}
++
++void A32EmitX64::EmitA32CpsrControlWrite(A32EmitContext& ctx, IR::Inst* inst) {
++    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
++    const u32 pc = args[0].GetImmediateU32();
++    ctx.reg_alloc.HostCall(nullptr, {}, {}, args[0], args[1]);
++    code.mov(code.ABI_PARAM1, r15);
++    code.mov(code.ABI_PARAM2, reinterpret_cast<u64>(conf.callbacks));
++    code.CallFunction(CpsrControlWrite);
++    Xbyak::Label retired;
++    code.cmp(code.ABI_RETURN.cvt32(), static_cast<u32>(A32::CpsrControlWriteResult::Unsupported));
++    code.jne(retired);
++    // Failed admission has not retired this MSR. The ordinary block epilogue
++    // still charges the block, so refund precisely this last instruction.
++    if (conf.enable_cycle_counting) {
++        const auto word = conf.callbacks->MemoryReadCode(pc);
++        const u64 ticks = conf.callbacks->GetTicksForCode(false, pc, word.value_or(0));
++        ASSERT(ticks <= 0x7FFFFFFFu);
++        code.add(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], u32(ticks));
++    }
++    code.L(retired);
++}
++
+ void A32EmitX64::EmitA32SetCpsr(A32EmitContext& ctx, IR::Inst* inst) {
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+ 
+diff --git a/src/dynarmic/backend/x64/a32_emit_x64.h b/src/dynarmic/backend/x64/a32_emit_x64.h
+index 3706b30..1cfc183 100644
+--- a/src/dynarmic/backend/x64/a32_emit_x64.h
++++ b/src/dynarmic/backend/x64/a32_emit_x64.h
+@@ -76,6 +76,9 @@ protected:
+ 
+     std::map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
+     std::map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
++    decltype(read_fallbacks) timed_read_fallbacks;
++    decltype(write_fallbacks) timed_write_fallbacks;
++    void EmitTimedMemoryPrelude(A32EmitContext& ctx, IR::Inst* inst, const Xbyak::Reg64& address, Xbyak::Label& untimed);
+     std::map<std::tuple<bool, size_t, int, int>, void (*)()> exclusive_write_fallbacks;
+     void GenFastmemFallbacks();
+ 
+diff --git a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp b/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
+index f291948..d40bdb5 100644
+--- a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
++++ b/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
+@@ -19,6 +19,7 @@
+ #include "dynarmic/backend/x64/emit_x64_memory.h"
+ #include "dynarmic/backend/x64/exclusive_monitor_friend.h"
+ #include "dynarmic/backend/x64/perf_map.h"
++#include "dynarmic/backend/x64/stack_layout.h"
+ #include "dynarmic/common/x64_disassemble.h"
+ #include "dynarmic/interface/exclusive_monitor.h"
+ 
+@@ -26,6 +27,52 @@ namespace Dynarmic::Backend::X64 {
+ 
+ using namespace Xbyak::util;
+ 
++static void SynchronizeMemoryTicks(A32::UserCallbacks* callbacks, A32JitState* state) {
++    auto& stack = *state->memory_callback_stack;
++    const s64 prefix = static_cast<s64>(state->memory_callback_prefix);
++    stack.cycles_remaining -= prefix;
++    callbacks->AddTicks(static_cast<u64>(stack.cycles_to_run - stack.cycles_remaining));
++    const u64 remaining = callbacks->GetTicksRemaining();
++    stack.cycles_to_run = static_cast<s64>(remaining);
++    stack.cycles_remaining = static_cast<s64>(remaining) + prefix;
++}
++
++template<auto callback>
++static auto TimedMemoryRead(A32::UserCallbacks* callbacks, u32 address, A32JitState* state) {
++    SynchronizeMemoryTicks(callbacks, state);
++    const auto value = (callbacks->*callback)(address);
++    SynchronizeMemoryTicks(callbacks, state);
++    return value;
++}
++
++template<typename T, auto callback>
++static void TimedMemoryWrite(A32::UserCallbacks* callbacks, u32 address, T value, A32JitState* state) {
++    SynchronizeMemoryTicks(callbacks, state);
++    (callbacks->*callback)(address, value);
++    SynchronizeMemoryTicks(callbacks, state);
++}
++
++void A32EmitX64::EmitTimedMemoryPrelude(A32EmitContext& ctx, IR::Inst* inst, const Xbyak::Reg64& address, Xbyak::Label& untimed) {
++    const u32 mask = conf.memory_tick_address_mask;
++    const u32 match = conf.memory_tick_address_value;
++    ASSERT((match & mask) == match);
++    const u32 inverse = ~mask;
++    if ((inverse & (inverse + 1u)) == 0) {
++        // Upper contiguous masks need no scratch register or spill at all.
++        if (match != 0) { code.cmp(address.cvt32(), match); code.jb(untimed, code.T_NEAR); }
++        if ((match | inverse) != 0xFFFFFFFFu) { code.cmp(address.cvt32(), match | inverse); code.ja(untimed, code.T_NEAR); }
++    } else {
++        code.push(rax); code.mov(eax, address.cvt32()); code.and_(eax, mask); code.cmp(eax, match); code.pop(rax); code.jne(untimed, code.T_NEAR);
++    }
++    const u64 prefix = conf.memory_access_tick_prefix(ctx.block.Location().Value(), inst->GetArg(0).GetU64());
++    ASSERT(prefix <= 0x7FFFFFFFu);
++    code.mov(qword[r15 + offsetof(A32JitState, memory_callback_prefix)], static_cast<u32>(prefix));
++    code.push(rax);
++    code.lea(rax, ptr[rsp + sizeof(u64) + ABI_SHADOW_SPACE]);
++    code.mov(qword[r15 + offsetof(A32JitState, memory_callback_stack)], rax);
++    code.pop(rax);
++}
++
+ void A32EmitX64::GenFastmemFallbacks() {
+     const std::initializer_list<int> idxes{0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
+     const std::array<std::pair<size_t, ArgCallback>, 4> read_callbacks{{
+@@ -40,6 +87,18 @@ void A32EmitX64::GenFastmemFallbacks() {
+         {32, Devirtualize<&A32::UserCallbacks::MemoryWrite32>(conf.callbacks)},
+         {64, Devirtualize<&A32::UserCallbacks::MemoryWrite64>(conf.callbacks)},
+     }};
++    const std::map<size_t, ArgCallback> timed_reads{
++        {8, {TimedMemoryRead<&A32::UserCallbacks::MemoryRead8>, reinterpret_cast<u64>(conf.callbacks)}},
++        {16, {TimedMemoryRead<&A32::UserCallbacks::MemoryRead16>, reinterpret_cast<u64>(conf.callbacks)}},
++        {32, {TimedMemoryRead<&A32::UserCallbacks::MemoryRead32>, reinterpret_cast<u64>(conf.callbacks)}},
++        {64, {TimedMemoryRead<&A32::UserCallbacks::MemoryRead64>, reinterpret_cast<u64>(conf.callbacks)}},
++    };
++    const std::map<size_t, ArgCallback> timed_writes{
++        {8, {TimedMemoryWrite<u8, &A32::UserCallbacks::MemoryWrite8>, reinterpret_cast<u64>(conf.callbacks)}},
++        {16, {TimedMemoryWrite<u16, &A32::UserCallbacks::MemoryWrite16>, reinterpret_cast<u64>(conf.callbacks)}},
++        {32, {TimedMemoryWrite<u32, &A32::UserCallbacks::MemoryWrite32>, reinterpret_cast<u64>(conf.callbacks)}},
++        {64, {TimedMemoryWrite<u64, &A32::UserCallbacks::MemoryWrite64>, reinterpret_cast<u64>(conf.callbacks)}},
++    };
+     const std::array<std::pair<size_t, ArgCallback>, 4> exclusive_write_callbacks{{
+         {8, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive8>(conf.callbacks)},
+         {16, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive16>(conf.callbacks)},
+@@ -50,9 +109,11 @@ void A32EmitX64::GenFastmemFallbacks() {
+     for (bool ordered : {false, true}) {
+         for (int vaddr_idx : idxes) {
+             for (int value_idx : idxes) {
++                for (bool timed : {false, true}) {
++                    if (timed && (!conf.enable_cycle_counting || !conf.memory_access_tick_prefix)) continue;
+                 for (const auto& [bitsize, callback] : read_callbacks) {
+                     code.align();
+-                    read_fallbacks[std::make_tuple(ordered, bitsize, vaddr_idx, value_idx)] = code.getCurr<void (*)()>();
++                    (timed ? timed_read_fallbacks : read_fallbacks)[std::make_tuple(ordered, bitsize, vaddr_idx, value_idx)] = code.getCurr<void (*)()>();
+                     ABI_PushCallerSaveRegistersAndAdjustStackExcept(code, HostLocRegIdx(value_idx));
+                     if (vaddr_idx != code.ABI_PARAM2.getIdx()) {
+                         code.mov(code.ABI_PARAM2, Xbyak::Reg64{vaddr_idx});
+@@ -60,19 +121,22 @@ void A32EmitX64::GenFastmemFallbacks() {
+                     if (ordered) {
+                         code.mfence();
+                     }
+-                    callback.EmitCall(code);
++                    if (timed) {
++                        code.mov(code.ABI_PARAM3, r15);
++                        timed_reads.at(bitsize).EmitCall(code);
++                    } else callback.EmitCall(code);
+                     if (value_idx != code.ABI_RETURN.getIdx()) {
+                         code.mov(Xbyak::Reg64{value_idx}, code.ABI_RETURN);
+                     }
+                     ABI_PopCallerSaveRegistersAndAdjustStackExcept(code, HostLocRegIdx(value_idx));
+                     code.ZeroExtendFrom(bitsize, Xbyak::Reg64{value_idx});
+                     code.ret();
+-                    PerfMapRegister(read_fallbacks[std::make_tuple(ordered, bitsize, vaddr_idx, value_idx)], code.getCurr(), fmt::format("a32_read_fallback_{}", bitsize));
++                    PerfMapRegister((timed ? timed_read_fallbacks : read_fallbacks)[std::make_tuple(ordered, bitsize, vaddr_idx, value_idx)], code.getCurr(), fmt::format("a32_read_fallback_{}", bitsize));
+                 }
+ 
+                 for (const auto& [bitsize, callback] : write_callbacks) {
+                     code.align();
+-                    write_fallbacks[std::make_tuple(ordered, bitsize, vaddr_idx, value_idx)] = code.getCurr<void (*)()>();
++                    (timed ? timed_write_fallbacks : write_fallbacks)[std::make_tuple(ordered, bitsize, vaddr_idx, value_idx)] = code.getCurr<void (*)()>();
+                     ABI_PushCallerSaveRegistersAndAdjustStack(code);
+                     if (vaddr_idx == code.ABI_PARAM3.getIdx() && value_idx == code.ABI_PARAM2.getIdx()) {
+                         code.xchg(code.ABI_PARAM2, code.ABI_PARAM3);
+@@ -90,13 +154,18 @@ void A32EmitX64::GenFastmemFallbacks() {
+                         }
+                     }
+                     code.ZeroExtendFrom(bitsize, code.ABI_PARAM3);
+-                    callback.EmitCall(code);
++                    if (timed) {
++                        code.mov(code.ABI_PARAM4, r15);
++                        timed_writes.at(bitsize).EmitCall(code);
++                    } else callback.EmitCall(code);
+                     if (ordered) {
+                         code.mfence();
+                     }
+                     ABI_PopCallerSaveRegistersAndAdjustStack(code);
+                     code.ret();
+-                    PerfMapRegister(write_fallbacks[std::make_tuple(ordered, bitsize, vaddr_idx, value_idx)], code.getCurr(), fmt::format("a32_write_fallback_{}", bitsize));
++                    PerfMapRegister((timed ? timed_write_fallbacks : write_fallbacks)[std::make_tuple(ordered, bitsize, vaddr_idx, value_idx)], code.getCurr(), fmt::format("a32_write_fallback_{}", bitsize));
++                }
++
+                 }
+ 
+                 for (const auto& [bitsize, callback] : exclusive_write_callbacks) {
+@@ -131,9 +200,11 @@ void A32EmitX64::GenFastmemFallbacks() {
+     }
+ }
+ 
++#define NDS_A32_CALLBACK_TIMING 1
+ #define Axx A32
+ #include "dynarmic/backend/x64/emit_x64_memory.cpp.inc"
+ #undef Axx
++#undef NDS_A32_CALLBACK_TIMING
+ 
+ void A32EmitX64::EmitA32ReadMemory8(A32EmitContext& ctx, IR::Inst* inst) {
+     EmitMemoryRead<8, &A32::UserCallbacks::MemoryRead8>(ctx, inst);
+diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
+index 05c093b..6f1b4ca 100644
+--- a/src/dynarmic/backend/x64/a32_interface.cpp
++++ b/src/dynarmic/backend/x64/a32_interface.cpp
+@@ -232,7 +232,7 @@ private:
+         }
+         block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
+ 
+-        IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
++        IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions, conf.enable_native_cpsr_control});
+         Optimization::PolyfillPass(ir_block, polyfill_options);
+         Optimization::NamingPass(ir_block);
+         if (conf.HasOptimization(OptimizationFlag::GetSetElimination) && !conf.check_halt_on_memory_access) {
+diff --git a/src/dynarmic/backend/x64/a32_jitstate.h b/src/dynarmic/backend/x64/a32_jitstate.h
+index cc13abf..855d9aa 100644
+--- a/src/dynarmic/backend/x64/a32_jitstate.h
++++ b/src/dynarmic/backend/x64/a32_jitstate.h
+@@ -12,6 +12,7 @@
+ namespace Dynarmic::Backend::X64 {
+ 
+ class BlockOfCode;
++struct StackLayout;
+ 
+ #ifdef _MSC_VER
+ #    pragma warning(push)
+@@ -41,6 +42,10 @@ struct A32JitState {
+     u32 guest_MXCSR = 0x00001f80;
+     u32 asimd_MXCSR = 0x00009fc0;
+     volatile u32 halt_reason = 0;
++    // Borrowed only during an opted-in synchronous memory callback. Never
++    // serialized, transferred or dereferenced outside the active Run stack.
++    StackLayout* memory_callback_stack = nullptr;
++    u64 memory_callback_prefix = 0;
+ 
+     // Exclusive state
+     u32 exclusive_state = 0;
+diff --git a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+index 75ce187..3e2a606 100644
+--- a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
++++ b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+@@ -73,6 +73,18 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
+             if (ordered) {
+                 code.mfence();
+             }
++#ifdef NDS_A32_CALLBACK_TIMING
++            if (conf.enable_cycle_counting && conf.memory_access_tick_prefix) {
++                Xbyak::Label untimed, done;
++                EmitTimedMemoryPrelude(ctx, inst, code.ABI_PARAM2, untimed);
++                code.mov(code.ABI_PARAM3, r15);
++                ArgCallback{TimedMemoryRead<callback>, reinterpret_cast<u64>(conf.callbacks)}.EmitCall(code);
++                code.jmp(done, code.T_NEAR);
++                code.L(untimed);
++                Devirtualize<callback>(conf.callbacks).EmitCall(code);
++                code.L(done);
++            } else
++#endif
+             Devirtualize<callback>(conf.callbacks).EmitCall(code);
+             code.ZeroExtendFrom(bitsize, code.ABI_RETURN);
+         }
+@@ -126,6 +138,16 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
+ 
+         ctx.deferred_emits.emplace_back([=, this, &ctx] {
+             code.L(*abort);
++#ifdef NDS_A32_CALLBACK_TIMING
++            if (conf.enable_cycle_counting && conf.memory_access_tick_prefix) {
++                Xbyak::Label untimed;
++                EmitTimedMemoryPrelude(ctx, inst, vaddr, untimed);
++                code.call(timed_read_fallbacks.at(std::make_tuple(ordered, bitsize, vaddr.getIdx(), value_idx)));
++                EmitCheckMemoryAbort(ctx, inst, end.get());
++                code.jmp(*end, code.T_NEAR);
++                code.L(untimed);
++            }
++#endif
+             code.call(wrapped_fn);
+             EmitCheckMemoryAbort(ctx, inst, end.get());
+             code.jmp(*end, code.T_NEAR);
+@@ -156,6 +178,18 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
+             code.CallFunction(memory_write_128);
+         } else {
+             ctx.reg_alloc.HostCall(nullptr, {}, args[1], args[2]);
++#ifdef NDS_A32_CALLBACK_TIMING
++            if (conf.enable_cycle_counting && conf.memory_access_tick_prefix) {
++                Xbyak::Label untimed, done;
++                EmitTimedMemoryPrelude(ctx, inst, code.ABI_PARAM2, untimed);
++                code.mov(code.ABI_PARAM4, r15);
++                ArgCallback{TimedMemoryWrite<mcl::unsigned_integer_of_size<bitsize>, callback>, reinterpret_cast<u64>(conf.callbacks)}.EmitCall(code);
++                code.jmp(done, code.T_NEAR);
++                code.L(untimed);
++                Devirtualize<callback>(conf.callbacks).EmitCall(code);
++                code.L(done);
++            } else
++#endif
+             Devirtualize<callback>(conf.callbacks).EmitCall(code);
+         }
+         if (ordered) {
+@@ -213,6 +247,16 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
+ 
+         ctx.deferred_emits.emplace_back([=, this, &ctx] {
+             code.L(*abort);
++#ifdef NDS_A32_CALLBACK_TIMING
++            if (conf.enable_cycle_counting && conf.memory_access_tick_prefix) {
++                Xbyak::Label untimed;
++                EmitTimedMemoryPrelude(ctx, inst, vaddr, untimed);
++                code.call(timed_write_fallbacks.at(std::make_tuple(ordered, bitsize, vaddr.getIdx(), value_idx)));
++                EmitCheckMemoryAbort(ctx, inst, end.get());
++                code.jmp(*end, code.T_NEAR);
++                code.L(untimed);
++            }
++#endif
+             code.call(wrapped_fn);
+             EmitCheckMemoryAbort(ctx, inst, end.get());
+             code.jmp(*end, code.T_NEAR);
+diff --git a/src/dynarmic/frontend/A32/a32_ir_emitter.cpp b/src/dynarmic/frontend/A32/a32_ir_emitter.cpp
+index 343e521..2f3572f 100644
+--- a/src/dynarmic/frontend/A32/a32_ir_emitter.cpp
++++ b/src/dynarmic/frontend/A32/a32_ir_emitter.cpp
+@@ -142,6 +142,10 @@ void IREmitter::SetCpsr(const IR::U32& value) {
+     Inst(Opcode::A32SetCpsr, value);
+ }
+ 
++void IREmitter::CpsrControlWrite(const IR::U32& value) {
++    Inst(Opcode::A32CpsrControlWrite, Imm32(current_location.PC()), value);
++}
++
+ void IREmitter::SetCpsrNZCV(const IR::NZCV& value) {
+     Inst(Opcode::A32SetCpsrNZCV, value);
+ }
+diff --git a/src/dynarmic/frontend/A32/a32_ir_emitter.h b/src/dynarmic/frontend/A32/a32_ir_emitter.h
+index 9fde4f8..6398580 100644
+--- a/src/dynarmic/frontend/A32/a32_ir_emitter.h
++++ b/src/dynarmic/frontend/A32/a32_ir_emitter.h
+@@ -56,6 +56,7 @@ public:
+ 
+     IR::U32 GetCpsr();
+     void SetCpsr(const IR::U32& value);
++    void CpsrControlWrite(const IR::U32& value);
+     void SetCpsrNZCV(const IR::NZCV& value);
+     void SetCpsrNZCVRaw(const IR::U32& value);
+     void SetCpsrNZCVQ(const IR::U32& value);
+diff --git a/src/dynarmic/frontend/A32/translate/a32_translate.h b/src/dynarmic/frontend/A32/translate/a32_translate.h
+index 0f2c3a1..98a5a41 100644
+--- a/src/dynarmic/frontend/A32/translate/a32_translate.h
++++ b/src/dynarmic/frontend/A32/translate/a32_translate.h
+@@ -29,6 +29,7 @@ struct TranslationOptions {
+     /// If this is false, we treat the instruction as a NOP.
+     /// If this is true, we emit an ExceptionRaised instruction.
+     bool hook_hint_instructions = true;
++    bool enable_native_cpsr_control = false;
+ };
+ 
+ /**
+diff --git a/src/dynarmic/frontend/A32/translate/impl/status_register_access.cpp b/src/dynarmic/frontend/A32/translate/impl/status_register_access.cpp
+index 60110df..515ac6b 100644
+--- a/src/dynarmic/frontend/A32/translate/impl/status_register_access.cpp
++++ b/src/dynarmic/frontend/A32/translate/impl/status_register_access.cpp
+@@ -42,6 +42,13 @@ bool TranslatorVisitor::arm_MSR_imm(Cond cond, unsigned mask, int rotate, Imm<8>
+     const bool write_e = mcl::bit::get_bit<1>(mask);
+     const u32 imm32 = ArmExpandImm(rotate, imm8);
+ 
++    if (mask == 1 && options.enable_native_cpsr_control) {
++        ir.BranchWritePC(ir.Imm32(ir.current_location.PC() + 4));
++        ir.CpsrControlWrite(ir.Imm32(imm32));
++        ir.SetTerm(IR::Term::CheckHalt{IR::Term::LinkBlock{ir.current_location.AdvancePC(4)}});
++        return false;
++    }
++
+     if (write_nzcvq) {
+         ir.SetCpsrNZCVQ(ir.Imm32(imm32 & 0xF8000000));
+     }
+@@ -80,6 +87,13 @@ bool TranslatorVisitor::arm_MSR_reg(Cond cond, unsigned mask, Reg n) {
+     const bool write_e = mcl::bit::get_bit<1>(mask);
+     const auto value = ir.GetRegister(n);
+ 
++    if (mask == 1 && options.enable_native_cpsr_control) {
++        ir.BranchWritePC(ir.Imm32(ir.current_location.PC() + 4));
++        ir.CpsrControlWrite(value);
++        ir.SetTerm(IR::Term::CheckHalt{IR::Term::LinkBlock{ir.current_location.AdvancePC(4)}});
++        return false;
++    }
++
+     if (!write_e) {
+         if (write_nzcvq) {
+             ir.SetCpsrNZCVQ(ir.And(value, ir.Imm32(0xF8000000)));
+diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
+index 2779c2a..7a9b1a0 100644
+--- a/src/dynarmic/interface/A32/config.h
++++ b/src/dynarmic/interface/A32/config.h
+@@ -4,6 +4,7 @@
+  */
+ 
+ #pragma once
++#define NDS_OBSERVATION_CALLBACKS_V1 1
+ 
+ #include <array>
+ #include <cstddef>
+@@ -27,6 +28,8 @@ using VAddr = std::uint32_t;
+ 
+ class Coprocessor;
+ 
++enum class CpsrControlWriteResult { Unsupported, Continue, Observe };
++
+ enum class Exception {
+     /// An UndefinedFault occured due to executing instruction with an unallocated encoding
+     UndefinedInstruction,
+@@ -111,6 +114,13 @@ struct UserCallbacks : public TranslateCallbacks {
+ 
+     virtual void InstructionSynchronizationBarrierRaised() {}
+ 
++    // Optional privileged MSR CPSR_c hook. Unsupported requests are handed
++    // to InterpreterFallback before effects. Observe commits I/F and returns
++    // from Run at the next instruction; Continue stays in native dispatch.
++    virtual CpsrControlWriteResult CpsrControlWrite(VAddr, std::uint32_t, std::uint32_t) {
++        return CpsrControlWriteResult::Unsupported;
++    }
++
+     // Timing-related callbacks
+     // ticks ticks have passed
+     virtual void AddTicks(std::uint64_t ticks) = 0;
+@@ -230,6 +240,21 @@ struct UserConfig {
+     /// for exit after every data memory access by the emulated program.
+     bool check_halt_on_memory_access = false;
+ 
++    // NDS_CALLBACK_TICKS_V1: x64 slow-memory callbacks synchronize the exact
++    // current-block prefix before/after access. Empty retains existing code.
++    // Return ticks before this instruction, using location descriptors. The
++    // instruction must retain its normal retirement terminal; this does not
++    // introduce a mid-instruction exit. Direct memory paths are unchanged.
++    std::function<std::uint64_t(std::uint64_t, std::uint64_t)> memory_access_tick_prefix;
++    // Restrict synchronization to matching guest addresses; unmatched slow
++    // RAM callbacks keep their existing callback. Zero mask matches all.
++    std::uint32_t memory_tick_address_mask = 0;
++    std::uint32_t memory_tick_address_value = 0;
++
++    // NDS_CPSR_CONTROL_V1: x64 guarded MSR CPSR_c I/F-only writes. Mode,
++    // execution-state and user-mode changes retain interpreter fallback.
++    bool enable_native_cpsr_control = false;
++
+     /// This option allows you to disable cycle counting. If this is set to false,
+     /// AddTicks and GetTicksRemaining are never called, and no cycle counting is done.
+     bool enable_cycle_counting = true;
+diff --git a/src/dynarmic/ir/microinstruction.cpp b/src/dynarmic/ir/microinstruction.cpp
+index 50af036..d020625 100644
+--- a/src/dynarmic/ir/microinstruction.cpp
++++ b/src/dynarmic/ir/microinstruction.cpp
+@@ -154,6 +154,7 @@ bool Inst::IsMemoryReadOrWrite() const {
+ bool Inst::ReadsFromCPSR() const {
+     switch (op) {
+     case Opcode::A32GetCpsr:
++    case Opcode::A32CpsrControlWrite:
+     case Opcode::A32GetCFlag:
+     case Opcode::A32GetGEFlags:
+     case Opcode::A32UpdateUpperLocationDescriptor:
+@@ -172,6 +173,7 @@ bool Inst::ReadsFromCPSR() const {
+ bool Inst::WritesToCPSR() const {
+     switch (op) {
+     case Opcode::A32SetCpsr:
++    case Opcode::A32CpsrControlWrite:
+     case Opcode::A32SetCpsrNZCVRaw:
+     case Opcode::A32SetCpsrNZCV:
+     case Opcode::A32SetCpsrNZCVQ:
+@@ -509,6 +511,7 @@ bool Inst::CausesCPUException() const {
+     return op == Opcode::Breakpoint
+         || op == Opcode::A32CallSupervisor
+         || op == Opcode::A32ExceptionRaised
++        || op == Opcode::A32CpsrControlWrite
+         || op == Opcode::A64CallSupervisor
+         || op == Opcode::A64ExceptionRaised;
+ }
+diff --git a/src/dynarmic/ir/opcodes.inc b/src/dynarmic/ir/opcodes.inc
+index dd060e0..79137cc 100644
+--- a/src/dynarmic/ir/opcodes.inc
++++ b/src/dynarmic/ir/opcodes.inc
+@@ -18,6 +18,7 @@ A32OPC(SetExtendedRegister32,                               Void,           A32E
+ A32OPC(SetExtendedRegister64,                               Void,           A32ExtReg,      U64                                             )
+ A32OPC(SetVector,                                           Void,           A32ExtReg,      U128                                            )
+ A32OPC(GetCpsr,                                             U32,                                                                            )
++A32OPC(CpsrControlWrite,                                    Void,           U32,            U32                                              )
+ A32OPC(SetCpsr,                                             Void,           U32                                                             )
+ A32OPC(SetCpsrNZCV,                                         Void,           NZCV                                                            )
+ A32OPC(SetCpsrNZCVRaw,                                      Void,           U32                                                             )
+diff --git a/tests/A32/test_svc.cpp b/tests/A32/test_svc.cpp
+index bec02b7..575a74d 100644
+--- a/tests/A32/test_svc.cpp
++++ b/tests/A32/test_svc.cpp
+@@ -8,6 +8,11 @@
+ #include <catch2/catch_test_macros.hpp>
+ 
+ #include "./testenv.h"
++#include "dynarmic/frontend/A32/a32_ir_emitter.h"
++#include "dynarmic/frontend/A32/a32_location_descriptor.h"
++#include <algorithm>
++#include <limits>
++#include <memory>
+ 
+ using namespace Dynarmic;
+ 
+@@ -37,3 +42,100 @@ TEST_CASE("arm: svc", "[arm][A32]") {
+     REQUIRE(jit.Regs()[15] == 0x00000008);
+     REQUIRE(jit.Regs()[0] == 41073);
+ }
++
++#if defined(__x86_64__) || defined(_M_X64)
++namespace {
++class ObservationEnv : public ArmTestEnv {
++public:
++    u64 elapsed{},deadline=std::numeric_limits<u64>::max();
++    std::vector<u64> observed,charges;
++    std::vector<u32> written;
++    A32::CpsrControlWriteResult action=A32::CpsrControlWriteResult::Continue;
++    unsigned controls{},fallbacks{};
++    u32 fallback_pc{},seen_cpsr{};
++    bool PreCodeReadHook(bool,u32 pc,A32::IREmitter& ir) override {
++        const u32 start=A32::LocationDescriptor{ir.block.Location()}.PC();
++        if(pc==12&&pc!=start){
++            ir.BranchWritePC(ir.Imm32(pc));
++            ir.SetTerm(IR::Term::CheckHalt{IR::Term::LinkBlock{ir.current_location}});
++            return false;
++        }
++        return true;
++    }
++    u32 MemoryRead32(u32 address) override {
++        observed.push_back(elapsed);
++        if((address&0xFF000000u)==0x04000000u)deadline=3;
++        return address^0x13579BDFu;
++    }
++    void MemoryWrite32(u32 address,u32 value) override {
++        observed.push_back(elapsed);written.push_back(value);
++        if((address&0xFF000000u)==0x04000000u)deadline=3;
++    }
++    void AddTicks(u64 ticks) override {charges.push_back(ticks);elapsed+=ticks;ticks_left=ticks<ticks_left?ticks_left-ticks:0;}
++    u64 GetTicksRemaining() override {return std::min(ticks_left,deadline>elapsed?deadline-elapsed:0);}
++    void InterpreterFallback(u32 pc,size_t n) override {fallback_pc=pc;fallbacks+=unsigned(n);}
++    A32::CpsrControlWriteResult CpsrControlWrite(u32,u32 current,u32) override {++controls;seen_cpsr=current;return action;}
++};
++u64 prefix(u64 block,u64 access){
++    const A32::LocationDescriptor b{IR::LocationDescriptor{block}},a{IR::LocationDescriptor{access}};
++    return (a.PC()-b.PC())/(b.TFlag()?2u:4u);
++}
++}
++
++TEST_CASE("arm: observation callback ticks and repeated LDM prefix", "[arm][A32][nds-observation]") {
++    for(bool pages:{false,true}) for(bool write:{false,true}) {
++        ObservationEnv env;
++        env.code_mem={0xE3A00001,0xE2800001,write?0xE881000Cu:0xE891000Cu,0xEAFFFFFE}; // MOV; ADD; LDM/STM r1,{r2,r3}
++        A32::UserConfig cfg{&env};cfg.arch_version=A32::ArchVersion::v5TE;
++        cfg.memory_access_tick_prefix=prefix;
++        cfg.memory_tick_address_mask=0xFF000000u;cfg.memory_tick_address_value=0x04000000u;
++        auto table=std::make_unique<std::array<u8*,A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>>();table->fill(nullptr);
++        if(pages){cfg.page_table=table.get();cfg.page_table_read_only=true;}
++        A32::Jit jit{cfg};jit.SetCpsr(0xD3);jit.Regs()[1]=0x04000280;jit.Regs()[2]=0x12345678;jit.Regs()[3]=0x9ABCDEF0;env.ticks_left=100;
++        jit.Run();
++        REQUIRE(env.observed==std::vector<u64>{2,2});
++        REQUIRE(env.elapsed==3);REQUIRE(jit.Regs()[15]==12);
++        REQUIRE(jit.Regs()[0]==2);
++        if(write)REQUIRE(env.written==std::vector<u32>{0x12345678,0x9ABCDEF0});
++        else {REQUIRE(jit.Regs()[2]==(0x04000280u^0x13579BDFu));REQUIRE(jit.Regs()[3]==(0x04000284u^0x13579BDFu));}
++
++        // Nonmatching callback RAM retains the untimed callback path.
++        env.observed.clear();env.charges.clear();env.elapsed=0;env.deadline=std::numeric_limits<u64>::max();env.ticks_left=3;
++        jit.Regs()[15]=0;jit.Regs()[1]=0x02000280;jit.Run();
++        REQUIRE(env.observed==std::vector<u64>{0,0});
++        REQUIRE(env.charges==std::vector<u64>{3});REQUIRE(env.elapsed==3);
++        if(pages&&!write){
++            std::array<u8,4096> ram{};const u32 values[]={0x31415926,0x53589793};std::memcpy(ram.data()+0x280,values,sizeof(values));(*table)[0x02000]=ram.data();
++            env.observed.clear();env.charges.clear();env.elapsed=0;env.ticks_left=3;jit.Regs()[15]=0;jit.Run();
++            REQUIRE(env.observed.empty());REQUIRE(env.charges==std::vector<u64>{3});
++            REQUIRE(jit.Regs()[2]==values[0]);REQUIRE(jit.Regs()[3]==values[1]);
++        }
++    }
++}
++
++TEST_CASE("arm: guarded CPSR IRQ control retires or falls back once", "[arm][A32][nds-observation]") {
++    constexpr u32 original=0xA80001D3u,unmasked=0xA8000153u;
++    for(unsigned scenario=0;scenario<6;++scenario) {
++        ObservationEnv env;
++        env.code_mem={0xE10F2000,scenario==4?0xE321F053u:scenario==5?0x0121F000u:0xE121F000u,0xE10F3000,0xEAFFFFFE};
++        A32::UserConfig cfg{&env};cfg.arch_version=A32::ArchVersion::v5TE;cfg.enable_native_cpsr_control=true;
++        A32::Jit jit{cfg};jit.SetCpsr(original);jit.Regs()[0]=scenario==2?0x52u:scenario==3?0x73u:0x53u;jit.Regs()[3]=0x777u;
++        env.action=scenario==1?A32::CpsrControlWriteResult::Observe:A32::CpsrControlWriteResult::Continue;
++        env.ticks_left=scenario==1?10:3;jit.Run();
++        REQUIRE(jit.Regs()[2]==original);
++        if(scenario==2||scenario==3){
++            REQUIRE(env.fallbacks==1);REQUIRE(env.fallback_pc==4);REQUIRE(jit.Regs()[15]==4);
++            REQUIRE(jit.Cpsr()==original);REQUIRE(env.elapsed==1);REQUIRE(jit.Regs()[3]==0x777u);
++        }else if(scenario==1){
++            REQUIRE(env.fallbacks==0);REQUIRE(jit.Regs()[15]==8);REQUIRE(jit.Cpsr()==unmasked);
++            REQUIRE(env.elapsed==2);REQUIRE(jit.Regs()[3]==0x777u);
++        }else{
++            REQUIRE(env.fallbacks==0);REQUIRE(jit.Regs()[15]==12);REQUIRE(env.elapsed==3);
++            REQUIRE(jit.Cpsr()==(scenario==5?original:unmasked));
++            REQUIRE(jit.Regs()[3]==(scenario==5?original:unmasked));
++            REQUIRE(env.controls==(scenario==5?0u:1u));
++        }
++        if(env.controls)REQUIRE(env.seen_cpsr==original);
++    }
++}
++#endif

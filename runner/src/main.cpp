@@ -21,6 +21,12 @@
 #include "arm9_native.h"
 #include "scheduler.h"
 #include "direct_boot.h"
+#if defined(NDS_WHOLE_ASSETS)
+#include "whole_asset_service.h"
+#endif
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 #include "generated_firmware.h"
 #include "firmware_state.h"
 #include "firmware_user_settings.h"
@@ -67,6 +73,8 @@
 #include "title_patches.h"
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
 #include "melonds_compute/ComputeHost.h"
+#include "melonds_compute/CpuSurvivorHost.h"
+#include "gpu3d_survivors.h"
 #endif
 
 // Generated per-CPU dispatch tables (C linkage).
@@ -399,6 +407,7 @@ int main(int argc, char** argv) {
     std::string rom_path;
     std::string config_path = "game.toml";
     std::string cli_screen_layout;
+    std::string cli_pip_corner, cli_pip_main;
     std::string cli_fullscreen;
     std::string cli_adaptive_screens;
     std::string cli_widescreen_width;
@@ -535,8 +544,14 @@ int main(int argc, char** argv) {
         } else if (a == "--config" && i + 1 < argc) {
             config_path = argv[++i];
             config_explicit = true;
+        } else if (a == "--start-paused") {
+            frontend_options.start_paused = true;
         } else if (a == "--screen-layout" && i + 1 < argc) {
             cli_screen_layout = argv[++i];
+        } else if (a == "--pip-corner" && i + 1 < argc) {
+            cli_pip_corner = argv[++i];
+        } else if (a == "--pip-main-screen" && i + 1 < argc) {
+            cli_pip_main = argv[++i];
         } else if (a == "--window-scale" && i + 1 < argc) {
             const std::string value = argv[++i];
             if (value.size() != 1 || value[0] < '1' || value[0] > '8') {
@@ -709,8 +724,10 @@ int main(int argc, char** argv) {
                 "[--firmware-path firmware.bin] "
                 "[--firmware-state-path mutable-firmware.bin] "
                 "[--config game.toml] "
-                "[--screen-layout stacked|separate] "
-                "[--fullscreen off|borderless|exclusive] "
+                "[--screen-layout stacked|separate|pip] "
+                "[--pip-corner top-left|top-right|bottom-left|bottom-right] "
+                "[--pip-main-screen top|bottom] "
+                "[--fullscreen off|borderless|exclusive] [--start-paused] "
                 "[--adaptive-widescreen none|top|bottom|both] "
                 "[--widescreen-width even:256..448] "
                 "[--supersampling 1|2|3|4] "
@@ -819,7 +836,7 @@ int main(int argc, char** argv) {
                                      &frontend_options.screen_layout)) {
             std::fprintf(stderr,
                          "invalid NDS_SCREEN_LAYOUT "
-                         "(expected stacked or separate)\n");
+                         "(expected stacked, separate, or pip)\n");
             return 2;
         }
     }
@@ -959,7 +976,12 @@ int main(int argc, char** argv) {
                                  &frontend_options.screen_layout)) {
         std::fprintf(stderr,
                      "invalid --screen-layout "
-                     "(expected stacked or separate)\n");
+                     "(expected stacked, separate, or pip)\n");
+        return 2;
+    }
+    if ((!cli_pip_corner.empty() && !nds_parse_pip_corner(cli_pip_corner, &frontend_options.pip_corner)) ||
+        (!cli_pip_main.empty() && !nds_parse_pip_main_screen(cli_pip_main, &frontend_options.pip_main_screen))) {
+        std::fprintf(stderr, "invalid PiP corner or main screen\n");
         return 2;
     }
     if (!cli_adaptive_screens.empty() &&
@@ -1768,6 +1790,25 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "refusing to start: %s\n", execution_error.c_str());
         return 1;
     }
+#if defined(NDS_OFFLINE_ARM7)
+    const char* offline_setting=std::getenv("NDS_OFFLINE_ARM7");
+    const bool offline_requested=nds_performance_execution() &&
+        (!offline_setting || std::strcmp(offline_setting,"0")!=0) &&
+        !resolved_network.enabled && !resolved_network.wfc_enabled &&
+        !resolved_network.local_wireless_enabled &&
+        resolved_network.backend != NdsNetBackendKind::Replay;
+    if (!nds_offline_arm7_configure(rom_sha1,offline_requested,&execution_error) && offline_requested) {
+        std::fprintf(stderr, "refusing to start offline services: %s\n", execution_error.c_str());
+        return 1;
+    }
+#endif
+#if defined(NDS_WHOLE_ASSETS)
+    const char* asset_setting=std::getenv("NDS_WHOLE_ASSETS");
+    if(!nds_assets::configure(rom_sha1.c_str(),offline_requested&&
+       (!asset_setting||std::strcmp(asset_setting,"0")!=0))){
+        std::fprintf(stderr,"refusing to start whole asset services for this image\n");return 1;
+    }
+#endif
     const std::string execution_build_id = std::string(NDS_RUNNER_BUILD_ID) +
         "-" + nds_execution_model_identity();
     std::fprintf(stderr, "[execution] %s\n", nds_execution_model_identity());
@@ -1827,6 +1868,11 @@ int main(int argc, char** argv) {
                 : execution_build_id;
         frontend_options.savestate_rom_sha1 = rom_sha1;
     }
+    if (!nds_pip_swap_allowed(frontend_options) &&
+        frontend_options.pip_main_screen != NdsPipMainScreen::Top) {
+        std::fprintf(stderr, "This title keeps the top screen as the main PiP screen.\n");
+        return 2;
+    }
     nds_diagnostics_set_versions(NDS_FRAMEWORK_VERSION, NDS_GAME_VERSION);
     std::string rom_game_code;
     uint32_t rom_revision = 0;
@@ -1846,6 +1892,10 @@ int main(int argc, char** argv) {
     // with no flags produces one. Prefer the save's directory (the launcher
     // keeps it next to the ROM), then the ROM's, then the working directory.
     std::string coverage_manifest_path;
+    // Live compilation also consumes resident snapshots when disk dumps are
+    // disabled. Their ROM/build identity is independent of diagnostic output.
+    coverage_manifest_set_identity(rom_sha1.c_str(), rom_name.c_str(),
+                                   NDS_RUNNER_BUILD_ID);
     if (!coverage_manifest_disabled) {
         if (!cli_coverage_manifest.empty()) {
             coverage_manifest_path = cli_coverage_manifest;
@@ -1871,8 +1921,6 @@ int main(int argc, char** argv) {
             coverage_manifest_set_output(
                 base.empty() ? "nds" : base.string().c_str());
         }
-        coverage_manifest_set_identity(rom_sha1.c_str(), rom_name.c_str(),
-                                       NDS_RUNNER_BUILD_ID);
     }
     // Written from every exit path below. Failure is reported and never
     // changes the process's exit status: losing a diagnostic dump must not
@@ -2124,7 +2172,7 @@ int main(int argc, char** argv) {
         bus_load_arm7_bios(a7.data(), (uint32_t)a7.size());
         cp15_reset();
         nds_io_reset();
-        nds_io_load_firmware(fw.data(), (uint32_t)fw.size());
+        nds_io_reset_firmware(fw.data(), (uint32_t)fw.size());
         if (!rom.empty() && !nds_io_load_cartridge(
                 rom.data(), static_cast<uint32_t>(rom.size()),
                 a7.data(), static_cast<uint32_t>(a7.size()))) {
@@ -2272,6 +2320,9 @@ int main(int argc, char** argv) {
         // Reset both cores: SVC mode, IRQ+FIQ masked, ARM state, reset vector.
         const uint32_t reset_cpsr = 0x13u | CPSR_I_BIT | CPSR_F_BIT;
         scheduler_init();
+#if defined(NDS_OFFLINE_ARM7)
+        nds_offline_arm7_reset();
+#endif
         scheduler_reset_cpu(0, 0xFFFF0000u, reset_cpsr);  // ARM9
         scheduler_reset_cpu(1, 0x00000000u, reset_cpsr);  // ARM7
 
@@ -2304,8 +2355,8 @@ int main(int argc, char** argv) {
             inputs.rom_size = static_cast<uint32_t>(rom.size());
             inputs.secure_area =
                 has_secure_area ? secure_area.data() : nullptr;
-            inputs.firmware = fw.data();
-            inputs.firmware_size = static_cast<uint32_t>(fw.size());
+            inputs.firmware = nds_firmware_bytes();
+            inputs.firmware_size = nds_firmware_size();
             inputs.cart_chip_id = nds_cart_chip_id();
             // FreeBIOS has no Nintendo logo, so direct boot copies the
             // cartridge's into the ARM9 BIOS image (DS<->GBA comm reads it).
@@ -2326,6 +2377,22 @@ int main(int argc, char** argv) {
         nds_gpu2d_set_adaptive_workers(gpu2d_adaptive_workers);
     };
     boot();
+    auto reset_machine = [&]() {
+#if defined(NDS_OFFLINE_ARM7)
+        if (nds_offline_arm7_reset_pending()) {
+            // Retail OS_ResetSystem writes this caller parameter before its
+            // PXI reset notification. Warm reboot returns to the cartridge.
+            const uint32_t parameter=bus_device_read32(9,0x027ffc20u);
+            const auto mode=frontend_options.boot_mode;
+            frontend_options.boot_mode=NdsBootMode::Direct;
+            boot();
+            frontend_options.boot_mode=mode;
+            bus_device_write32(9,0x027ffc20u,parameter,0);
+            return;
+        }
+#endif
+        boot();
+    };
 
     if (!interactive) {
         // The SDL frontend normally selects the raster width. Serve/headless
@@ -2369,6 +2436,14 @@ int main(int argc, char** argv) {
     if (!interactive)
         nds_texture_upscale_set_factor(frontend_options.texture_upscale);
     if (!interactive && !nds_compute_host_start()) return 1;
+    if (!interactive && nds_survivor_host_requested() && nds_compute_host_active()) {
+        const auto adaptive=frontend_options.adaptive_screens&frontend_options.adaptive_supported;
+        nds_gpu2d_set_survivor_widths(
+            (adaptive & NDS_ADAPTIVE_TOP)?frontend_options.adaptive_max_width[0]:256,
+            (adaptive & NDS_ADAPTIVE_BOTTOM)?frontend_options.adaptive_max_width[1]:256);
+        if(!nds_survivor_host_start())
+            std::fprintf(stderr,"[gpu3d] CPU survivor presentation unavailable; using existing renderer\n");
+    }
 #endif
 
     if (interactive) {
@@ -2382,7 +2457,7 @@ int main(int argc, char** argv) {
         // the socket, commands execute on the frontend thread between frames
         // via debug_pump(). Execution stays frontend-owned (run_to_* are
         // rejected); queries, rings, and touch/keys injection are live.
-        debug_set_reset_fn(boot);
+        debug_set_reset_fn(reset_machine);
         debug_pump_start(port);
         std::fprintf(stderr, "[run] interactive SDL mode from reset\n");
         const int rc = nds_run_interactive_frontend(frontend_options);
@@ -2411,7 +2486,7 @@ int main(int argc, char** argv) {
         if (const char* dt = std::getenv("NDS_DEEP_TRACE"))
             if (dt[0] == '0' && dt[1] == '\0') runtime_set_deep_trace(0);
         std::fprintf(stderr, "[run] debug server mode from reset\n");
-        debug_set_reset_fn(boot);
+        debug_set_reset_fn(reset_machine);
         debug_serve(port);
         dump_replay_status();
         const bool save_ok = nds_io_flush_cartridge_save();

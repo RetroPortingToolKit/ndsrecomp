@@ -1,4 +1,7 @@
 #pragma once
+#if defined(NDS_WHOLE_ASSETS)
+#include "whole_asset_service.h"
+#endif
 #if defined(NDS_MKDS_HLE)
 #include "hle_mkds.h"
 #endif
@@ -14,6 +17,9 @@
 // current bytes decline HLE. The ordinary dispatcher owns positive AND negative
 // code proofs and dependency invalidation; no JIT copy can bypass those guards.
 inline bool nds_native_service_entry(NdsCpu cpu, uint32_t pc, bool thumb) {
+#if defined(NDS_WHOLE_ASSETS)
+    if(nds_assets::is_entry(cpu,pc,thumb))return true;
+#endif
 #if defined(NDS_MKDS_HLE)
     if (mkds_hle::is_entry(cpu, pc, thumb)) return true;
 #endif

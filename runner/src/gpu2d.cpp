@@ -22,6 +22,10 @@
 #include "title_patches.h"
 #include "vram.h"
 #include "emu_profile.h"
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+#include "melonds_compute/CpuSurvivorHost.h"
+#include "cpu_render_handoff.h"
+#endif
 
 namespace {
 
@@ -169,6 +173,28 @@ bool g_adaptive_hud_anchor = false;
 bool g_adaptive_hud_gap_fill = false;
 int g_adaptive_hud_center_width = 64;
 int g_front = 0;
+bool g_survivors_enabled = false;
+std::array<nds_survivors::Frame,2> g_survivors;
+std::array<bool,2> g_survivor_collecting{};
+std::array<uint16_t,2> g_survivor_widths{256,256};
+uint64_t g_survivor_identity = 0;
+int g_survivor_pending = -1;
+void invalidate_survivors() {
+    g_survivor_collecting.fill(false); g_survivor_pending = -1;
+    for(auto& frame:g_survivors){frame.lines=0;frame.needs_gpu={};frame.native_base={};}
+}
+void begin_survivors(unsigned buffer) {
+    auto& frame=g_survivors[buffer];
+    frame.native_layers.resize(nds_survivors::Rows*nds_survivors::NativeWidth*4);
+    frame.wide_layers.resize(nds_survivors::Rows*nds_survivors::MaxWidth*4);
+    frame.native_objects.resize(nds_survivors::Rows*nds_survivors::NativeWidth);
+    frame.wide_objects.resize(nds_survivors::Rows*nds_survivors::MaxWidth);
+    frame.rows.fill(0);frame.widths=g_survivor_widths;frame.needs_gpu={};
+    frame.identity=++g_survivor_identity;frame.buffer=buffer;frame.lines=0;
+    frame.capture=(g_unit[0].capture&0x80000000u)||g_unit[0].capture_latch;
+    for(unsigned screen=0;screen<2;++screen)frame.native_base[screen]=g_fb[buffer][screen].data();
+    g_survivor_collecting[buffer]=true;
+}
 uint64_t g_render_ns = 0;
 uint64_t g_obj_ns = 0;
 uint64_t g_engine_ns[2] = {};
@@ -838,7 +864,10 @@ void render_obj_line(const Unit& u, int engine, int line_y, Pixel* out,
                      int out_width,
                      const uint8_t* oam, const uint8_t* palette,
                      const NdsVramRendererView& vram,
-                     uint8_t* obj_window = nullptr) {
+                     uint8_t* obj_window = nullptr,
+                     int hud_anchor = -1, int hud_center_width = -1) {
+    const bool anchor=hud_anchor<0?g_adaptive_hud_anchor:hud_anchor!=0;
+    const int center_width=hud_center_width<0?g_adaptive_hud_center_width:hud_center_width;
     std::fill_n(out, out_width, Pixel{});
     if (obj_window) std::fill_n(obj_window, out_width, 0u);
     if (!(u.dispcnt&0x1000u)) return;
@@ -862,12 +891,12 @@ void render_obj_line(const Unit& u, int engine, int line_y, Pixel* out,
             int output_sx = sx;
             if (out_width > 256) {
                 const int extra = (out_width - 256) / 2;
-                if (engine == 0 && g_adaptive_hud_anchor) {
+                if (engine == 0 && anchor) {
                     const int center = sx + bw / 2;
                     const int center_left =
-                        (256 - g_adaptive_hud_center_width) / 2;
+                        (256 - center_width) / 2;
                     const int center_right =
-                        center_left + g_adaptive_hud_center_width;
+                        center_left + center_width;
                     // Keep the title-configured center HUD band together and
                     // move authored left/right OBJ bands to the enhanced
                     // corners.
@@ -1056,6 +1085,8 @@ struct LineScratch {
     std::array<uint32_t, 256> comp6{};
     std::array<Pixel, 256> obj{};
     std::array<uint8_t, 256> obj_window{};
+    std::array<Pixel,nds_survivors::MaxWidth> survivor_obj{};
+    std::array<uint8_t,nds_survivors::MaxWidth> survivor_window{};
     // Profiling accumulators, merged into the module counters at a drain so
     // concurrent renders cannot tear them.
     uint64_t obj_ns = 0;
@@ -1092,6 +1123,10 @@ struct LineJob {
     uint32_t* direct_params = nullptr;
     uint16_t direct_width = 0;
     bool direct_powered = true;
+    bool direct_fallback = false;
+    bool survivors = false;
+    bool survivor_anchor = false, survivor_gap_fill = false;
+    uint16_t survivor_center_width = 64;
     // Staged display capture. The pixels are produced by whichever thread
     // renders the line; the write into guest VRAM, and the texture-generation
     // bump that goes with it, are applied by the scheduler thread in line
@@ -1308,6 +1343,105 @@ bool line_forceblank(const LineJob& job, int engine) {
            (job.unit[engine].dispcnt & 0x80u);
 }
 
+// Rows containing only 3D, OBJ and backdrop need one packed OBJ/window word
+// per cell. Keep the independent native HUD view, but leave final composition
+// and CPU base materialization to the GPU consumer.
+void render_compact_survivor_line(const LineJob& job, LineScratch& sc) {
+    using namespace nds_survivors;
+    auto& frame=g_survivors[job.buffer];
+    const auto* row=frame.row(job.y);
+    const Unit& u=job.unit[0];
+    const unsigned width=row[LayerWidth];
+    const NdsGpu2dWindowState windows{u.dispcnt,u.win};
+    const bool windowed=(u.dispcnt&NDS_GPU2D_DISPCNT_WINDOW_ENABLE_MASK)!=0;
+    auto pack=[&](unsigned out_width,const Pixel* objects,const uint8_t* object_window,bool wide,uint32_t* dst) {
+        const int extra=(int(out_width)-256)/2;
+        for(unsigned x=0;x<out_width;++x) {
+            uint8_t mask=0x3Fu;
+            if(windowed) {
+                const int hud_x=wide?nds_gpu2d_adaptive_hud_x(x,out_width,job.survivor_anchor,job.survivor_center_width):int(x);
+                const uint8_t wx=wide?nds_gpu2d_adaptive_window_x(x,extra,hud_x):uint8_t(x);
+                mask=nds_gpu2d_window_mask(windows,wx,uint8_t(job.y),object_window[x]!=0);
+            }
+            const auto& p=objects[x];
+            dst[x]=nds_gpu2d_pack_direct_pixel(p.color,p.priority,p.alpha,p.valid,mask);
+        }
+    };
+    render_obj_line(u,0,job.y,sc.obj.data(),NativeWidth,job.oam[0],job.palette[0],*job.vram[0],sc.obj_window.data(),0,job.survivor_center_width);
+    auto* native=frame.native_objects.data()+job.y*NativeWidth;
+    pack(NativeWidth,sc.obj.data(),sc.obj_window.data(),false,native);
+    auto* wide=frame.wide_objects.data()+job.y*MaxWidth;
+    if(row[Flags]&CenterNative) {
+        const unsigned extra=(width-NativeWidth)/2;
+        std::fill_n(wide,width,nds_gpu2d_pack_direct_pixel(0,0,0,true,0x10u));
+        std::copy_n(native,NativeWidth,wide+extra);
+    } else if(width==NativeWidth)std::copy_n(native,NativeWidth,wide);
+    else {
+        render_obj_line(u,0,job.y,sc.survivor_obj.data(),width,job.oam[0],job.palette[0],*job.vram[0],sc.survivor_window.data(),job.survivor_anchor,job.survivor_center_width);
+        pack(width,sc.survivor_obj.data(),sc.survivor_window.data(),true,wide);
+    }
+}
+
+// Decode each native BG once. The native and adaptive planes deliberately
+// select their own OBJ/window positions; cropping anchored HUD pixels would
+// corrupt native observations and current-build snapshots.
+void render_survivor_line(LineJob& job, LineScratch& sc) {
+    using namespace nds_survivors;
+    auto& frame=g_survivors[job.buffer];
+    const auto* row=frame.row(job.y);
+    if(row[Flags]&CompactObj) {render_compact_survivor_line(job,sc);return;}
+    const Unit& u=job.unit[0];
+    const unsigned width=row[LayerWidth];
+    const bool center=(row[Flags]&CenterNative)!=0;
+    const auto* palette=job.palette[0];const auto* oam=job.oam[0];
+    const auto& vram=*job.vram[0];
+    int bgs[4]{};unsigned count=0;
+    const uint8_t active=bg_active_mask(u,true);
+    for(int bg=0;bg<4;++bg)if(active&(1u<<bg)) {
+        bgs[count]=bg;decode_bg_line(u,0,bg,job.y,palette,vram,sc.bg_lines[count]);++count;
+    }
+    render_obj_line(u,0,job.y,sc.obj.data(),256,oam,palette,vram,sc.obj_window.data(),0,job.survivor_center_width);
+    const Pixel backdrop{rgb6(view16(palette,0)),0x20u,0,4,5,true};
+    const NdsGpu2dWindowState windows{u.dispcnt,u.win};
+    auto select=[&](unsigned x,unsigned out_width,const Pixel* objects,const uint8_t* object_window,bool wide,uint32_t* dst) {
+        const int extra=(int(out_width)-256)/2;
+        int hud_x=int(x);
+        if(wide)hud_x=nds_gpu2d_adaptive_hud_x(x,out_width,job.survivor_anchor,job.survivor_center_width);
+        const uint8_t wx=wide?nds_gpu2d_adaptive_window_x(x,extra,hud_x):uint8_t(x);
+        const uint8_t mask=nds_gpu2d_window_mask(windows,wx,uint8_t(job.y),object_window[x]!=0);
+        int bg_x=hud_x;
+        if(wide&&job.survivor_gap_fill)bg_x=nds_gpu2d_adaptive_hud_x(x,out_width,job.survivor_anchor,job.survivor_center_width,true);
+        Pixel top=backdrop,below=backdrop;
+        auto push=[&](const Pixel& p){
+            auto ahead=[](const Pixel& a,const Pixel& b){return a.priority<b.priority||(a.priority==b.priority&&a.order<b.order);};
+            if(ahead(p,top)){below=top;top=p;}else if(ahead(p,below))below=p;
+        };
+        const bool preserve=wide&&hud_x<0&&objects[x].valid&&(mask&0x10u);
+        if(bg_x>=0&&bg_x<256&&!preserve)for(unsigned i=0;i<count;++i) {
+            const auto& bg=sc.bg_lines[i];const uint16_t color=bg.color[bg_x];
+            if((color&0x8000u)&&(mask&(1u<<bgs[i])))push(Pixel{rgb6(color&0x7FFFu),bg.target,0,bg.prio,bg.order,true});
+        }
+        if(objects[x].valid&&(mask&0x10u))push(objects[x]);
+        dst[0]=top.color;dst[1]=hd_meta(top,mask);dst[2]=below.color;dst[3]=hd_meta(below,mask);
+        // This is only a 2D base for rows requiring the GPU's final blend.
+        // Authoritative native observations resolve the separate native plane.
+        if(!wide)g_fb[job.buffer][job.screen[0]][job.y*256+x]=to_rgb32(top.color);
+    };
+    auto* native=frame.native_layers.data()+job.y*NativeWidth*4;
+    for(unsigned x=0;x<256;++x)select(x,256,sc.obj.data(),sc.obj_window.data(),false,native+x*4);
+    auto* wide=frame.wide_layers.data()+job.y*MaxWidth*4;
+    std::fill_n(wide,MaxWidth*4,0u);
+    if(center) {
+        const unsigned extra=(width-256)/2;
+        for(unsigned x=0;x<width;++x){wide[x*4+1]=0x40u;wide[x*4+3]=0x40u;}
+        std::copy_n(native,NativeWidth*4,wide+extra*4);
+    } else if(width==256)std::copy_n(native,NativeWidth*4,wide);
+    else {
+        render_obj_line(u,0,job.y,sc.survivor_obj.data(),width,oam,palette,vram,sc.survivor_window.data(),job.survivor_anchor,job.survivor_center_width);
+        for(unsigned x=0;x<width;++x)select(x,width,sc.survivor_obj.data(),sc.survivor_window.data(),true,wide+x*4);
+    }
+}
+
 void render_engine_line(LineJob& job, int engine, LineScratch& sc) {
     const Unit& u = job.unit[engine];
     const int y = job.y;
@@ -1325,6 +1459,9 @@ void render_engine_line(LineJob& job, int engine, LineScratch& sc) {
     const uint32_t capw = engine == 0 ? job.capw : 0u;
     const bool cap = engine == 0 && job.cap;
     const bool bg0_3d = engine == 0 && job.bg0_3d;
+    if(engine==0&&job.survivors&&(g_survivors[job.buffer].row(y)[nds_survivors::Flags]&nds_survivors::Needs3D)) {
+        render_survivor_line(job,sc);return;
+    }
 
     if (line_general_path(u, engine, bg0_3d, cap)) {
         // General path: mirror melonDS DrawScanline ordering — composite
@@ -1661,6 +1798,7 @@ void latch_line(int y, LineJob& job) {
     job.engine_active[1] = true;
     job.direct_pixels = nullptr;
     job.direct_params = nullptr;
+    job.survivors = false;
     if (g_direct_frame_active && g_direct_current_frame.raster_params) {
         job.direct_width = g_direct_current_frame.width;
         job.direct_pixels = g_direct_object_frame[g_direct_object_write].data() +
@@ -1690,9 +1828,56 @@ void latch_line(int y, LineJob& job) {
     }
     // The optional presentation path must not suppress a newly latched
     // guest capture. Its canonical CPU capture source remains authoritative.
-    if (job.direct_pixels && job.cap) job.engine_active[0] = true;
+    job.direct_fallback = job.direct_pixels &&
+        (!job.palette[0] || !job.oam[0] || !job.vram[0] ||
+         !job.direct_powered || job.screen[0] != 0u || job.cap ||
+         ((job.unit[0].dispcnt >> 16) & 3u) != 1u ||
+         (job.unit[0].dispcnt & 0x108u) != 0x108u ||
+         (job.unit[0].dispcnt & 0xE00u) != 0u);
+    if (job.direct_fallback) {
+        job.engine_active[0] = true;
+        g_window_direct_unsupported_lines.fetch_add(1, std::memory_order_relaxed);
+        // Eligibility is a frame-start hint. A later mode/layer/route change
+        // must still consume the current GPU frame, never the last CPU copy.
+        nds_gpu3d_sync_display_frame();
+    }
     job.bg0_3d = (job.unit[0].dispcnt & 0x8u) != 0 &&
                  (job.unit[0].dispcnt & 0x100u) != 0;
+    if(g_survivors_enabled&&y==0) {
+        if(g_survivor_collecting[job.buffer]&&g_survivors[job.buffer].lines)
+            nds_gpu2d_memory_fence(NDS_GPU2D_FENCE_FRAME);
+        begin_survivors(job.buffer);
+    }
+    if(g_survivors_enabled&&g_survivor_collecting[job.buffer]) {
+        using namespace nds_survivors;
+        auto& frame=g_survivors[job.buffer];
+        frame.capture=frame.capture||job.cap||job.unit[0].capture_latch;
+        job.survivors=!frame.capture;
+        job.survivor_anchor=g_adaptive_hud_anchor;
+        job.survivor_gap_fill=g_adaptive_hud_gap_fill;
+        job.survivor_center_width=g_adaptive_hud_center_width;
+        auto* row=frame.row(y);const Unit& u=job.unit[0];
+        const unsigned width=g_survivor_widths[job.screen[0]];
+        const bool needs=!line_forceblank(job,0)&&((u.dispcnt>>16)&3u)==1u&&job.bg0_3d;
+        bool center=width==256||g_adaptive_center_native||nds_gpu3d_render_xpos()!=0||
+            nds_title_patches_mph_adaptive_centered_native()||
+            (g_adaptive_center_max_polygons&&nds_gpu3d_render_polygon_count()<=g_adaptive_center_max_polygons&&
+             !nds_gpu3d_projection_has_perspective());
+        for(int bg=1;bg<4;++bg)if((u.dispcnt&(0x100u<<bg))&&bg_kind(u,bg)!=BgKind::Text)center=true;
+        row[Bldcnt]=u.bldcnt;row[MasterBright]=u.master_bright;
+        row[Eva]=u.eva;row[Evb]=u.evb;row[Evy]=u.evy;row[Priority3D]=u.bgcnt[0]&3u;
+        row[RenderX]=nds_gpu3d_render_xpos();row[Screen]=job.screen[0];row[LayerWidth]=width;
+        row[SourceWidth]=nds_gpu3d_output_width();
+        row[Flags]=(needs?Needs3D:0u)|(nds_gpu3d_display_visible()?Visible3D:0u)|
+            (center?CenterNative:0u)|(!center&&width>256&&g_adaptive_skybox_fill?SkyboxFill:0u);
+        if(needs&&!frame.capture&&!(u.dispcnt&0xE00u)) {
+            row[Flags]|=CompactObj;
+            row[Backdrop]=rgb6(view16(job.palette[0],0));
+        }
+        if(needs&&!frame.capture)frame.needs_gpu[job.screen[0]]=true;
+        frame.widths[job.screen[0]]=std::max<uint16_t>(frame.widths[job.screen[0]],width);
+        frame.lines=std::max<uint16_t>(frame.lines,y+1);
+    }
 
     // The 3D line and the wide-3D snapshot are pulled here, in scanline order,
     // under exactly the condition the inline render used: GPU3D::GetLine writes
@@ -1700,11 +1885,17 @@ void latch_line(int y, LineJob& job) {
     // scanline-semaphore tokens, so no other thread may call it.
     const bool engine_a_renders =
         job.engine_active[0] && !line_forceblank(job, 0);
-    if (engine_a_renders &&
+    if (!job.survivors && engine_a_renders &&
         line_general_path(job.unit[0], 0, job.bg0_3d, job.cap)) {
         const bool capture_uses_3d = job.cap &&
             ((job.unit[0].capture >> 29) & 3u) != 1u &&
             ((job.unit[0].capture & (1u << 24)) || job.bg0_3d);
+        if(g_survivors_enabled&&g_survivors[job.buffer].capture)
+            // Capture may latch after the last raster submission. Its CPU
+            // compositor must observe that image even though ordinary display
+            // deliberately did not schedule a readback. Subsequent rows reuse
+            // the completed copy through the existing synchronization helper.
+            nds_gpu3d_sync_display_frame();
         const uint32_t* const line3d = capture_uses_3d
             ? nds_gpu3d_capture_line(y) : nds_gpu3d_line(y);
         if (line3d) {
@@ -1749,13 +1940,9 @@ void latch_line(int y, LineJob& job) {
 }
 
 void render_direct_window_line(const LineJob& job) {
+    if (job.direct_fallback) return;
     const Unit& u = job.unit[0];
     const bool views = job.palette[0] && job.oam[0] && job.vram[0];
-    const bool supported = views && job.direct_powered && job.screen[0] == 0u && !job.cap &&
-        ((u.dispcnt >> 16) & 3u) == 1u &&
-        (u.dispcnt & 0x108u) == 0x108u && !(u.dispcnt & 0xE00u);
-    if (!supported)
-        g_window_direct_unsupported_lines.fetch_add(1, std::memory_order_relaxed);
     if (!views) {
         std::fill_n(job.direct_pixels, job.direct_width, 0x4040u);
         std::fill_n(job.direct_params, 4, 0u);
@@ -1787,11 +1974,25 @@ void render_direct_window_line(const LineJob& job) {
     job.direct_params[3] = u.bgx[0] & 0x1FFu;
 }
 
+void render_direct_fallback_line(const LineJob& job) {
+    if (!job.direct_fallback) return;
+    // Both engines have completed, so this is the physical top LCD even if
+    // POWCNT changed its routing mid-frame. Reuse the normal native fallback
+    // presentation, centered in the wide surface. The shader bypasses all
+    // blending/brightness for this already composed BGRA8 row.
+    std::fill_n(job.direct_pixels, job.direct_width, 0xFF000000u);
+    std::copy_n(g_fb[job.buffer][0].data() + job.y * 256, 256,
+                job.direct_pixels + (job.direct_width - 256) / 2);
+    std::fill_n(job.direct_params, 4, 0u);
+    job.direct_params[3] = 0x80000000u;
+}
+
 void render_line_job(LineJob& job, LineScratch& sc) {
     if (!profiling()) {
         if (job.direct_pixels) render_direct_window_line(job);
         if (job.engine_active[0]) render_engine_line(job, 0, sc);
         if (job.engine_active[1]) render_engine_line(job, 1, sc);
+        render_direct_fallback_line(job);
         return;
     }
     const auto start = std::chrono::steady_clock::now();
@@ -1799,6 +2000,7 @@ void render_line_job(LineJob& job, LineScratch& sc) {
     if (job.engine_active[0]) render_engine_line(job, 0, sc);
     const auto middle = std::chrono::steady_clock::now();
     if (job.engine_active[1]) render_engine_line(job, 1, sc);
+    render_direct_fallback_line(job);
     const auto finish = std::chrono::steady_clock::now();
     sc.render_ns += ns_since(start, finish);
     const uint64_t engine_a_ns = ns_since(start, middle);
@@ -2114,8 +2316,34 @@ void band_pool_reset_stats();
 
 } // namespace
 
+void nds_gpu2d_set_survivors(bool enabled) {
+    if(g_survivors_enabled==enabled)return;
+    drain_pool(NDS_GPU2D_FENCE_FRAME);invalidate_survivors();g_survivors_enabled=enabled;
+    if(enabled){g_direct_frame_active=g_direct_present_frame_active=false;g_direct_current_frame={};g_direct_present_frame={};}
+}
+bool nds_gpu2d_survivors_enabled(){return g_survivors_enabled;}
+void nds_gpu2d_set_survivor_widths(uint16_t top,uint16_t bottom) {
+    g_survivor_widths={std::clamp<uint16_t>(top,256,nds_survivors::MaxWidth),std::clamp<uint16_t>(bottom,256,nds_survivors::MaxWidth)};
+}
+const nds_survivors::Frame* nds_gpu2d_survivor_current() {
+    drain_pool(NDS_GPU2D_FENCE_PRESENT);
+    const auto& frame=g_survivors[g_front];
+    return g_survivors_enabled&&frame.lines==192&&!g_survivor_collecting[g_front]?&frame:nullptr;
+}
+const nds_survivors::Frame* nds_gpu2d_survivor_pending() {
+    return g_survivors_enabled&&g_survivor_pending>=0?&g_survivors[g_survivor_pending]:nullptr;
+}
+const nds_survivors::Frame* nds_gpu2d_survivor_building() {
+    const unsigned back=g_front^1;const auto& frame=g_survivors[back];
+    return g_survivors_enabled&&g_survivor_collecting[back]&&frame.lines>0&&frame.lines<192?&frame:nullptr;
+}
+
 void nds_gpu2d_reset(){
     drain_pool(NDS_GPU2D_FENCE_FRAME);
+    invalidate_survivors();
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    nds_survivor_host_invalidate();
+#endif
     g_unit={};
     g_front = 0;
     g_direct_frame_active = false;
@@ -2172,7 +2400,16 @@ void nds_gpu2d_reset(){
     for (auto& frame : g_direct_object_frame) frame.fill(0u);
 }
 void nds_gpu2d_stop(){
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    // A completed handoff packet can still borrow the previous frame while
+    // ARM7 requests power-off. Join services this request after presentation,
+    // before invalidating either metadata slot or its native base image.
+    if(nds_cpu_render_on_worker()) {
+        nds_cpu_render_main([] { nds_gpu2d_stop(); });return;
+    }
+#endif
     drain_pool(NDS_GPU2D_FENCE_FRAME);
+    invalidate_survivors();
     for (auto& buffers : g_fb)
         for (auto& frame : buffers)
             frame.fill(0u);
@@ -2239,6 +2476,9 @@ bool gpu2d_savestate_export(NdsGpu2dSaveState* out) {
     out->front = static_cast<uint8_t>(g_front);
     out->frame_capture_active = g_frame_capture_active ? 1u : 0u;
     out->present_capture_active = g_present_capture_active ? 1u : 0u;
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    if(!nds_survivor_host_snapshot(out))return false;
+#endif
     return true;
 }
 
@@ -2267,6 +2507,10 @@ bool gpu2d_savestate_import(const NdsGpu2dSaveState& in,
                             std::string* error) {
     if (!gpu2d_savestate_validate(in, error)) return false;
     drain_pool(NDS_GPU2D_FENCE_FRAME);
+    invalidate_survivors();
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    nds_survivor_host_invalidate();
+#endif
     g_unit[0] = import_unit(in.unit[0]);
     g_unit[1] = import_unit(in.unit[1]);
     size_t pos = 0;
@@ -2415,7 +2659,7 @@ void nds_gpu2d_start_frame(){
     g_direct_extra_bg_mask = static_cast<uint8_t>(
         (g_unit[0].dispcnt >> 9u) & 7u);
     g_direct_frame_active =
-        g_direct_frame_class == NDS_GPU2D_DIRECT_SUPPORTED;
+        !g_survivors_enabled && g_direct_frame_class == NDS_GPU2D_DIRECT_SUPPORTED;
     g_frame_capture_active =
         (g_unit[0].capture & 0x80000000u) != 0u ||
         g_unit[0].capture_latch;
@@ -2448,7 +2692,13 @@ void nds_gpu2d_finish_frame(){
     g_front ^= 1;
 }
 void nds_gpu2d_vblank(){
-    drain_pool(NDS_GPU2D_FENCE_FRAME);
+    const unsigned back=g_front^1;
+    const bool recording=g_survivors_enabled&&g_survivor_collecting[back];
+    if(!recording||g_survivors[back].capture)drain_pool(NDS_GPU2D_FENCE_FRAME);
+    if(recording) {
+        g_survivor_collecting[back]=false;
+        g_survivor_pending=g_survivors[back].lines==192?int(back):-1;
+    }
     // melonDS Unit::VBlank: the capture enable bit auto-clears at line 192
     // only if it latched at line 0 this frame.
     for (auto& u : g_unit) {
@@ -2460,6 +2710,10 @@ void nds_gpu2d_vblank(){
 }
 const uint32_t* nds_gpu2d_framebuffer(int screen){
     drain_pool(NDS_GPU2D_FENCE_PRESENT);
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    if(nds_survivor_host_enabled())
+        if(const auto* image=nds_survivor_host_observe(screen,false,nullptr))return image;
+#endif
     return g_fb[g_front][screen & 1].data();
 }
 void nds_gpu2d_set_adaptive_skybox_fill(bool enabled) {
@@ -2502,6 +2756,7 @@ bool nds_gpu2d_requires_3d_readback() {
     if ((unit.capture & 0x80000000u) != 0u || unit.capture_latch ||
         g_frame_capture_active)
         return true;
+    if(g_survivors_enabled)return false;
     return !g_direct_frame_active &&
            !nds_gpu3d_display_readback_latency();
 }
@@ -2951,6 +3206,10 @@ void composite_adaptive_frame(const AdaptiveCtx& ctx) {
 }  // namespace
 
 const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+    if(nds_survivor_host_enabled())
+        if(const auto* image=nds_survivor_host_observe(screen,true,width))return image;
+#endif
     drain_pool(NDS_GPU2D_FENCE_PRESENT);
     const uint32_t* native = nds_gpu2d_framebuffer(screen);
     const bool engine_a_on_top = (nds_powercontrol9() & 0x8000u) != 0;

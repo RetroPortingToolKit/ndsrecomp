@@ -13,6 +13,43 @@
 
 uint32_t nds_io_read(uint32_t addr, uint32_t width);
 void     nds_io_write(uint32_t addr, uint32_t value, uint32_t width);
+// ARM9 native service callers supply live, already-accounted CPU cycles.
+// This owns only DIV/SQRT: no generic IO fence, IRQ/DMA dispatch or clock
+// mutation. Unaccepted accesses return false without changing device state.
+bool nds_io_native_math_address(uint32_t addr, uint32_t width);
+bool nds_io_native_math_read(uint32_t addr, uint32_t width,
+                             uint64_t arm9_cycles, uint32_t* value);
+bool nds_io_native_math_write(uint32_t addr, uint32_t value, uint32_t width,
+                              uint64_t arm9_cycles);
+// Complete host peripheral transactions reuse the canonical chip backing and
+// persistent-write hooks. They decline before effects while a guest transfer
+// owns the SPI/RTC wires; callers preflight guest buffers separately.
+bool nds_io_offline_spi_idle();
+bool nds_io_offline_spi(uint32_t device, const uint8_t* tx, uint8_t* rx,
+                         uint32_t size);
+bool nds_io_offline_rtc(uint8_t reg, bool write, uint8_t* bytes, uint32_t size);
+uint64_t nds_io_offline_rtc_next_event(uint64_t now);
+void nds_io_offline_set_tick_epoch_address(uint32_t address);
+bool nds_io_offline_tick_deadline(uint64_t absolute_os_tick,uint64_t now,uint64_t* deadline);
+uint32_t nds_io_offline_touch();
+bool nds_io_offline_reply_capacity(uint32_t count);
+bool nds_io_offline_reply(uint32_t word, uint64_t now);
+bool nds_io_offline_receive_word(uint32_t expected, uint64_t now);
+bool nds_io_offline_peek(uint32_t* word);
+bool nds_io_offline_memory(uint32_t addr, uint8_t* bytes, uint32_t size,
+                            bool write, uint64_t now);
+uint32_t nds_io_offline_wake_flags();
+bool nds_io_offline_card_idle();
+// Immutable asset view only when the cartridge is in normal mode and its
+// command/backup bus has no pending transaction. The caller owns SDK locking.
+bool nds_io_asset_cartridge(const uint8_t** bytes, uint32_t* size, bool require_idle=true);
+void nds_io_offline_wireless_power(bool enabled,uint64_t now);
+bool nds_io_offline_wireless_vram(uint32_t source,uint32_t size,bool clear,uint64_t now);
+bool nds_io_offline_card_spi(const uint8_t* tx,uint8_t* rx,uint32_t size,uint64_t now);
+bool nds_io_offline_card_read(uint8_t command,uint32_t address,uint8_t* bytes,uint32_t size,uint64_t now);
+uint16_t nds_io_offline_sleep_enter(uint32_t flags,uint16_t keys,uint64_t now);
+void nds_io_offline_sleep_leave(uint32_t flags,uint16_t rcnt);
+void nds_io_offline_irq_clear(uint32_t bits);
 void     nds_io_reset();
 // Clear observer history without changing any guest-visible device state.
 void     nds_io_debug_history_reset();
@@ -23,6 +60,10 @@ void     nds_io_debug_history_reset();
 extern bool g_nds_rtc_host;
 void     nds_set_touch(uint16_t x, uint16_t y, bool down);
 void     nds_set_key_mask(uint32_t mask);
+uint16_t nds_extended_keys();
+uint16_t nds_io_offline_pad();
+bool     nds_lid_closed();
+void     nds_set_lid_closed(bool closed);
 // Debug-server throttle override (`turbo` command): frontend treats it like
 // an explicit developer speed-control request. Written from the debug-server
 // thread.
@@ -30,6 +71,8 @@ void     nds_set_debug_turbo(bool enabled);
 bool     nds_debug_turbo();
 uint64_t nds_next_system_event_time();
 uint64_t nds_next_timer_overflow_time();
+// Native offline services own ARM7 timers; only ARM9 timers constrain its CPU.
+uint64_t nds_next_timer_overflow_time_for_cpu(int cpu);
 // NOTE: there is deliberately no per-CPU variant. One existed (62dbbc7) for the
 // sole purpose of shortening the scheduler's ARM7 catch-up target to a halted
 // core's next timer overflow, which delivered that overflow's IRQ inside the
@@ -229,6 +272,8 @@ uint32_t nds_io_debug_read(int cpu, uint32_t addr, uint32_t width);
 uint16_t nds_exmemcnt(int cpu);
 // ARM7 POWCNT2/WIFIWAITCNT control the 0x04800000 Wi-Fi bus wait states.
 uint16_t nds_powercontrol7();
+// Whole native cartridge-removal shutdown; leaves console/display power intact.
+void nds_io_offline_card_stop(uint64_t now);
 uint16_t nds_powercontrol9();
 uint16_t nds_wifiwaitcnt();
 uint8_t nds_wramcnt();
@@ -317,6 +362,8 @@ void     nds_tick_display(unsigned long long system_cycles);
 void     nds_tick_rtc(unsigned long long system_cycles);
 void     nds_dump_irq();
 void     nds_io_load_firmware(const uint8_t* p, uint32_t n);
+// Initial load or reset with the current mutable flash and persistence policy.
+void     nds_io_reset_firmware(const uint8_t* p, uint32_t n);
 bool     nds_io_replace_firmware(const uint8_t* p, uint32_t n);
 // Optional mutable firmware backing file. Guest SPI writes are committed
 // atomically at transaction boundaries and retried on every orderly exit,

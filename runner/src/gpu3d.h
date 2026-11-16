@@ -1,6 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
+namespace nds_native_3d { struct Mesh; }
+void nds_gpu3d_native_operation(uint8_t command, std::span<const uint32_t> parameters);
+void nds_gpu3d_native_mesh(const nds_native_3d::Mesh& mesh);
+bool nds_gpu3d_has_native_geometry();
 
 // Bridge to the vendored melonDS GPU3D geometry/rasterizer device model
 // (runner/vendor/melonds/, GPL-3.0-or-later — see THIRD_PARTY_ATTRIBUTION.md).
@@ -67,6 +72,8 @@ bool nds_gpu3d_set_runtime_internal_scale(uint8_t scale);
 uint8_t nds_gpu3d_internal_scale();
 void nds_gpu3d_set_display_readback_latency(bool enabled);
 bool nds_gpu3d_display_readback_latency();
+// Visibility is guest state, independent of whether a CPU readback exists.
+bool nds_gpu3d_display_visible();
 // Presentation handle for the high-resolution RGBA8 surface, whose channels
 // carry the same RGB6/alpha5 values as the integer surface above, normalized
 // by 63 and 31. Zero unless an accelerated renderer is active at scale > 1.
@@ -151,6 +158,9 @@ void nds_gpu3d_start_frame();
 const uint32_t* nds_gpu3d_line(int line);
 // Guest VRAM capture uses the portable raster in native-GL builds.
 const uint32_t* nds_gpu3d_capture_line(int line);
+// Recover a GPU-resident display frame when a direct-present frame acquires a
+// CPU consumer mid-frame. No-op for software or an already current CPU copy.
+void nds_gpu3d_sync_display_frame();
 
 // Opt-in host-only widened raster surface. The native line API above always
 // returns the centered 256-pixel hardware viewport for the faithful 2D

@@ -10,7 +10,7 @@
 uint32_t bus_device_read32(int, uint32_t address) {
     return (address * 0x9e3779b1u) ^ (address >> 7);
 }
-void bus_device_write32(int, uint32_t, uint32_t) {}
+void bus_device_write32(int, uint32_t, uint32_t, uint64_t) {}
 
 namespace {
 bool ok = true;

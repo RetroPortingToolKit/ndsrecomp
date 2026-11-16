@@ -17,6 +17,13 @@
 #include <thread>
 
 #include "scheduler.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#include "offline_arm7_sound.h"
+#if defined(NDS_WHOLE_ASSETS)
+#include "whole_asset_service.h"
+#endif
+#endif
 #include "savestate.h"
 #include "state.h"
 #include "execution_model.h"
@@ -29,8 +36,12 @@
 #include "gpu2d.h"
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
 #include "melonds_compute/ComputeHost.h"
+#include "melonds_compute/CpuSurvivorHost.h"
 #endif
 #include "gpu3d.h"
+#if defined(NDS_MKDS_MODEL_HLE)
+#include "hle_mkds_model.h"
+#endif
 #include "hle_profile.h"
 #if defined(NDS_MPH_MATH_HLE)
 #include "hle_mph_math.h"
@@ -487,8 +498,47 @@ uint32_t spsr_for_mode(const ArmCpuState& c, uint32_t mode) {
 
 std::string handle(const std::string& line) {
     std::string cmd = json_str(line, "cmd");
+#if defined(NDS_OFFLINE_ARM7)
+    if (!g_play_mode && nds_offline_arm7_reset_pending() && g_reset_fn && cmd!="offline_arm7") {
+        nds_savestate_wait_for_pending_save();
+        g_reset_fn();
+    }
+#endif
 
     if (cmd == "ping") return "{\"pong\":true}";
+    if(cmd=="whole_assets") {
+#if defined(NDS_WHOLE_ASSETS)
+        return nds_assets::json();
+#else
+        return "{\"available\":false}";
+#endif
+    }
+    if (cmd == "frontend_pause") {
+        if (!g_play_mode)
+            return "{\"error\":\"frontend pause requires interactive play mode\"}";
+        const bool paused = json_bool(line, "paused", nds_frontend_paused());
+        if (!nds_frontend_set_paused(paused))
+            return "{\"error\":\"frontend is not active\"}";
+        return std::string("{\"ok\":true,\"paused\":") +
+            (nds_frontend_paused() ? "true}" : "false}");
+    }
+    if (cmd == "lid") {
+        nds_set_lid_closed(json_bool(line, "closed", nds_lid_closed()));
+        return std::string("{\"ok\":true,\"closed\":") +
+            (nds_lid_closed() ? "true}" : "false}");
+    }
+    if (cmd == "offline_arm7") {
+#if defined(NDS_OFFLINE_ARM7)
+        return std::string("{\"available\":true,\"selected\":")+
+            (nds_offline_arm7_selected()?"true":"false")+
+            ",\"active\":"+(nds_offline_arm7_active()?"true":"false")+
+            ",\"reset_pending\":"+(nds_offline_arm7_reset_pending()?"true":"false")+
+            ",\"takeover_status\":\""+json_escape(scheduler_offline_takeover_status())+"\""+
+            ",\"sound\":"+nds_offline_sound_json()+"}";
+#else
+        return "{\"available\":false,\"selected\":false,\"active\":false}";
+#endif
+    }
 
     if (cmd == "reset") {
         if (!g_reset_fn) return "{\"error\":\"reset unsupported\"}";
@@ -1436,6 +1486,13 @@ std::string handle(const std::string& line) {
         return "{\"enabled\":false}";
 #endif
     }
+    if (cmd == "native_models") {
+#if defined(NDS_MKDS_MODEL_HLE)
+        return mkds_model::statistics_json();
+#else
+        return "{\"enabled\":false}";
+#endif
+    }
     if (cmd == "mph_submit") {
 #if defined(NDS_MPH_SUBMIT_HLE)
         const auto c = mph_submit::statistics();
@@ -1451,6 +1508,13 @@ std::string handle(const std::string& line) {
             ",\"command_cache\":" + nds_gpu3d_command_batch_json() + "}";
 #else
         return "{\"implementation\":\"LLE\"}";
+#endif
+    }
+    if (cmd == "survivor_frame") {
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+        return nds_survivor_host_json();
+#else
+        return "{\"enabled\":false}";
 #endif
     }
     if (cmd == "gpu3d_backend") {
@@ -1737,6 +1801,8 @@ std::string handle(const std::string& line) {
                "},\"sched\":{\"sampled_rounds\":" +
                std::to_string(sched.sampled_rounds) +
                ",\"rounds\":" + std::to_string(sched.rounds) +
+               ",\"arm7_wakes\":" + std::to_string(sched.arm7_wakes) +
+               ",\"offline_rounds\":" + std::to_string(sched.offline_rounds) +
                ",\"sampled_round_ns\":" + std::to_string(sched.sampled_round_ns) +
                ",\"next_event_ns\":" + std::to_string(sched.next_event_ns) +
                ",\"arm9_ns\":" + std::to_string(sched.arm9_ns) +
@@ -2386,6 +2452,14 @@ bool debug_pump_start(uint16_t port) {
 }
 
 void debug_pump() {
+#if defined(NDS_OFFLINE_ARM7)
+    // Frontend calls this between completed CPU frames, also without a TCP
+    // listener. Reuse the full boot transaction rather than resetting IO alone.
+    if (nds_offline_arm7_reset_pending() && g_reset_fn) {
+        nds_savestate_wait_for_pending_save();
+        g_reset_fn();
+    }
+#endif
     if (g_pump_listener == INVALID_SOCKET) return;
     std::unique_lock<std::mutex> lock(g_pump_mutex, std::try_to_lock);
     if (!lock.owns_lock() || g_pump_state != PumpIo::Req) return;

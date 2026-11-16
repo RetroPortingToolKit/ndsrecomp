@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include "../gpu2d.h"
+namespace nds_survivors {struct Frame;}
 
 struct SDL_Window;
 struct NdsGpu2dDirectFrame;
@@ -21,6 +22,7 @@ struct NdsComputePresentTicks {
 // surfaces. Texture objects belong to the main GL owner and cannot be replaced
 // by another producer request until this presentation has finished.
 struct NdsComputePresentationFrame {
+    const nds_survivors::Frame* survivors{};
     NdsGpu2dDirectFrame direct{};
     NdsGpu2dHdFrame hd{};
     uint32_t hires_texture{};
@@ -31,6 +33,7 @@ struct NdsComputePresentationFrame {
 
 bool nds_compute_host_start(SDL_Window* presentation_window = nullptr);
 bool nds_compute_host_make_current();
+void nds_compute_host_note_presented_width(uint16_t width);
 bool nds_compute_host_has_visible_context();
 // Observer only: the actual last swapped top-window image, in top-down
 // 0xFFRRGGBB order. Does not re-render or advance emulation. Never used by

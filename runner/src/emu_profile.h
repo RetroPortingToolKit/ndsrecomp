@@ -172,6 +172,8 @@ enum NdsEmuBucket : uint8_t {
     // VCount144, VCount215. The compute-renderer submit/sync/map buckets in
     // NdsGpu3dProfile are a breakdown of THIS bucket.
     NDS_EMU_GPU3D_FRAME,
+    // Native offline driver work, separate from any ARM7 guest execution.
+    NDS_EMU_ARM7_SERVICE,
     NDS_EMU_BUCKET_COUNT,
 
     // Sentinel: no region is open. A gap charged to this is discarded.
@@ -272,7 +274,8 @@ constexpr uint64_t kExactMask =
     (uint64_t{1} << NDS_EMU_DMA_ARM9) |
     (uint64_t{1} << NDS_EMU_DMA_ARM7) |
     (uint64_t{1} << NDS_EMU_RASTER2D) |
-    (uint64_t{1} << NDS_EMU_GPU3D_FRAME);
+    (uint64_t{1} << NDS_EMU_GPU3D_FRAME) |
+    (uint64_t{1} << NDS_EMU_ARM7_SERVICE);
 
 extern uint64_t g_bus_gate;
 extern uint64_t g_bus_modulus;

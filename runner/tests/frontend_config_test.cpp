@@ -23,6 +23,19 @@ bool set_fullscreen_environment(const char* value) {
 }  // namespace
 
 int main() {
+    NdsScreenLayout pip{};NdsPipCorner corner{};NdsPipMainScreen main_screen{};
+    if (!require(nds_parse_screen_layout("picture-in-picture",&pip) && pip==NdsScreenLayout::PictureInPicture) ||
+        !require(nds_parse_pip_corner("bottom-right",&corner) && corner==NdsPipCorner::BottomRight) ||
+        !require(!nds_parse_pip_corner("middle",&corner)) ||
+        !require(nds_parse_pip_main_screen("bottom",&main_screen) && main_screen==NdsPipMainScreen::Bottom))return 130;
+    NdsFrontendOptions capabilities;
+    if(!require(nds_pip_swap_allowed(capabilities)))return 131;
+    for(const char* rom:{"691e00d9a5dd80b04f80cc7559503e8b06848785","90164d1ac127ee5f9815ea4ae7de798c7b5fc629"}) {
+        capabilities.savestate_rom_sha1=rom;
+        if(!require(!nds_pip_swap_allowed(capabilities)))return 132;
+    }
+    capabilities.savestate_rom_sha1.clear();capabilities.pip_allow_swap=false;
+    if(!require(!nds_pip_swap_allowed(capabilities)))return 133;
     uint8_t high_internal = 1;
     if (!require(nds_parse_internal_resolution("12", &high_internal)) ||
         !require(high_internal == 12) ||
@@ -133,6 +146,9 @@ int main() {
                 "startup_mode = \"automatic\"\n"
                 "[display]\n"
                 "screen_layout = \"separate\"\n"
+                "pip_corner = \"top-left\"\n"
+                "pip_main_screen = \"bottom\"\n"
+                "pip_allow_swap = false\n"
                 "fullscreen = \"borderless\"\n"
                 "adaptive_widescreen = \"top\"\n"
                 "adaptive_capability = \"top\"\n"
@@ -174,6 +190,7 @@ int main() {
         !require(options.expected_rom_sha1 ==
                  "90164d1ac127ee5f9815ea4ae7de798c7b5fc629") ||
         !require(options.screen_layout == NdsScreenLayout::Separate) ||
+        !require(options.pip_corner==NdsPipCorner::TopLeft && options.pip_main_screen==NdsPipMainScreen::Bottom && !options.pip_allow_swap) ||
         !require(options.fullscreen == NdsFullscreenMode::Borderless) ||
         !require(options.startup_mode == NdsStartupMode::Automatic) ||
         !require(options.adaptive_screens == NDS_ADAPTIVE_TOP) ||

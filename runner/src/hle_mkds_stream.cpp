@@ -8,6 +8,10 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#include "offline_arm7_sound.h"
+#endif
 
 namespace mkds_stream {
 namespace {
@@ -104,6 +108,13 @@ void decode() {
     }
     Range writes{dest.window, dest.offset + 4096u};
     if (overlaps(writes, maximum, code, length)) { fallback(); return; }
+#if defined(NDS_OFFLINE_ARM7)
+    // This streaming helper commits several timed tokens through raw stores.
+    // Active PCM needs instruction-ordered mutation rather than one late fence.
+    if (nds_offline_arm7_active() && nds_offline_sound_source_overlap(writes.data(), maximum)) {
+        fallback(); return;
+    }
+#endif
     uint32_t used = 0;
     if (entering) {
         for (unsigned r = 4; r <= 10; ++r) bus_write_u32(sp + (r - 4u) * 4u, g_cpu.R[r]);
