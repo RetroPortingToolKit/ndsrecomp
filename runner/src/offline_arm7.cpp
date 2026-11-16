@@ -33,13 +33,15 @@ constexpr Addresses address[2]={
     {0x03809DD4,0x03809EB8,0x03809EEC,0x03809F64,0x03809F88,0x03809BDC,0x03809EE8,0x038075D4},
     {0x0380A9F4,0x0380AAD8,0x0380BA7C,0x027F958C,0x027F95B0,0x0380A7FC,0x0380AB08,0x038081F4}};
 struct Proof {uint32_t pc,size;const char* hash;};
-constexpr Proof proofs[2][5]={
+constexpr Proof proofs[2][6]={
     {{0x0380121C,0x70,"46139cc6e31279ee0b85a4327489ec3e27e5512e"},{0x03801B14,0x1B8,"afb5ac9ed010fc851ea003f9675f52e7bfbde505"},
      {0x03802510,0x1CC,"77ac7a982b0d31e755b141e6e5042b5168a85f5a"},{0x03804338,0x1A0,"6341d6d3bbcd1f2fd357d426544ab848062a7b17"},
-     {0x03805584,0x134,"b801e3ec3f4d9d395997b8857447753190674ef7"}},
+     {0x03805584,0x134,"b801e3ec3f4d9d395997b8857447753190674ef7"},
+     {0x037FB808,0x7C,"c133887bb6e567bddc7a1718d0d16d0f81203c86"}},
     {{0x03804660,0x70,"95fe1d3e65a21fc6afab277064b1cca8ae350e15"},{0x03804F58,0x1B8,"afb5ac9ed010fc851ea003f9675f52e7bfbde505"},
      {0x03805954,0x1CC,"77ac7a982b0d31e755b141e6e5042b5168a85f5a"},{0x027F5A70,0x1A0,"17d5837dc373e5ca894326b8873dafeef7d7da79"},
-     {0x027F6CBC,0x134,"bd6e84be741f0d368bc271b8945dc330b7bbdecf"}}};
+     {0x027F6CBC,0x134,"bd6e84be741f0d368bc271b8945dc330b7bbdecf"},
+     {0x037FEBC0,0x7C,"3cf4fe48a761061c65e54301acfae2991d5d0f21"}}};
 struct State {
     bool active=false,touch_auto=false,mic_auto=false,sleep=false,reset_pending=false;
     std::array<std::array<uint16_t,16>,4> packets{}; // firmware,touch,power,mic
