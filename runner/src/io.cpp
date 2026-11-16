@@ -22,6 +22,9 @@
 #include "title_patches.h"
 #include "vram.h"
 #include "emu_profile.h"
+#if defined(NDS_OFFLINE_ARM7)
+#include "offline_arm7.h"
+#endif
 
 // Runner-only rare-condition hint owned by runtime_arm.cpp. Generated banks
 // keep calling the unchanged runtime_should_yield ABI.
@@ -3490,6 +3493,9 @@ void nds_tick_display(unsigned long long cyc) {
             if (g_dispstat[1] & 0x0008u) {
                 ++g_counts.vblank7;
                 nds_raise_irq(1, 0x00000001u);
+#if defined(NDS_OFFLINE_ARM7)
+                nds_offline_arm7_vblank(i * SCAN);
+#endif
             }
             // melonDS StartScanline order: 2D units first (capture-enable
             // auto-clear), then the 3D engine's polygon sort, render-state
