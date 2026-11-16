@@ -217,7 +217,9 @@ void begin(uint32_t kind) {
         fallback(4); return;
     }
     const uint32_t sp = g_cpu.R[13];
-    if ((sp & 7u) || sp < frame_size || !ram(sp - frame_size, frame_size) ||
+    // The real internal ARM callers also enter with SP%8==4. All frame
+    // accesses are words and the complete operation preserves that alignment.
+    if ((sp & 3u) || sp < frame_size || !ram(sp - frame_size, frame_size) ||
         overlaps(sp - frame_size, frame_size, file_entry, file_proof.size()) ||
         overlaps(sp - frame_size, frame_size, archive_entry, archive_proof.size()) ||
         overlaps(sp - frame_size, frame_size, allocator, allocator_proof.size()) ||
@@ -247,7 +249,7 @@ void begin(uint32_t kind) {
 
 void complete(uint32_t kind) {
     const uint32_t sp = g_cpu.R[13];
-    if ((sp & 7u) || !ram(sp, frame_size)) { fallback(); return; }
+    if ((sp & 3u) || !ram(sp, frame_size)) { fallback(); return; }
     std::array<uint32_t, 8> frame{};
     for (unsigned i = 0; i < frame.size(); ++i) frame[i] = bus_read_u32(sp + i * 4u);
     // This PC is also a legitimate original continuation. A native-owned

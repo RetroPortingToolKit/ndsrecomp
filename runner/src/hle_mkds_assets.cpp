@@ -97,7 +97,7 @@ void dispatch_arm(uint32_t pc,uint32_t next) {
 }
 bool read_frame(std::array<uint32_t,8>& f) {
     const uint32_t sp=g_cpu.R[13];
-    if((sp&7)||!range(sp,frame_size))return false;
+    if((sp&3)||!range(sp,frame_size))return false;
     for(unsigned i=0;i<f.size();++i)f[i]=bus_read_u32(sp+i*4);
     const uint32_t signature=0xD347A551u^sp^f[Offset]^f[Length]^f[Decoded]^f[Context]^f[Heap]^f[Return];
     return f[Magic]==magic&&f[Cookie]==signature;
@@ -117,7 +117,9 @@ void begin() {
     if(!path_at(context,path)||!service.lookup(path.c_str(),&file)||
        !service.inspect(file,&size)||!size||size>max_output){fallback(4);return;}
     const uint32_t sp=g_cpu.R[13];
-    if((sp&7)||sp<frame_size||!range(sp-frame_size,frame_size)){fallback(5);return;}
+    // These owned internal Thumb callers use word-aligned stacks, including
+    // SP%8==4. Preserve their alignment through the 32-byte continuation.
+    if((sp&3)||sp<frame_size||!range(sp-frame_size,frame_size)){fallback(5);return;}
     std::array<uint32_t,8> frame{magic,file.offset,file.size,size,context,heap,g_cpu.R[14],0};
     frame[Cookie]=0xD347A551u^(sp-frame_size)^frame[Offset]^frame[Length]^frame[Decoded]^frame[Context]^frame[Heap]^frame[Return];
     for(unsigned i=0;i<frame.size();++i)bus_write_u32(sp-frame_size+i*4,frame[i]);
