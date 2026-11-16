@@ -1102,7 +1102,9 @@ bool video_sections_roundtrip_and_prevalidate() {
                  "extract GPU3D section for endian check") &&
         expect_le32_at(original, 0u, 6u,
                        "GPU3D vendored payload length is explicit little-endian") &&
-        expect_le32_at(original, 10u, 0x55660031u,
+        expect_le32_at(original, 10u, 0u,
+                       "GPU3D native payload length is explicit little-endian") &&
+        expect_le32_at(original, 14u, 0x55660031u,
                        "GPU3D bridge timestamp is explicit little-endian");
 
     // Two units occupy 152 bytes each, followed by the explicit framebuffer
