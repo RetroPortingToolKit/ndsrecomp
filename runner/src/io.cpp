@@ -1170,7 +1170,7 @@ uint8_t tsc_write(uint8_t v) {
             default:   g_tsc_conv = 0xFFF;  break;
         }
         if (v & 0x08u) g_tsc_conv &= 0x0FF0;          // 8-bit conversion mode
-    } else {
+    } else if (g_tsc_datapos < 3) { // 3: both result bytes have shifted out
         ++g_tsc_datapos;
     }
     return out;
@@ -2603,9 +2603,11 @@ bool io_savestate_validate(const NdsIoCoreSaveState& in,
     if (!binary(in.next_vcount_valid) || !binary(in.in_vblank) ||
         !binary(in.gxfifo_stall) || !binary(in.pm_hold) ||
         !binary(in.powered_off) || in.vcount > 262u ||
-        in.tsc_datapos < 0 || in.tsc_datapos > 2 ||
-        (in.powercontrol7 & ~0x0003u) != 0u || in.pm_index >= 8u)
+        in.tsc_datapos < 0 || in.tsc_datapos > 3 ||
+        (in.powercontrol7 & ~0x0003u) != 0u)
         return fail("savestate IO core scalar is invalid");
+    // pm_index stores the complete SPI command byte: bit 7 selects a read,
+    // and pm_write masks the register index to three bits when using it.
     for (int cpu = 0; cpu < 2; ++cpu) {
         if (!binary(in.vcount_match[cpu]) || !binary(in.cpu_halted[cpu]) ||
             in.fifo_count[cpu] > 16u || in.fifo_head[cpu] >= 16u ||

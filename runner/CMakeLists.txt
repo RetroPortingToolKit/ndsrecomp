@@ -1384,6 +1384,17 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_include_directories(firmware_state_test PRIVATE src)
   add_test(NAME firmware_state_test COMMAND firmware_state_test)
 
+  # A focused real-IO fixture; section GC avoids linking unrelated devices.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(io_spi_savestate_test tests/io_spi_savestate_test.cpp)
+    target_include_directories(io_spi_savestate_test PRIVATE src vendor/melonds
+        ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
+        ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+    target_compile_options(io_spi_savestate_test PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(io_spi_savestate_test PRIVATE -Wl,--gc-sections)
+    add_test(NAME io_spi_savestate_test COMMAND io_spi_savestate_test)
+  endif()
+
   add_executable(savestate_test
       tests/savestate_test.cpp
       tests/savestate_test_stubs.cpp
@@ -1407,6 +1418,13 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   ndsrecomp_link_tomlpp(savestate_test)
   target_link_libraries(savestate_test PRIVATE nds_armv4t nds_support)
   add_test(NAME savestate_test COMMAND savestate_test)
+
+  add_executable(spu_savestate_test tests/spu_savestate_test.cpp
+      src/spu.cpp src/emu_profile.cpp src/dispatch_timing.cpp)
+  target_include_directories(spu_savestate_test PRIVATE src vendor/melonds
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
+      ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  add_test(NAME spu_savestate_test COMMAND spu_savestate_test)
 
   # Bit-exactness rail for the fused timed-access fast path (yjp.70 ph2 B):
   # sweeps every region boundary / width / seq / CPU / CP15 configuration
@@ -1469,6 +1487,13 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_include_directories(network_savestate_guard_test PRIVATE src)
   add_test(NAME network_savestate_guard_test
            COMMAND network_savestate_guard_test)
+
+  add_executable(spu_capture_wrap_test tests/spu_capture_wrap_test.cpp
+      src/spu.cpp src/emu_profile.cpp src/dispatch_timing.cpp)
+  target_include_directories(spu_capture_wrap_test PRIVATE src vendor/melonds
+      ${CMAKE_CURRENT_SOURCE_DIR}/../recompiler/armv4t
+      ${NDS_ARM_RECOMP_INCLUDE_DIRS})
+  add_test(NAME spu_capture_wrap_test COMMAND spu_capture_wrap_test)
 
   add_executable(video_savestate_test
       tests/video_savestate_test.cpp
