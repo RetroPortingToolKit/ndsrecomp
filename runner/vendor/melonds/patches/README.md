@@ -518,3 +518,11 @@ viewport, output-width and guest-wide-mode keys qualify hits. Zero-W behavior
 is retained. Reset and load discard derived entries. The bridge enables this
 only in the MPH submission HLE build; focused tests compare it with caching
 disabled. FIFO/device timing and polygon processing are unchanged.
+
+## 0026-native-gl-signed-screen-coordinates.patch
+
+2026-11-16: preserves signed screen X/Y independently of unsigned depth and W
+when packing vertices for NativeGL. Slight negative clipping coordinates no
+longer wrap into distant screen positions or overwrite the paired coordinate.
+Polygon centers use signed accumulation, and both Z/W vertex shaders sign-extend
+the screen components.

@@ -49,6 +49,57 @@ std::vector<u32> pixels(GLRenderer& renderer, unsigned width) {
 }
 u32 color(u32 packed) { return packed & 0x1F3F3F3Fu; }
 u32 id(u32 packed) { return ((packed >> 6) & 3) | (((packed >> 14) & 3) << 2) | (((packed >> 22) & 3) << 4); }
+void test_signed_screen_coordinates() {
+    auto nds = std::make_unique<NDS>();
+    auto& gpu = nds->GPU;
+    auto& g = gpu.GPU3D;
+    g.Reset(); g.SetEnabled(true, true); g.SetRenderWidth(448);
+    auto renderer = GLRenderer::New();
+    require(renderer != nullptr, "signed-coordinate shaders failed to compile");
+    auto* native = renderer.get();
+    native->SetRenderWidth(448); native->SetRenderSettings(4, true);
+    g.SetCurrentRenderer(std::move(renderer));
+    // A clipped polygon can round just outside the viewport. Preserve the
+    // sign instead of turning its left/top vertices into far-screen values.
+    Vertex vertices[4]{};
+    const int xy[4][2] = {{-2,-2},{-2,192*16},{448*16,192*16},{448*16,-2}};
+    const int uv[4][2] = {{0,0},{0,128},{128,128},{128,0}};
+    Polygon polygon{};
+    polygon.NumVertices = 4; polygon.FacingView = true;
+    polygon.Attr = (7u << 24) | (31u << 16);
+    polygon.TexParam = (4u << 26) | (0x70000u >> 3);
+    polygon.VTop = 0; polygon.VBottom = 2;
+    polygon.YTop = -1; polygon.YBottom = 192;
+    for (unsigned i = 0; i < 4; ++i) {
+        auto& v = vertices[i]; polygon.Vertices[i] = &v;
+        for (unsigned c = 0; c < 2; ++c) {
+            v.HiresPosition[c] = xy[i][c];
+            v.FinalPosition[c] = xy[i][c] >> 4;
+            v.TexCoords[c] = uv[i][c];
+        }
+        std::fill_n(v.FinalColor, 3, 510);
+        polygon.FinalW[i] = 4096; polygon.FinalZ[i] = 0x20000;
+    }
+    const u16 palette[5] = {0,0x001F,0x03E0,0x7C00,0x7FFF};
+    std::copy_n(reinterpret_cast<const u8*>(palette), sizeof(palette), gpu.VRAMFlat_TexPal);
+    for (unsigned y = 0; y < 8; ++y) for (unsigned x = 0; x < 8; ++x)
+        gpu.VRAMFlat_Texture[0x70000 + y*8 + x] = 1 + (x>=4) + 2*(y>=4);
+    g.RenderDispCnt = 1; g.RenderClearAttr1 = 0; g.RenderClearAttr2 = 0x7FFF;
+    g.RenderNumPolygons = 1; g.RenderPolygonRAM[0] = &polygon;
+    for (bool wbuffer : {false, true}) {
+        polygon.WBuffer = wbuffer;
+        native->RenderFrame(gpu);
+        const auto image = pixels(*native, 448);
+        require(std::all_of(image.begin(), image.end(), [](u32 p) { return ((p>>24)&31)==31; }),
+                "negative clipped coordinates tore textured polygon coverage");
+        for (u32 expected : {0x1F00003Fu,0x1F003F00u,0x1F3F0000u,0x1F3F3F3Fu})
+            require(std::count_if(image.begin(),image.end(),[&](u32 p){return color(p)==expected;})>1000,
+                    "signed-coordinate textured quadrants differ");
+    }
+    require(glGetError()==GL_NO_ERROR,"signed-coordinate GL error");
+    g.SetCurrentRenderer(std::make_unique<SoftRenderer>());
+}
+
 void tests() {
     auto nds = std::make_unique<NDS>();
     auto& gpu = nds->GPU;
@@ -317,7 +368,7 @@ int main() {
         SDL_Quit(); return 77;
     }
     int result = 0;
-    try { tests(); std::puts("native GL transport, geometry, capture and fallback passed"); }
+    try { tests(); test_signed_screen_coordinates(); std::puts("native GL transport, geometry, capture and fallback passed"); }
     catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); result = 1; }
     SDL_GL_DestroyContext(context); SDL_DestroyWindow(window); SDL_Quit();
     return result;
