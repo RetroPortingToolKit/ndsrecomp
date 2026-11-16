@@ -196,6 +196,8 @@ struct NdsFrontendOptions {
     std::string expected_rom_sha1;
     NdsScreenLayout screen_layout = NdsScreenLayout::Stacked;
     NdsFullscreenMode fullscreen = NdsFullscreenMode::Off;
+    // Keep SDL/events/debug/presentation live without retiring guest work.
+    bool start_paused = false;
     // Zero preserves the standalone runner's historical 2x sizing. Title
     // launchers can request 1..8x with display-DPI-aware desktop fitting.
     uint8_t window_scale = 0;
@@ -404,6 +406,9 @@ bool nds_frontend_request_exit();
 // No window capture or extra per-frame copy; unavailable when the menu is shut.
 bool nds_frontend_read_runtime_menu(std::vector<uint32_t>& pixels,
                                     unsigned* width, unsigned* height);
+// Frontend-owner safe-point control. Unavailable without a live SDL frontend.
+bool nds_frontend_set_paused(bool paused);
+bool nds_frontend_paused();
 
 // Live frontend counters for the play-mode debug surface (`frontend_stats`).
 // Cumulative since frontend start; a client samples twice and derives fps /

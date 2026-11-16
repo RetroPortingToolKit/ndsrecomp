@@ -543,6 +543,8 @@ int main(int argc, char** argv) {
         } else if (a == "--config" && i + 1 < argc) {
             config_path = argv[++i];
             config_explicit = true;
+        } else if (a == "--start-paused") {
+            frontend_options.start_paused = true;
         } else if (a == "--screen-layout" && i + 1 < argc) {
             cli_screen_layout = argv[++i];
         } else if (a == "--window-scale" && i + 1 < argc) {
@@ -718,7 +720,7 @@ int main(int argc, char** argv) {
                 "[--firmware-state-path mutable-firmware.bin] "
                 "[--config game.toml] "
                 "[--screen-layout stacked|separate] "
-                "[--fullscreen off|borderless|exclusive] "
+                "[--fullscreen off|borderless|exclusive] [--start-paused] "
                 "[--adaptive-widescreen none|top|bottom|both] "
                 "[--widescreen-width even:256..448] "
                 "[--supersampling 1|2|3|4] "

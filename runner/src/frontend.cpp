@@ -48,6 +48,8 @@ namespace {
 // thread by the `frontend_stats` debug command at the debug_pump() safe
 // point. Stays all-zero (active=0) when no frontend is running.
 NdsFrontendLiveStats g_live_stats{};
+// Accessed only by the SDL/frontend owner, including debug_pump callbacks.
+bool g_frontend_paused = false;
 NdsFrontendPacingStats g_pacing_stats{};
 uint64_t g_pacing_previous_counter = 0;
 
@@ -3222,6 +3224,8 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         std::fprintf(stderr,"[sdl] CPU/render handoff unavailable for selected title/renderer/features; serial fallback\n");
     }
 #endif
+    g_frontend_paused = options.start_paused;
+    bool audio_review_paused = false;
     while (running) {
         finish_pending_save(false);
         const uint64_t latency_loop = latency_trace ? SDL_GetPerformanceCounter() : 0;
@@ -3242,6 +3246,21 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         // client is connected). See debug_server.h.
         publish_input_debug();
         debug_pump();
+        if (g_frontend_paused != audio_review_paused) {
+            // Every previous producer was joined before this safe point.
+            // Drop wall-clock audio backlog, then resume through the ordinary
+            // short prebuffer rather than playing catch-up after a long pause.
+            pause_audio(audio, true);
+            clear_audio_queue(audio, audio_queue);
+            audio_queue.started.store(false, std::memory_order_relaxed);
+            audio_started = false;
+            audio_start_threshold = kAudioQueueFrames;
+            audio_pace_floor = kAudioQueueFrames;
+            audio_review_paused = g_frontend_paused;
+            fps_frames = 0;
+            fps_start = SDL_GetPerformanceCounter();
+            g_pacing_previous_counter = 0;
+        }
         const uint64_t current_audio_epoch = nds_spu_presentation_epoch();
         if (current_audio_epoch != audio_presentation_epoch) {
             // A state load abandoned the samples already buffered in SDL.
@@ -4208,6 +4227,39 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         // Quit/control requests are resolved while the producer is joined.
         // Never start another guest transaction after SDL_QUIT/window close.
         if (!running) break;
+        if (g_frontend_paused) {
+            // SDL events (including F-slot load/save) and the TCP pump remain
+            // active. Re-present the joined current image so resize/expose and
+            // state loads work while both guest CPUs/device clocks are frozen.
+            uint16_t widths[2] = {256, 256};
+            const uint32_t* pixels[2] = {};
+#if defined(NDS_HAVE_COMPUTE_RENDERER)
+            const auto* survivors = nds_survivor_host_enabled()
+                ? nds_gpu2d_survivor_current() : nullptr;
+            if (survivors) {
+                for (unsigned screen = 0; screen < 2; ++screen) {
+                    widths[screen] = survivors->widths[screen];
+                    pixels[screen] = survivors->native_base[screen];
+                }
+            } else
+#endif
+            {
+                for (unsigned screen = 0; screen < 2; ++screen) {
+                    pixels[screen] = nds_gpu2d_framebuffer(screen);
+                    if (options.adaptive_screens & (1u << screen))
+                        pixels[screen] = nds_gpu2d_adaptive_framebuffer(
+                            screen, &widths[screen]);
+                }
+            }
+            const auto ticks = present_screens(presentation,
+                pixels[0], widths[0], pixels[1], widths[1], runtime_ui,
+                mph_prime_virtual_stylus || generic_virtual_stylus,
+                mph_virtual_x, mph_virtual_y,
+                savestate_notice.empty() ? nullptr : savestate_notice.c_str());
+            if (!ticks.ok) { compute_failed = true; break; }
+            SDL_Delay(16);
+            continue;
+        }
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
         if(nds_survivor_host_enabled()) {
             nds_gpu2d_set_survivor_widths(
@@ -4852,6 +4904,16 @@ bool nds_frontend_read_runtime_menu(std::vector<uint32_t>& pixels,
     (void)pixels; (void)width; (void)height;
     return false;
 #endif
+}
+
+bool nds_frontend_set_paused(bool paused) {
+    if (!g_live_stats.active) return false;
+    g_frontend_paused = paused;
+    return true;
+}
+
+bool nds_frontend_paused() {
+    return g_live_stats.active && g_frontend_paused;
 }
 
 bool nds_frontend_request_exit() {

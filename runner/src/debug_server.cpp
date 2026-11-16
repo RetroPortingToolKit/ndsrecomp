@@ -513,6 +513,15 @@ std::string handle(const std::string& line) {
         return "{\"available\":false}";
 #endif
     }
+    if (cmd == "frontend_pause") {
+        if (!g_play_mode)
+            return "{\"error\":\"frontend pause requires interactive play mode\"}";
+        const bool paused = json_bool(line, "paused", nds_frontend_paused());
+        if (!nds_frontend_set_paused(paused))
+            return "{\"error\":\"frontend is not active\"}";
+        return std::string("{\"ok\":true,\"paused\":") +
+            (nds_frontend_paused() ? "true}" : "false}");
+    }
     if (cmd == "offline_arm7") {
 #if defined(NDS_OFFLINE_ARM7)
         return std::string("{\"available\":true,\"selected\":")+
