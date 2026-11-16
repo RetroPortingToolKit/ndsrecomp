@@ -1352,10 +1352,10 @@ void command(const uint32_t *q) {
     break;
   }
 }
-bool list_valid(uint32_t ptr) {
+template <class Read> bool list_valid(uint32_t ptr, const Read &read) {
   std::array<uint32_t, 6> q{};
   for (unsigned guard = 0; ptr && guard < 4096; ++guard) {
-    if (!mainram(ptr, 24) || (ptr & 3) || !memory(ptr, q.data(), 24) ||
+    if (!mainram(ptr, 24) || (ptr & 3) || !read(ptr, q.data(), 24) ||
         q[1] > 33)
       return false;
     unsigned id = q[1], a = q[2];
@@ -1386,6 +1386,11 @@ bool list_valid(uint32_t ptr) {
       return true;
   }
   return !ptr;
+}
+bool list_valid(uint32_t ptr) {
+  return list_valid(ptr, [](uint32_t address, void *out, uint32_t size) {
+    return memory(address, out, size);
+  });
 }
 void process() {
   for (unsigned n = 0; n < g.queued && !g.fault; ++n) {
@@ -1490,6 +1495,26 @@ bool nds_offline_sound_takeover(uint64_t now, uint64_t next) {
       // its embedded OSAlarm handler is null and it has no remaining event.
     }
   }
+  // Both verified SDK initializers place the 8-slot OSMessageQueue directly
+  // after the caller-visible work, followed by its message array. Its heads
+  // may already have left the hardware FIFO before native ownership starts.
+  std::array<uint32_t, 8> sdk_queue{}, messages{};
+  const uint32_t queue_address = g.profile.work + WorkSize;
+  if (candidate.queued || !read(queue_address, sdk_queue.data(), sizeof sdk_queue))
+    return decline("sound queue unavailable");
+  if (sdk_queue[4] != queue_address + sizeof sdk_queue || sdk_queue[5] != 8 ||
+      sdk_queue[6] >= 8 || sdk_queue[7] > 8)
+    return decline("sound queue header invalid");
+  if (!read(sdk_queue[4], messages.data(), sizeof messages))
+    return decline("sound queue messages unavailable");
+  candidate.queue.fill(0);
+  candidate.queued = uint8_t(sdk_queue[7]);
+  for (unsigned i = 0; i < candidate.queued; ++i) {
+    const uint32_t head = messages[(sdk_queue[6] + i) & 7];
+    if (!head || !list_valid(head, read))
+      return decline("pending sound list invalid");
+    candidate.queue[i] = head;
+  }
   NdsSpuSaveState hardware;
   if (!spu_savestate_export(&hardware))
     return decline("SPU state unavailable");
@@ -1502,6 +1527,10 @@ bool nds_offline_sound_takeover(uint64_t now, uint64_t next) {
     // The SPU snapshot has already converted register word counts to bytes.
     candidate.lengths[i] = uint32_t(bytes);
   }
+  // Publish pending heads and exclusive ownership together. The private SDK
+  // queue stays frozen: this fixed offline profile never resumes guest ARM7.
+  // Active re-entry and serialized native ownership prevent re-adoption;
+  // a full warm reset initializes the SDK again before another takeover.
   candidate.active = true;
   g = candidate;
   source_dirty = true;
