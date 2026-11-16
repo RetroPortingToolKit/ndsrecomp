@@ -85,7 +85,8 @@ template<size_t N>bool prove(uint32_t address,std::array<uint8_t,N>& proof,const
        gba::sha1(live.data(),N).hex()!=hash)return false;
     proof=live;return true;
 }
-void fallback() {
+void fallback(uint32_t reason=0) {
+    if(reason)count.decline_reason=reason;
     ++count.declines;tier3_step_one(g_cpu.R[15]);
     if(!runtime_unwinding()&&!runtime_should_yield())runtime_dispatch(g_cpu.R[15]|((g_cpu.cpsr&CPSR_T_BIT)?1u:0u));
 }
@@ -102,19 +103,21 @@ bool read_frame(std::array<uint32_t,8>& f) {
     return f[Magic]==magic&&f[Cookie]==signature;
 }
 void begin() {
-    if(!range(0x021759A8,4)||!range(0x02174E50,4)||!ordinary_root()){fallback();return;}
+    count.entry_sp=g_cpu.R[13];
+    count.archive_flags=bus_read_u32(0x0216F34C+0x1c);
+    if(!range(0x021759A8,4)||!range(0x02174E50,4)||!ordinary_root()){fallback(1);return;}
     const uint32_t base=bus_read_u32(0x021759A8);
-    if(base>UINT32_MAX-0x8c8-0x94){fallback();return;}
+    if(base>UINT32_MAX-0x8c8-0x94){fallback(2);return;}
     const uint32_t context=base+0x8c8;
     const uint32_t manager=bus_read_u32(0x02174E50);
-    if(!range(context,0x94)||!range(manager,16)){fallback();return;}
+    if(!range(context,0x94)||!range(manager,16)){fallback(2);return;}
     const uint32_t heap=bus_read_u32(manager+12);
-    if(!range(heap,0x28)){fallback();return;}
+    if(!range(heap,0x28)){fallback(3);return;}
     std::string path;nds_assets::FileView file;uint32_t size=0;
     if(!path_at(context,path)||!service.lookup(path.c_str(),&file)||
-       !service.inspect(file,&size)||!size||size>max_output){fallback();return;}
+       !service.inspect(file,&size)||!size||size>max_output){fallback(4);return;}
     const uint32_t sp=g_cpu.R[13];
-    if((sp&7)||sp<frame_size||!range(sp-frame_size,frame_size)){fallback();return;}
+    if((sp&7)||sp<frame_size||!range(sp-frame_size,frame_size)){fallback(5);return;}
     std::array<uint32_t,8> frame{magic,file.offset,file.size,size,context,heap,g_cpu.R[14],0};
     frame[Cookie]=0xD347A551u^(sp-frame_size)^frame[Offset]^frame[Length]^frame[Decoded]^frame[Context]^frame[Heap]^frame[Return];
     for(unsigned i=0;i<frame.size();++i)bus_write_u32(sp-frame_size+i*4,frame[i]);

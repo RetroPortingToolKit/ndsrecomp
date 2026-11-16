@@ -6,6 +6,7 @@ namespace mkds_assets {
 struct Statistics {
     bool enabled=false;uint64_t files=0,bytes=0,declines=0;
     uint32_t last_offset=0,last_compressed=0,last_destination=0,last_decoded=0;
+    uint32_t decline_reason=0,entry_sp=0,archive_flags=0;
 };
 bool initialize(const char* rom_sha1,const nds_assets::Services& services);
 bool is_entry(NdsCpu cpu,uint32_t pc,bool thumb);

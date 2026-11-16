@@ -82,6 +82,7 @@ std::string json() {
     std::ostringstream out;
     out<<"{\"selected\":"<<(enabled?"true":"false")
        <<",\"mkds_files\":"<<a.files<<",\"mkds_bytes\":"<<a.bytes<<",\"mkds_declines\":"<<a.declines
+       <<",\"mkds_decline_reason\":"<<a.decline_reason<<",\"mkds_entry_sp\":"<<a.entry_sp<<",\"mkds_archive_flags\":"<<a.archive_flags
        <<",\"mph_files\":"<<b.files<<",\"mph_archives\":"<<b.archives<<",\"mph_bytes\":"<<b.bytes
        <<",\"mph_declines\":"<<b.declines
        <<",\"last\":{\"offset\":"<<(a.enabled?a.last_offset:b.last_offset)
