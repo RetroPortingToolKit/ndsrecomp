@@ -2508,7 +2508,7 @@ uint64_t nds_next_timer_overflow_time_for_cpu(int cpu) {
         if (!(timer.ctrl & 0x80u) || (timer.ctrl & 0x4u)) continue;
         const uint64_t prescale = kPrescaler[timer.ctrl & 3u];
         const uint64_t span = 0x10000ull - timer.counter;
-        best = std::min(best, g_timer_last[cpu] + span * prescale - timer.accum);
+        best = std::min<uint64_t>(best, g_timer_last[cpu] + span * prescale - timer.accum);
     }
     return best;
 }
