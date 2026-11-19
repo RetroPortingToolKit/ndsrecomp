@@ -252,6 +252,11 @@ struct NdsGpu3dPolygonSnapshot {
     int32_t max_y;
     uint32_t min_z;
     uint32_t max_z;
+    // Final per-vertex texture coordinates (1.11.4, after any texgen mode).
+    int32_t min_s;
+    int32_t max_s;
+    int32_t min_t;
+    int32_t max_t;
 };
 uint32_t nds_gpu3d_render_polygon_count();
 bool nds_gpu3d_render_polygon(uint32_t index,

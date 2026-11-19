@@ -125,7 +125,7 @@ private:
     void Normal(uint32_t parameter);
     void SubmitVertex();
     void SubmitPolygon(std::span<const Vertex> vertices);
-    void MapTexture(std::span<const int32_t, 3> source, unsigned fractional_bits);
+    std::array<int16_t, 2> MapTexture(std::span<const int32_t, 3> source, unsigned fractional_bits) const;
     Matrix ClipMatrix() const;
     void Widen(std::array<int32_t, 4>& clip) const;
 };

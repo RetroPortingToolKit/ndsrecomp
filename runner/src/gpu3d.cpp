@@ -1002,7 +1002,14 @@ bool nds_gpu3d_render_polygon(uint32_t index,
     out->max_y = -0x7FFFFFFF;
     out->min_z = 0xFFFFFFFFu;
     out->max_z = 0u;
+    out->min_s = out->min_t = 0x7FFFFFFF;
+    out->max_s = out->max_t = -0x7FFFFFFF;
     for (uint32_t vertex = 0; vertex < polygon->NumVertices; ++vertex) {
+        const melonDS::Vertex& v = *polygon->Vertices[vertex];
+        out->min_s = std::min<int32_t>(out->min_s, v.TexCoords[0]);
+        out->max_s = std::max<int32_t>(out->max_s, v.TexCoords[0]);
+        out->min_t = std::min<int32_t>(out->min_t, v.TexCoords[1]);
+        out->max_t = std::max<int32_t>(out->max_t, v.TexCoords[1]);
         out->min_x = std::min(out->min_x,
                               polygon->Vertices[vertex]->FinalPosition[0]);
         out->max_x = std::max(out->max_x,

@@ -800,13 +800,15 @@ std::string handle(const std::string& line) {
             "\"submission_index\":%u,\"vertex_count\":%u,"
             "\"attr\":%u,\"tex_param\":%u,\"tex_palette\":%u,"
             "\"min_x\":%d,\"max_x\":%d,\"min_y\":%d,\"max_y\":%d,"
-            "\"min_z\":%u,\"max_z\":%u}",
+            "\"min_z\":%u,\"max_z\":%u,"
+            "\"min_s\":%d,\"max_s\":%d,\"min_t\":%d,\"max_t\":%d}",
             nds_gpu3d_render_polygon_count(),
             static_cast<unsigned long long>(index),
             polygon.submission_index, polygon.vertex_count,
             polygon.attr, polygon.tex_param, polygon.tex_palette,
             polygon.min_x, polygon.max_x, polygon.min_y, polygon.max_y,
-            polygon.min_z, polygon.max_z);
+            polygon.min_z, polygon.max_z,
+            polygon.min_s, polygon.max_s, polygon.min_t, polygon.max_t);
         return result;
     }
     if (cmd == "gx_polygons") {
@@ -832,7 +834,11 @@ std::string handle(const std::string& line) {
                 ",\"min_y\":" + std::to_string(polygon.min_y) +
                 ",\"max_y\":" + std::to_string(polygon.max_y) +
                 ",\"min_z\":" + std::to_string(polygon.min_z) +
-                ",\"max_z\":" + std::to_string(polygon.max_z) + "}";
+                ",\"max_z\":" + std::to_string(polygon.max_z) +
+                ",\"min_s\":" + std::to_string(polygon.min_s) +
+                ",\"max_s\":" + std::to_string(polygon.max_s) +
+                ",\"min_t\":" + std::to_string(polygon.min_t) +
+                ",\"max_t\":" + std::to_string(polygon.max_t) + "}";
         }
         result += "]}";
         return result;
