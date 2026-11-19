@@ -950,7 +950,6 @@ const uint32_t* nds_gpu3d_wide_attr_line(int) { ++g_attribute_line_reads; return
 bool nds_gpu3d_display_visible() { return g_3d_visible; }
 uint16_t nds_gpu3d_render_xpos() { return g_3d_render_xpos; }
 uint32_t nds_gpu3d_render_polygon_count() { return g_3d_render_polygon_count; }
-bool nds_gpu3d_display_readback_latency() { return false; }
 bool nds_gpu3d_projection_has_perspective() {
     return g_3d_projection_has_perspective;
 }

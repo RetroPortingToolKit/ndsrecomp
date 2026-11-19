@@ -41,13 +41,6 @@ void nds_diagnostics_maybe_write_performance_sample(
 // diagnostics being enabled.
 void nds_diagnostics_note_savestate(const char* action, unsigned slot,
                                     bool ok);
-void nds_diagnostics_note_perf_governor_transition(uint8_t from_stage,
-                                                   uint8_t to_stage,
-                                                   const char* reason);
-// Dumps the always-on governor transition ring (perf_governor.h) into the
-// bundle. Called automatically when the performance log closes; exposed so a
-// caller can snapshot it mid-run.
-void nds_diagnostics_write_perf_governor_history();
 // Dumps the always-on host CPU sample ring (host_profile.h) as a sidecar file
 // next to the perf log and appends a {"kind":"hostprof"} record naming it,
 // carrying the sampler status and an inline top-40. Called automatically when

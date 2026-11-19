@@ -320,9 +320,6 @@ def build_cmd(args: argparse.Namespace, cfg: dict[str, Any], port: int,
         "--rom", str(cfg["rom"]),
     ]
     cmd += list(cfg["args"])
-    # The governor changes host-side stages over time; a digest comparison
-    # needs both legs on the same, fixed configuration.
-    cmd += ["--performance-governor", "off"]
     return cmd
 
 

@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "cartridge_config.h"
-#include "perf_governor.h"
 #include "../../launcher/nds_input_bindings.h"
 #include "screen_layout.h"
 
@@ -318,7 +317,6 @@ struct NdsFrontendOptions {
     NdsCartridgeSaveConfig cartridge_save{};
     NdsNetworkOptions network{};
     NdsLocalWirelessOptions local_wireless{};
-    NdsPerfGovernorMode perf_governor_mode = NdsPerfGovernorMode::Auto;
     // Populated only after the cartridge identity is verified. This directory
     // is already per-ROM; input events never supply arbitrary filenames.
     std::string savestate_directory;
@@ -336,9 +334,8 @@ bool nds_load_frontend_config(const std::string& path,
                               std::string* error);
 // Runtime menu preferences share the title's existing settings file. Only
 // the named frontend keys are changed; unrelated title choices are retained.
-bool nds_load_runtime_quality_setting(NdsFrontendOptions* options);
 bool nds_save_runtime_settings(const NdsFrontendOptions& options,
-                                bool mouse_changed, bool quality_changed);
+                                bool mouse_changed);
 bool nds_parse_screen_layout(const std::string& value,
                              NdsScreenLayout* out);
 bool nds_parse_fullscreen_mode(const std::string& value,
@@ -450,15 +447,6 @@ struct NdsFrontendLiveStats {
     uint64_t cpu_overlap_ticks;
     uint64_t cpu_overlap_frames;
     uint64_t cpu_prefix_cycles;
-    uint8_t perf_governor_stage;
-    uint32_t perf_governor_over_frames;
-    uint32_t perf_governor_under_frames;
-    // Stage 2 is being held because this machine flapped out of it (see
-    // NdsPerfGovernorConfig::flap_engage_limit).
-    uint8_t perf_governor_held;
-    // Terminal: a stage could not be applied, so the governor stopped.
-    uint8_t perf_governor_apply_failed;
-    uint64_t perf_governor_transitions;
 };
 void nds_frontend_live_stats(NdsFrontendLiveStats* out);
 

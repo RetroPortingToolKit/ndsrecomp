@@ -2757,8 +2757,7 @@ bool nds_gpu2d_requires_3d_readback() {
         g_frame_capture_active)
         return true;
     if(g_survivors_enabled)return false;
-    return !g_direct_frame_active &&
-           !nds_gpu3d_display_readback_latency();
+    return !g_direct_frame_active;
 }
 
 void nds_gpu2d_force_cpu_frames(uint32_t frames) {

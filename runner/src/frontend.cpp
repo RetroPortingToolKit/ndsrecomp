@@ -1190,27 +1190,15 @@ uint64_t framebuffer_rgb_fnv(int screen) {
 
 constexpr const char* kRuntimeMouseSensitivityKey =
     "input.mouse_sensitivity";
-constexpr const char* kRuntimeAutomaticQualityKey = "graphics.automatic_quality";
-constexpr const char* kRuntimeResolutionNowKey = "graphics.resolution_now";
-constexpr const char* kRuntimeSupersamplingNowKey = "graphics.supersampling_now";
 constexpr const char* kRuntimeResumeKey = "system.resume";
 constexpr const char* kRuntimeQuitKey = "system.quit";
-
-struct FrontendPresentation;
 
 struct RuntimeMenuState {
     NdsFrontendOptions* options = nullptr;
     bool* running = nullptr;
     bool close_requested = false;
-    FrontendPresentation* presentation = nullptr;
-    NdsPerfGovernorState* governor = nullptr;
     bool mouse_changed = false;
-    bool quality_changed = false;
 };
-
-int runtime_menu_set_automatic_quality(RuntimeMenuState* state, int value);
-int runtime_menu_get_quality_text(void* context, const RecompRuntimeUiItem* item,
-                                  char* text, size_t size);
 
 int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
                            int* value_out) {
@@ -1220,10 +1208,6 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
         *value_out = state->options->relative_mouse_sensitivity;
         return 1;
     }
-    if (std::strcmp(item->key, kRuntimeAutomaticQualityKey) == 0) {
-        *value_out = state->options->perf_governor_mode != NdsPerfGovernorMode::Off;
-        return 1;
-    }
     return 0;
 }
 
@@ -1231,8 +1215,6 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
                            int value) {
     auto* state = static_cast<RuntimeMenuState*>(context);
     if (!state || !state->options || !item) return 0;
-    if (std::strcmp(item->key, kRuntimeAutomaticQualityKey) == 0)
-        return runtime_menu_set_automatic_quality(state, value);
     if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
         if (value < 10 || value > 400) return 0;
         state->options->relative_mouse_sensitivity =
@@ -1263,22 +1245,16 @@ int runtime_menu_is_enabled(void* context, const RecompRuntimeUiItem* item) {
     if (!state || !state->options || !item) return 0;
     if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0)
         return state->options->relative_mouse_touch ? 1 : 0;
-    if (std::strcmp(item->key, kRuntimeResolutionNowKey) == 0 ||
-        std::strcmp(item->key, kRuntimeSupersamplingNowKey) == 0)
-        return 0;  // Live readouts, not editable target settings.
     return 1;
 }
 
 void runtime_menu_save(void* context) {
     auto* state = static_cast<RuntimeMenuState*>(context);
     if (!state || !state->options) return;
-    if (!nds_save_runtime_settings(*state->options,
-                                  state->mouse_changed, state->quality_changed)) {
+    if (!nds_save_runtime_settings(*state->options, state->mouse_changed))
         std::fprintf(stderr, "[sdl] could not save runtime settings\n");
-    } else {
+    else
         state->mouse_changed = false;
-        state->quality_changed = false;
-    }
 }
 
 bool runtime_menu_key_input(SDL_Scancode scancode,
@@ -1382,7 +1358,6 @@ struct FrontendPresentation {
     int screen_widths[2]{kScreenWidth, kScreenWidth};
     int canvas_width = kScreenWidth;
     int canvas_height = kScreenHeight * 2;
-    int configured_sample_scale = 1;
     int sample_scale = 1;
     uint8_t antialiasing = 0;
 };
@@ -1800,9 +1775,7 @@ bool create_presentation(const NdsFrontendOptions& options,
     const int aa_scale = presentation.gl_top ? 1 : options.antialiasing >= 8 ? 4 :
                          options.antialiasing >= 4 ? 3 :
                          options.antialiasing >= 2 ? 2 : 1;
-    presentation.configured_sample_scale =
-        std::max<int>(options.supersampling, aa_scale);
-    presentation.sample_scale = presentation.configured_sample_scale;
+    presentation.sample_scale = std::max<int>(options.supersampling, aa_scale);
     for (int screen = 0; screen < 2; ++screen) {
         const uint8_t bit = static_cast<uint8_t>(1u << screen);
         if ((options.adaptive_screens & bit) &&
@@ -2039,74 +2012,6 @@ struct PresentationTicks {
     uint64_t pool_wait = 0, gl_setup = 0, gl_error = 0, overlay = 0;
     bool ok = true;
 };
-
-// All-or-nothing. The only fallible step is the renderer rebuild, so it runs
-// FIRST and nothing else is touched until it has succeeded: a failed apply
-// leaves the readback latency, the sample scale and the HD emit flag exactly
-// as the currently installed stage left them, so the caller can report the
-// stage that is actually running.
-bool apply_performance_governor_stage(
-        const NdsFrontendOptions& options,
-        FrontendPresentation& presentation,
-        uint8_t stage) {
-    const uint8_t target_scale =
-        stage >= 2u ? 1u : options.internal_resolution;
-    if (!nds_gpu3d_set_runtime_internal_scale(target_scale)) {
-        std::fprintf(stderr,
-                     "[governor] could not apply internal scale %u\n",
-                     static_cast<unsigned>(target_scale));
-        return false;
-    }
-    nds_gpu3d_set_display_readback_latency(stage >= 1u);
-    presentation.sample_scale =
-        stage >= 2u ? 1 : presentation.configured_sample_scale;
-    nds_gpu2d_set_hd_emit(target_scale > 1u && presentation.gl_top
-#if defined(NDS_HAVE_COMPUTE_RENDERER)
-                        && !nds_survivor_host_enabled()
-#endif
-    );
-    return true;
-}
-
-int runtime_menu_set_automatic_quality(RuntimeMenuState* state, int value) {
-    if (!state || !state->options || !state->presentation || !state->governor ||
-        (value != 0 && value != 1)) return 0;
-    // Rebuild the actual renderer first. A failure leaves policy, installed
-    // stage and the player's selected targets unchanged.
-    if (!apply_performance_governor_stage(*state->options, *state->presentation, 0))
-        return 0;
-    const uint8_t before = state->governor->stage;
-    const auto mode = value ? NdsPerfGovernorMode::Auto : NdsPerfGovernorMode::Off;
-    const auto config = state->governor->config;
-    nds_perf_governor_init(state->governor, mode, config);
-    state->options->perf_governor_mode = mode;
-    state->quality_changed = true;
-    if (before != state->governor->stage)
-        nds_perf_governor_record_transition(before, state->governor->stage,
-            state->governor->last_reason, g_live_stats.frames, false, false);
-    std::fprintf(stderr, "[graphics] automatic quality %s; requested quality restored\n",
-                 value ? "on" : "off");
-    return 1;
-}
-
-int runtime_menu_get_quality_text(void* context, const RecompRuntimeUiItem* item,
-                                  char* text, size_t size) {
-    const auto* state = static_cast<const RuntimeMenuState*>(context);
-    if (!state || !state->options || !state->presentation || !item || !text || !size)
-        return 0;
-    if (std::strcmp(item->key, kRuntimeResolutionNowKey) == 0) {
-        std::snprintf(text, size, "%ux (target %ux)",
-            static_cast<unsigned>(nds_gpu3d_internal_scale()),
-            static_cast<unsigned>(state->options->internal_resolution));
-        return 1;
-    }
-    if (std::strcmp(item->key, kRuntimeSupersamplingNowKey) == 0) {
-        std::snprintf(text, size, "%dx (target %ux)", state->presentation->sample_scale,
-            static_cast<unsigned>(state->options->supersampling));
-        return 1;
-    }
-    return 0;
-}
 
 void draw_virtual_stylus(SDL_Renderer* renderer, const SDL_Rect& destination,
                          float stylus_x, float stylus_y) {
@@ -2533,10 +2438,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     // the same native surface every faithful consumer reads, so a run without
     // the GPU presenter is a valid way to prove that invariance holds. Only
     // the visible benefit needs gl_top, so that is what the notice says.
-    const uint8_t initial_internal_resolution =
-        options.perf_governor_mode == NdsPerfGovernorMode::ForceStage2
-            ? 1u
-            : options.internal_resolution;
+    const uint8_t initial_internal_resolution = options.internal_resolution;
     if (!nds_gpu3d_set_internal_scale(initial_internal_resolution)) {
         std::fprintf(stderr,
                      "[sdl] internal resolution %ux is unavailable\n",
@@ -2613,21 +2515,6 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
             "automatic fallback to threaded soft\n");
     }
 #endif
-
-    NdsPerfGovernorState perf_governor{};
-    nds_perf_governor_init(&perf_governor,
-                           options.perf_governor_mode);
-    // Governor off is byte-identical to the pre-governor frontend: the scale,
-    // the HD emit flag and the readback latency were all already established
-    // above from the options, so there is nothing to apply and no new way to
-    // fail at startup.
-    if (options.perf_governor_mode != NdsPerfGovernorMode::Off &&
-        !apply_performance_governor_stage(
-            options, presentation, perf_governor.stage)) {
-        destroy_presentation(presentation);
-        SDL_Quit();
-        return 1;
-    }
 
     // "Frame interpolation (experimental)" — docs/frame_interpolation.md.
     // Resolved here, after the compute-renderer fallback above, because that
@@ -2815,17 +2702,8 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     publish_keys();
     nds_set_touch(0, 0, false);
     bool running = true;
-    RuntimeMenuState runtime_menu_state{&options, &running, false, &presentation, &perf_governor};
+    RuntimeMenuState runtime_menu_state{&options, &running, false};
     static const RecompRuntimeUiItem runtime_menu_items[] = {
-        {kRuntimeAutomaticQualityKey, "Graphics", "Automatic quality",
-         "Off restores your selected quality.",
-         RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr},
-        {kRuntimeResolutionNowKey, "Graphics", "Resolution now",
-         "Actual internal resolution, followed by your selected target.",
-         RECOMP_RUNTIME_UI_TEXT, 0, 0, 0, nullptr, 0, nullptr},
-        {kRuntimeSupersamplingNowKey, "Graphics", "SSAA now",
-         "Actual supersampling, followed by your selected target.",
-         RECOMP_RUNTIME_UI_TEXT, 0, 0, 0, nullptr, 0, nullptr},
         {kRuntimeMouseSensitivityKey, "Input", "Mouse sensitivity",
          "Prime Controls relative aim speed.",
          RECOMP_RUNTIME_UI_INT, 10, 400, 1, nullptr, 0, nullptr},
@@ -2848,7 +2726,6 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     runtime_menu_config.callbacks.run_action = runtime_menu_run_action;
     runtime_menu_config.callbacks.is_enabled = runtime_menu_is_enabled;
     runtime_menu_config.callbacks.save = runtime_menu_save;
-    runtime_menu_config.callbacks.get_text = runtime_menu_get_quality_text;
     runtime_menu_config.theme = "nds";
     runtime_menu_config.accept_label = "A / Enter";
     runtime_menu_config.back_label = "B / Backspace";
@@ -3231,25 +3108,16 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     uint64_t phase_draw_ticks = 0;
     uint64_t phase_swap_ticks = 0;
     uint64_t phase_drain_ticks = 0;
-    uint64_t governor_last_underruns = 0;
-    NdsGpu3dProfile governor_gpu3d_profile{};
-    nds_gpu3d_profile(&governor_gpu3d_profile);
-    uint64_t governor_last_compute_map_ns =
-        governor_gpu3d_profile.compute_readback_ns;
+    NdsGpu3dProfile initial_gpu3d_profile{};
+    nds_gpu3d_profile(&initial_gpu3d_profile);
+    uint64_t last_compute_readback_ns =
+        initial_gpu3d_profile.compute_readback_ns;
     g_live_stats = {};
     g_live_stats.active = 1;
     g_live_stats.freq = frequency;
     g_black_band = {};
     g_input_debug = {};
     nds_diagnostics_start_performance_log(options);
-    nds_perf_governor_history_reset();
-    if (perf_governor.stage != 0u) {
-        nds_perf_governor_record_transition(
-            0, perf_governor.stage, NdsPerfGovernorReason::Initial, 0,
-            false, false);
-        nds_diagnostics_note_perf_governor_transition(
-            0, perf_governor.stage, "initial");
-    }
     auto publish_input_debug = [&]() {
         g_input_debug.active = 1;
         g_input_debug.mph_prime_controls_available =
@@ -3333,7 +3201,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
 #endif
     const std::string backend=nds_gpu3d_compiled_accelerated_backend();
     if (handoff_requested && handoff_title_supported && presentation.gl_top && backend=="compute" &&
-        !interpolation_active && options.perf_governor_mode==NdsPerfGovernorMode::Off &&
+        !interpolation_active &&
         !selftest_menu && !selftest_relative_mouse &&
         !std::getenv("NDS_GUEST_JOB_PROFILE_OUTPUT")) {
         nds_hostprof_unregister_current_thread();
@@ -3681,28 +3549,6 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                     if (result.success &&
                         state_command.action ==
                             NdsSavestateSlotAction::Load) {
-                        // gpu3d_savestate_import() clears the readback-latency
-                        // flag as part of installing a fresh renderer, so the
-                        // live stage has to be re-established. Skipped once the
-                        // governor is terminally disabled: the installed state
-                        // is then whatever survived the failure.
-                        if (!perf_governor.apply_failed &&
-                            options.perf_governor_mode !=
-                                NdsPerfGovernorMode::Off &&
-                            !apply_performance_governor_stage(
-                                options, presentation,
-                                perf_governor.stage)) {
-                            nds_perf_governor_mark_apply_failed(
-                                &perf_governor);
-                            nds_perf_governor_record_transition(
-                                perf_governor.stage, perf_governor.stage,
-                                NdsPerfGovernorReason::ApplyFailed,
-                                shown_frames, perf_governor.stage2_held,
-                                true);
-                            nds_diagnostics_note_perf_governor_transition(
-                                perf_governor.stage, perf_governor.stage,
-                                "apply_failed");
-                        }
                         blend_cache.valid = false;
                         // A load re-primes the machine, so it also opens a new
                         // digest epoch: it is the only alignment point two
@@ -4727,65 +4573,12 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         // under NDS_PROFILE_GPU, so it read zero in every normal run.
         const uint64_t frame_compute_map_ns =
             current_gpu3d_profile.compute_readback_ns >=
-                    governor_last_compute_map_ns
+                    last_compute_readback_ns
                 ? current_gpu3d_profile.compute_readback_ns -
-                      governor_last_compute_map_ns
+                      last_compute_readback_ns
                 : 0u;
-        governor_last_compute_map_ns =
+        last_compute_readback_ns =
             current_gpu3d_profile.compute_readback_ns;
-        NdsPerfGovernorSample governor_sample{};
-        governor_sample.emu_ms =
-            static_cast<double>(frame_emu_ticks) * 1000.0 /
-            static_cast<double>(frequency);
-        governor_sample.drain_ms =
-            static_cast<double>(frame_drain_ticks) * 1000.0 /
-            static_cast<double>(frequency);
-        governor_sample.budget_ms = 1000.0 / 60.0;
-        governor_sample.underruns_delta =
-            current_underruns >= governor_last_underruns
-                ? current_underruns - governor_last_underruns
-                : 0u;
-        governor_sample.compute_map_ms =
-            static_cast<double>(frame_compute_map_ns) / 1000000.0;
-        // The drain is only a headroom signal when it is actually the pacing
-        // sleep this frame: no device, pre-playback and turbo frames all read
-        // ~0 for reasons that have nothing to do with load.
-        governor_sample.headroom_valid =
-            static_cast<bool>(audio) && audio_started && !turbo_active;
-        governor_last_underruns = current_underruns;
-        const uint8_t governor_stage_before = perf_governor.stage;
-        if (nds_perf_governor_update(&perf_governor, governor_sample)) {
-            const uint8_t requested_stage = perf_governor.stage;
-            NdsPerfGovernorReason reason = perf_governor.last_reason;
-            bool applied = apply_performance_governor_stage(
-                options, presentation, requested_stage);
-            if (!applied) {
-                // Nothing was mutated by the failed apply, so the previously
-                // installed stage is still the live one. Report that stage and
-                // stop deciding: retrying a failing rebuild every
-                // engage_frames forever is a hitch generator, not a recovery.
-                perf_governor.stage = governor_stage_before;
-                nds_perf_governor_mark_apply_failed(&perf_governor);
-                reason = NdsPerfGovernorReason::ApplyFailed;
-                std::fprintf(stderr,
-                             "[governor] stage %u apply failed; "
-                             "governor disabled at stage %u\n",
-                             static_cast<unsigned>(requested_stage),
-                             static_cast<unsigned>(perf_governor.stage));
-            }
-            // Never a no-op N->N transition. A failed apply is reported even
-            // when the stage did not move, because the terminal state is the
-            // information.
-            if (perf_governor.stage != governor_stage_before || !applied) {
-                nds_perf_governor_record_transition(
-                    governor_stage_before, perf_governor.stage, reason,
-                    shown_frames, perf_governor.stage2_held,
-                    perf_governor.apply_failed);
-                nds_diagnostics_note_perf_governor_transition(
-                    governor_stage_before, perf_governor.stage,
-                    nds_perf_governor_reason_name(reason));
-            }
-        }
 
         ++shown_frames;
         ++fps_frames;
@@ -4800,15 +4593,6 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         g_live_stats.underruns = current_underruns;
         g_live_stats.real_presents = shown_frames;
         g_live_stats.synthetic_presents = synthetic_presents;
-        g_live_stats.perf_governor_stage = perf_governor.stage;
-        g_live_stats.perf_governor_over_frames = perf_governor.over_frames;
-        g_live_stats.perf_governor_under_frames =
-            perf_governor.under_frames;
-        g_live_stats.perf_governor_held = perf_governor.stage2_held ? 1u : 0u;
-        g_live_stats.perf_governor_apply_failed =
-            perf_governor.apply_failed ? 1u : 0u;
-        g_live_stats.perf_governor_transitions =
-            nds_perf_governor_history_total();
         const uint64_t counter = SDL_GetPerformanceCounter();
         if (latency_trace)
             nds_frontend_latency::frame({shown_frames, latency_loop,
@@ -4842,26 +4626,16 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
             const double fps = static_cast<double>(fps_frames) / seconds;
             const std::string fps_text =
                 std::to_string(fps).substr(0, 4) + " FPS";
-            const std::string governor_text =
-                perf_governor.apply_failed
-                    ? " - Gov disabled (apply failed, S" +
-                          std::to_string(perf_governor.stage) + ")"
-                    : perf_governor.stage
-                    ? " - Gov S" + std::to_string(perf_governor.stage) +
-                          (perf_governor.stage2_held ? " held" : "")
-                    : "";
             const std::string top_title = !savestate_notice.empty()
                 ? "ndsrecomp - " + savestate_notice
                 : presentation.separate
-                ? "ndsrecomp - Top Screen - " + fps_text + governor_text
-                : "ndsrecomp firmware preview - " + fps_text +
-                      governor_text;
+                ? "ndsrecomp - Top Screen - " + fps_text
+                : "ndsrecomp firmware preview - " + fps_text;
             SDL_SetWindowTitle(presentation.windows[0],
                                top_title.c_str());
             if (presentation.separate) {
                 const std::string bottom_title =
-                    "ndsrecomp - Bottom Screen - " + fps_text +
-                    governor_text;
+                    "ndsrecomp - Bottom Screen - " + fps_text;
                 SDL_SetWindowTitle(presentation.windows[1],
                                    bottom_title.c_str());
             }

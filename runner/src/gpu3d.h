@@ -64,14 +64,10 @@ uint32_t nds_gpu3d_compute_output_texture();
 //
 // nds_gpu3d_set_internal_scale() must be set before
 // nds_gpu3d_use_compute_renderer(): the scale is a baked shader constant and
-// sizes every framebuffer allocation. The runtime setter rebuilds the active
-// accelerated renderer for the governor path. Both return false for an
-// out-of-range scale (valid range 1..12).
+// sizes every framebuffer allocation. Returns false for an out-of-range
+// scale (valid range 1..12).
 bool nds_gpu3d_set_internal_scale(uint8_t scale);
-bool nds_gpu3d_set_runtime_internal_scale(uint8_t scale);
 uint8_t nds_gpu3d_internal_scale();
-void nds_gpu3d_set_display_readback_latency(bool enabled);
-bool nds_gpu3d_display_readback_latency();
 // Visibility is guest state, independent of whether a CPU readback exists.
 bool nds_gpu3d_display_visible();
 // Presentation handle for the high-resolution RGBA8 surface, whose channels
@@ -96,8 +92,7 @@ struct NdsGpu3dProfile {
     uint64_t compute_map_calls;
     // ALWAYS-ON (unlike every field above, which needs NDS_PROFILE_GPU): the
     // wall time compute_finish_readback() spends waiting for and consuming the
-    // pixel-pack readback. This is the cost governor stage 1 defers off the
-    // critical path, so the governor has to be able to read it in every build.
+    // pixel-pack readback. The frame-latency trace reads it in every build.
     uint64_t compute_readback_ns;
     uint64_t compute_readback_calls;
 };

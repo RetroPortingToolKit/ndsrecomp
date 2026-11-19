@@ -15,8 +15,9 @@ AA defaults to off, and native/software output and guest-visible framebuffer
 and capture surfaces retain their existing paths. The legacy presentation
 reconstruction filter remains available on presentation paths without an HD
 accelerated surface. Changing graphics mods requires restarting the game.
-The governor may lower internal resolution when enabled; qualification and
-quality previews keep it off to make the selected quality stable.
+The selected internal resolution and supersampling always apply; the former
+automatic quality governor was removed because it lowered quality during
+transient load stalls and could hold the reduction for the rest of a session.
 
 Focused actual-GL checks cover RGB6 compositor equivalence with AA off,
 red/blue subpixel integration at all sample settings, opaque HUD preservation
