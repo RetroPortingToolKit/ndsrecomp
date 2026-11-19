@@ -1,5 +1,6 @@
 #include "execution_model.h"
 #include "arm9_native_options.h"
+#include <cstring>
 #if defined(NDS_WHOLE_ASSETS)
 #include "whole_asset_service.h"
 #endif
@@ -42,6 +43,18 @@ bool nds_execution_model_select(const std::string& name, const std::string& sha1
     }
     error = "performance execution is unavailable for this build/image";
     return false;
+}
+NdsServiceProfile nds_service_profile_select(const NdsServiceProfileRequest& request) {
+    const auto enabled = [](const char* value) {
+        return !value || std::strcmp(value, "0") != 0;
+    };
+    const bool connected = request.network || request.wfc ||
+        request.local_wireless || request.replay;
+    NdsServiceProfile profile;
+    profile.offline_arm7 = request.performance && !connected &&
+        enabled(request.offline_arm7_env);
+    profile.whole_assets = request.performance && enabled(request.whole_assets_env);
+    return profile;
 }
 NdsExecutionModel nds_execution_model() { return selected; }
 bool nds_performance_execution() {

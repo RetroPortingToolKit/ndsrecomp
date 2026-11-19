@@ -1763,22 +1763,32 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "refusing to start: %s\n", execution_error.c_str());
         return 1;
     }
+    NdsServiceProfileRequest service_request;
+    service_request.performance = nds_performance_execution();
+    service_request.offline_arm7_env = std::getenv("NDS_OFFLINE_ARM7");
+    service_request.whole_assets_env = std::getenv("NDS_WHOLE_ASSETS");
+    service_request.network = resolved_network.enabled;
+    service_request.wfc = resolved_network.wfc_enabled;
+    service_request.local_wireless = resolved_network.local_wireless_enabled;
+    service_request.replay = resolved_network.backend == NdsNetBackendKind::Replay;
+    const NdsServiceProfile service_profile = nds_service_profile_select(service_request);
+    std::fprintf(stderr, "[execution] services: offline-arm7=%s whole-assets=%s (%s)\n",
+                 service_profile.offline_arm7 ? "requested" : "off",
+                 service_profile.whole_assets ? "requested" : "off",
+                 service_request.network || service_request.wfc ||
+                 service_request.local_wireless || service_request.replay
+                     ? "connected: original ARM7 driver" : "offline");
 #if defined(NDS_OFFLINE_ARM7)
-    const char* offline_setting=std::getenv("NDS_OFFLINE_ARM7");
-    const bool offline_requested=nds_performance_execution() &&
-        (!offline_setting || std::strcmp(offline_setting,"0")!=0) &&
-        !resolved_network.enabled && !resolved_network.wfc_enabled &&
-        !resolved_network.local_wireless_enabled &&
-        resolved_network.backend != NdsNetBackendKind::Replay;
+    // Connected profiles keep the original ARM7 wireless/WFC driver; the rest
+    // of the performance model (native ARM9/ARM7, geometry, HLE, assets) stays.
+    const bool offline_requested=service_profile.offline_arm7;
     if (!nds_offline_arm7_configure(rom_sha1,offline_requested,&execution_error) && offline_requested) {
         std::fprintf(stderr, "refusing to start offline services: %s\n", execution_error.c_str());
         return 1;
     }
 #endif
 #if defined(NDS_WHOLE_ASSETS)
-    const char* asset_setting=std::getenv("NDS_WHOLE_ASSETS");
-    if(!nds_assets::configure(rom_sha1.c_str(),offline_requested&&
-       (!asset_setting||std::strcmp(asset_setting,"0")!=0))){
+    if(!nds_assets::configure(rom_sha1.c_str(),service_profile.whole_assets)){
         std::fprintf(stderr,"refusing to start whole asset services for this image\n");return 1;
     }
 #endif
