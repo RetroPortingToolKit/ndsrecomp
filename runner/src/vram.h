@@ -24,6 +24,29 @@ bool nds_vram_live_bytes_equal(int cpu, uint32_t addr,
 
 bool nds_video_get_region(const char* name, const uint8_t** ptr, uint32_t* len);
 
+// Always-on palette change history. Every guest palette store that changes a
+// 16-bit entry is recorded with the display frame and scanline it landed on,
+// so an observer can attribute animated colours retroactively instead of
+// arming a capture. Index is the halfword slot in the 2 KiB palette space:
+// 0..255 engine A BG, 256..511 engine A OBJ, 512..767 engine B BG and
+// 768..1023 engine B OBJ. Sequence numbers are monotonic for the process
+// lifetime: this is observer history, not device state, so a console reset or
+// savestate load does not clear it.
+struct NdsPaletteChange {
+    uint64_t seq;
+    uint64_t frame;
+    uint16_t line;
+    uint16_t index;
+    uint16_t old_value;
+    uint16_t new_value;
+};
+constexpr uint32_t NDS_PALETTE_CHANGE_RING = 32768u;
+// Total changes recorded so far (the next event's sequence number).
+uint64_t nds_vram_palette_change_total();
+// Copy up to max retained events with seq >= from_seq, oldest first.
+uint32_t nds_vram_palette_changes(uint64_t from_seq, uint32_t max,
+                                  NdsPaletteChange* out);
+
 // Renderer-facing mapped views. Addresses are offsets within the named engine
 // space and widths are 1/2/4 bytes.
 uint32_t nds_vram_read_bg(int engine, uint32_t addr, uint32_t width);

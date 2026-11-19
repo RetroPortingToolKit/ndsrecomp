@@ -250,6 +250,13 @@ struct NdsFrontendOptions {
     // Width of the authored center HUD band that stays centered. Pixels on
     // either side are anchored to the corresponding wide edge.
     uint16_t adaptive_hud_center_width = 64;
+    // Optional gap-fill source (gpu2d_window.h NdsGpu2dHudGap): one native
+    // column per side inside the outer anchored band, flat-stretched across
+    // that gap (-1 = stretch the two seam-adjacent columns), and per BG0..BG3
+    // the horizontal scroll the column is sampled at (-1 = live HOFS) so HUD
+    // sway cannot change the invented filler.
+    int16_t adaptive_hud_gap_source[2] = {-1, -1};
+    int16_t adaptive_hud_gap_scroll_x[4] = {-1, -1, -1, -1};
     // Keep adaptive-capable output at the requested host width while centering
     // the native composite. Intended for titles with unaudited widened 3D
     // projection/culling edge cases.

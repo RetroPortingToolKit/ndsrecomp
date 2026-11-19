@@ -72,6 +72,7 @@
 #include "spu.h"
 #include "tier3.h"
 #include "title_patches.h"
+#include "vram.h"
 
 extern "C" uint32_t g_runtime_break_pc;
 
@@ -2017,6 +2018,86 @@ std::string handle(const std::string& line) {
         return buf;
     }
 
+    // Always-on palette change ring (vram.cpp): query retained history from a
+    // sequence number; nothing is armed. Each event is
+    // [seq, frame, line, halfword index, old BGR555, new BGR555].
+    if (cmd == "palette_changes") {
+        const uint64_t from = json_u64(line, "from", 0);
+        uint32_t max = static_cast<uint32_t>(json_u64(line, "count", 1024));
+        if (max > 8192u) max = 8192u;
+        std::vector<NdsPaletteChange> ev(max);
+        const uint32_t got = nds_vram_palette_changes(from, max, ev.data());
+        const uint64_t total = nds_vram_palette_change_total();
+        const uint64_t oldest = total > NDS_PALETTE_CHANGE_RING
+            ? total - NDS_PALETTE_CHANGE_RING : 0u;
+        std::string out = "{\"total\":" + std::to_string(total) +
+            ",\"oldest\":" + std::to_string(oldest) +
+            ",\"frame\":" + std::to_string(nds_io_display_frame()) +
+            ",\"events\":[";
+        for (uint32_t i = 0; i < got; ++i) {
+            char b[96];
+            std::snprintf(b, sizeof(b), "%s[%llu,%llu,%u,%u,%u,%u]",
+                i ? "," : "", (unsigned long long)ev[i].seq,
+                (unsigned long long)ev[i].frame, ev[i].line, ev[i].index,
+                ev[i].old_value, ev[i].new_value);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    // Always-on 2D register change ring (gpu2d.cpp). Each event is
+    // [seq, frame, line, engine, offset, width, value].
+    if (cmd == "gpu2d_reg_changes") {
+        const uint64_t from = json_u64(line, "from", 0);
+        uint32_t max = static_cast<uint32_t>(json_u64(line, "count", 1024));
+        if (max > 8192u) max = 8192u;
+        std::vector<NdsGpu2dRegChange> ev(max);
+        const uint32_t got = nds_gpu2d_reg_changes(from, max, ev.data());
+        const uint64_t total = nds_gpu2d_reg_change_total();
+        const uint64_t oldest = total > NDS_GPU2D_REG_CHANGE_RING
+            ? total - NDS_GPU2D_REG_CHANGE_RING : 0u;
+        std::string out = "{\"total\":" + std::to_string(total) +
+            ",\"oldest\":" + std::to_string(oldest) +
+            ",\"frame\":" + std::to_string(nds_io_display_frame()) +
+            ",\"events\":[";
+        for (uint32_t i = 0; i < got; ++i) {
+            char b[112];
+            std::snprintf(b, sizeof(b), "%s[%llu,%llu,%u,%u,%u,%u,%u]",
+                i ? "," : "", (unsigned long long)ev[i].seq,
+                (unsigned long long)ev[i].frame, ev[i].line, ev[i].engine,
+                ev[i].offset, ev[i].width, ev[i].value);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    // Live 2D engine register latch (both units), for attributing what the
+    // compositor samples: DISPCNT, BGCNT, scroll, windows, blend, brightness.
+    if (cmd == "gpu2d_state") {
+        NdsGpu2dSaveState s{};
+        if (!gpu2d_savestate_export(&s))
+            return "{\"error\":\"gpu2d state unavailable\"}";
+        std::string out = "{\"frame\":" +
+            std::to_string(nds_io_display_frame()) + ",\"units\":[";
+        for (int e = 0; e < 2; ++e) {
+            const NdsGpu2dUnitSaveState& u = s.unit[e];
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                "%s{\"dispcnt\":%u,\"bgcnt\":[%u,%u,%u,%u],"
+                "\"bgx\":[%u,%u,%u,%u],\"bgy\":[%u,%u,%u,%u],"
+                "\"win\":[%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u],"
+                "\"bldcnt\":%u,\"bldalpha\":%u,\"master_bright\":%u}",
+                e ? "," : "", u.dispcnt, u.bgcnt[0], u.bgcnt[1], u.bgcnt[2],
+                u.bgcnt[3], u.bgx[0], u.bgx[1], u.bgx[2], u.bgx[3], u.bgy[0],
+                u.bgy[1], u.bgy[2], u.bgy[3], u.win[0], u.win[1], u.win[2],
+                u.win[3], u.win[4], u.win[5], u.win[6], u.win[7], u.win[8],
+                u.win[9], u.win[10], u.win[11], u.bldcnt, u.bldalpha,
+                u.master_bright);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
     if (cmd == "read_region") {
         BusRegion reg{};
         if (!bus_get_region(json_str(line, "region").c_str(), &reg))

@@ -17,8 +17,54 @@ constexpr uint32_t nds_gpu2d_pack_direct_pixel(uint32_t color, uint8_t priority,
            (uint32_t(priority & 3u) << 22) | (code << 24);
 }
 
+// Title-declared source for the invented gap fill. source[side] is a native
+// screen column inside the outer band that the gap continues (-1 keeps the
+// two-column seam stretch). scroll_x[bg] is the horizontal scroll at which
+// that column is sampled for each BG (-1 = the live BGxHOFS). Declaring the
+// scroll the HUD was authored at keeps the flat filler fixed to one point of
+// the frame art while the guest sways its HUD layers through HOFS, so the
+// invented pixels cannot change colour as different art scrolls past the
+// seam. Vertical scroll stays live so filler rows track the anchored bands.
+struct NdsGpu2dHudGap {
+    int16_t source[2] = {-1, -1};
+    int16_t scroll_x[4] = {-1, -1, -1, -1};
+};
+
+// Which invented gap of an anchored adaptive HUD a wide column lies in:
+// 0 = between the left band and the centered band, 1 = between the centered
+// band and the right band, -1 = an authored band (or no anchoring/widening).
+constexpr int nds_gpu2d_adaptive_hud_gap_side(int x, int width, bool anchor,
+                                             int center_width) {
+    const int extra = (width - 256) / 2;
+    if (!anchor || extra <= 0) return -1;
+    const int left = (256 - center_width) / 2;
+    const int right = left + center_width;
+    if (x >= left && x < extra + left) return 0;
+    if (x >= extra + right && x < width - (256 - right)) return 1;
+    return -1;
+}
+
+// True when a declared gap source column lies inside the anchored outer band
+// it continues: left of the centered band for the left gap, right of it for
+// the right gap. Only such columns are scroll-anchored authored frame art.
+constexpr bool nds_gpu2d_adaptive_hud_gap_source_valid(int side, int source,
+                                                       int center_width) {
+    const int left = (256 - center_width) / 2;
+    const int right = left + center_width;
+    return side == 0 ? source >= 0 && source < left
+                     : source >= right && source < 256;
+}
+
+// Native source column for one wide HUD column. Authored bands map 1:1.
+// With fill_gaps, each invented gap column also gets a source: a title-
+// declared single seam column per side (left_source / right_source, which
+// must satisfy nds_gpu2d_adaptive_hud_gap_source_valid) gives each gap one
+// flat colour per row that continues the outer band; with no declaration the
+// two columns adjacent to each seam are stretched, half the gap each.
 constexpr int nds_gpu2d_adaptive_hud_x(int x, int width, bool anchor,
-                                      int center_width, bool fill_gaps = false) {
+                                      int center_width, bool fill_gaps = false,
+                                      int left_source = -1,
+                                      int right_source = -1) {
     const int extra = (width - 256) / 2;
     const int left = (256 - center_width) / 2;
     const int right = left + center_width;
@@ -28,10 +74,16 @@ constexpr int nds_gpu2d_adaptive_hud_x(int x, int width, bool anchor,
         if (x >= width - (256 - right)) return x - (width - 256);
         // A title may extend its decorative background seams while keeping
         // authored panels and all separately anchored OBJ instruments intact.
-        // Stretch only the two adjacent source columns, preserving both ends.
         if (fill_gaps && extra > 0) {
-            if (x < extra + left)
+            if (x < extra + left) {
+                if (nds_gpu2d_adaptive_hud_gap_source_valid(0, left_source,
+                                                            center_width))
+                    return left_source;
                 return left ? left - 1 + (2 * (x - left)) / extra : 0;
+            }
+            if (nds_gpu2d_adaptive_hud_gap_source_valid(1, right_source,
+                                                        center_width))
+                return right_source;
             return right < 256
                 ? right - 1 + (2 * (x - extra - right)) / extra : 255;
         }

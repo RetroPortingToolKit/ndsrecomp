@@ -57,6 +57,7 @@
 #include "nds_build_id.h"
 #include "frontend.h"
 #include "gpu2d.h"
+#include "gpu2d_window.h"
 #include "gpu3d.h"
 #include "live_overlay.h"
 #include "live_overlay_platform.h"
@@ -2058,6 +2059,14 @@ int main(int argc, char** argv) {
         (frontend_options.adaptive_screens & NDS_ADAPTIVE_TOP) != 0u,
         frontend_options.adaptive_hud_center_width,
         frontend_options.adaptive_hud_gap_fill);
+    {
+        NdsGpu2dHudGap hud_gap{};
+        std::copy_n(frontend_options.adaptive_hud_gap_source, 2,
+                    hud_gap.source);
+        std::copy_n(frontend_options.adaptive_hud_gap_scroll_x, 4,
+                    hud_gap.scroll_x);
+        nds_gpu2d_set_adaptive_hud_gap(hud_gap);
+    }
     nds_gpu2d_set_adaptive_center_native(
         frontend_options.adaptive_center_native &&
         (frontend_options.adaptive_screens & NDS_ADAPTIVE_TOP) != 0u);

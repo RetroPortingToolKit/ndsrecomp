@@ -8,6 +8,7 @@
 #include <fstream>
 #include <vector>
 
+#include "gpu2d_window.h"
 #include "toml.hpp"
 
 namespace {
@@ -745,6 +746,70 @@ bool nds_load_frontend_config(const std::string& path,
             }
             options->adaptive_hud_center_width =
                 static_cast<uint16_t>(*value);
+        }
+        // Exact-length integer array within [lo, hi]; false with an error
+        // naming the key when present but malformed.
+        auto int_array = [&](const char* key, size_t size, int64_t lo,
+                             int64_t hi, int16_t* out, bool* present) {
+            *present = false;
+            const toml::node* node = display->get(key);
+            if (!node) return true;
+            const toml::array* items = node->as_array();
+            bool ok = items && items->size() == size;
+            for (size_t i = 0; ok && i < size; ++i) {
+                const auto item = (*items)[i].value<int64_t>();
+                ok = item && *item >= lo && *item <= hi;
+                if (ok) out[i] = static_cast<int16_t>(*item);
+            }
+            if (!ok) {
+                if (error) {
+                    *error = std::string("display.") + key + " must be " +
+                             std::to_string(size) + " integers from " +
+                             std::to_string(lo) + " through " +
+                             std::to_string(hi);
+                }
+                return false;
+            }
+            *present = true;
+            return true;
+        };
+        bool gap_source = false, gap_scroll = false;
+        int16_t source[2] = {-1, -1};
+        int16_t scroll[4] = {-1, -1, -1, -1};
+        if (!int_array("adaptive_hud_gap_source", 2, 0, 255, source,
+                       &gap_source) ||
+            !int_array("adaptive_hud_gap_scroll_x", 4, -1, 511, scroll,
+                       &gap_scroll))
+            return false;
+        if (gap_source) {
+            const int center = options->adaptive_hud_center_width;
+            if (!options->adaptive_hud_anchor ||
+                !options->adaptive_hud_gap_fill ||
+                !nds_gpu2d_adaptive_hud_gap_source_valid(0, source[0],
+                                                         center) ||
+                !nds_gpu2d_adaptive_hud_gap_source_valid(1, source[1],
+                                                         center)) {
+                if (error) {
+                    *error =
+                        "display.adaptive_hud_gap_source needs "
+                        "adaptive_hud_anchor and adaptive_hud_gap_fill, and "
+                        "one column in each outer anchored band (left of and "
+                        "right of adaptive_hud_center_width)";
+                }
+                return false;
+            }
+            std::copy_n(source, 2, options->adaptive_hud_gap_source);
+        }
+        if (gap_scroll) {
+            if (!gap_source) {
+                if (error) {
+                    *error =
+                        "display.adaptive_hud_gap_scroll_x needs "
+                        "display.adaptive_hud_gap_source";
+                }
+                return false;
+            }
+            std::copy_n(scroll, 4, options->adaptive_hud_gap_scroll_x);
         }
         if (options->adaptive_supported != NDS_ADAPTIVE_NONE &&
             options->expected_rom_sha1.empty()) {

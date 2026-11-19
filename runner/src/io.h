@@ -53,6 +53,10 @@ void nds_io_offline_irq_clear(uint32_t bits);
 void     nds_io_reset();
 // Clear observer history without changing any guest-visible device state.
 void     nds_io_debug_history_reset();
+// Display timeline position for observers: completed-frame index derived from
+// the display clock (2130 cycles x 263 lines) and the current VCOUNT line.
+uint64_t nds_io_display_frame();
+uint16_t nds_io_vcount();
 // Opt-in host-clock RTC (--rtc-host): when true, every guest boot
 // (nds_io_reset) starts the RTC at the host's local time instead of the
 // fixed deterministic power-on datetime. Default false — the oracle gates
