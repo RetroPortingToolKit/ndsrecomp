@@ -14,6 +14,25 @@ requests. ARM9 then runs to real display, timer and native-service deadlines
 instead of fixed ARM9/ARM7 lockstep rounds. Existing replies remain in the
 canonical FIFO. Online and wireless profiles keep their original ARM7 path.
 
+## Connected profiles
+
+The offline driver implements no wireless manager, WFC or local-wireless
+services, so `--network on`, `--wfc on`, `--local-wireless on` and the replay
+backend never select it. Connectivity changes nothing else in the performance
+model: the original ARM7 driver runs through native ARM7 execution on the
+normal scheduler, beside native ARM9, native geometry, title HLE and the
+whole-asset service. Whole assets are ARM9-only file operations that already
+ran beside the original ARM7 driver during the offline bootstrap; their
+publication still completes old PCM before mutating it. Selection is
+`nds_service_profile_select` (`runner/src/execution_model.h`), fixed before
+boot and reported on stderr and in the execution identity. `NDS_OFFLINE_ARM7=0`
+and `NDS_WHOLE_ASSETS=0` remain independent diagnostic switches.
+
+Peers interact only through guest protocols: the emulated radio (local
+wireless) or Nintendo WFC servers, where real DS units also participate. No
+host simulation state is exchanged, so no host capability negotiation applies;
+the requirement is guest-correct behaviour of each profile.
+
 Sound adopts the SDK's live players, tracks, voices, alarms and pending
 eight-slot command queue atomically, preserving FIFO order and one completion
 per command list. The production SPU still synthesizes PCM. Before any writer

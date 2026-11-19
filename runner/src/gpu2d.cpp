@@ -172,6 +172,10 @@ uint32_t g_direct_force_cpu_frames = 0;
 bool g_adaptive_hud_anchor = false;
 bool g_adaptive_hud_gap_fill = false;
 int g_adaptive_hud_center_width = 64;
+// Title-declared gap fill: one native seam column per side (-1 = stretch the
+// two seam-adjacent columns) and, per BG, the horizontal scroll at which that
+// column is sampled (-1 = the live scroll). See NdsGpu2dHudGap.
+NdsGpu2dHudGap g_adaptive_hud_gap{};
 int g_front = 0;
 bool g_survivors_enabled = false;
 std::array<nds_survivors::Frame,2> g_survivors;
@@ -852,6 +856,49 @@ void decode_bg_line(const Unit& u, int engine, int bg, int y,
     }
 }
 
+// One layer's invented-gap fill for one scanline of an anchored adaptive
+// HUD. Every adaptive presentation path resolves gap pixels through this so
+// they cannot disagree. With a valid title-declared seam column a side is
+// `flat`: the whole gap row is that column's raw colour (bit 15 = opaque).
+// A declared reference scroll samples the column at the scroll the HUD was
+// authored at, so guest HOFS sway cannot slide different frame art under the
+// flat filler; without one (or for non-text layers, which have no HOFS) the
+// live decoded line supplies it. A side without a declared column is not
+// flat and keeps the per-pixel two-column seam stretch from
+// nds_gpu2d_adaptive_hud_x.
+struct HudGapLine {
+    uint16_t color[2]{};
+    bool flat[2]{};
+};
+
+HudGapLine adaptive_hud_gap_line(const Unit& u, int engine, int bg, int y,
+                                 const uint8_t* palette,
+                                 const NdsVramRendererView& vram,
+                                 const BgLine& live, int center_width,
+                                 const NdsGpu2dHudGap& gap) {
+    HudGapLine out{};
+    const int scroll = bg >= 0 && bg < 4 ? gap.scroll_x[bg] : -1;
+    const bool reference = scroll >= 0 && bg_kind(u, bg) == BgKind::Text;
+    for (int side = 0; side < 2; ++side) {
+        const int x = gap.source[side];
+        if (!nds_gpu2d_adaptive_hud_gap_source_valid(side, x, center_width))
+            continue;
+        out.flat[side] = true;
+        if (!reference) {
+            out.color[side] = live.color[x];
+            continue;
+        }
+        Unit latched = u;
+        latched.bgx[bg] = static_cast<uint16_t>(scroll);
+        TextLine line =
+            prepare_text_line(latched, engine, bg, y, palette, &vram);
+        const Pixel p = text_pixel(line, x);
+        out.color[side] =
+            p.valid ? static_cast<uint16_t>(p.color | 0x8000u) : 0u;
+    }
+    return out;
+}
+
 void put_obj(Pixel* line, int width, int x, const Pixel& p) {
     if (x < 0 || x >= width || !p.valid) return;
     // OAM index is resolved by visiting entries from 127 down to 0: an equal
@@ -1082,6 +1129,7 @@ uint32_t compose(const Unit& u, const Pixel& top, const Pixel& below,
 // the DISPCAPCNT enable latch). See docs/device_work_parallelization.md.
 struct LineScratch {
     std::array<BgLine, 4> bg_lines{};
+    std::array<HudGapLine, 4> gap_lines{};
     std::array<uint32_t, 256> comp6{};
     std::array<Pixel, 256> obj{};
     std::array<uint8_t, 256> obj_window{};
@@ -1127,6 +1175,7 @@ struct LineJob {
     bool survivors = false;
     bool survivor_anchor = false, survivor_gap_fill = false;
     uint16_t survivor_center_width = 64;
+    NdsGpu2dHudGap survivor_gap{};
     // Staged display capture. The pixels are produced by whichever thread
     // renders the line; the write into guest VRAM, and the texture-generation
     // bump that goes with it, are applied by the scheduler thread in line
@@ -1398,7 +1447,11 @@ void render_survivor_line(LineJob& job, LineScratch& sc) {
     int bgs[4]{};unsigned count=0;
     const uint8_t active=bg_active_mask(u,true);
     for(int bg=0;bg<4;++bg)if(active&(1u<<bg)) {
-        bgs[count]=bg;decode_bg_line(u,0,bg,job.y,palette,vram,sc.bg_lines[count]);++count;
+        bgs[count]=bg;decode_bg_line(u,0,bg,job.y,palette,vram,sc.bg_lines[count]);
+        sc.gap_lines[count]=job.survivor_gap_fill
+            ?adaptive_hud_gap_line(u,0,bg,job.y,palette,vram,sc.bg_lines[count],job.survivor_center_width,job.survivor_gap)
+            :HudGapLine{};
+        ++count;
     }
     render_obj_line(u,0,job.y,sc.obj.data(),256,oam,palette,vram,sc.obj_window.data(),0,job.survivor_center_width);
     const Pixel backdrop{rgb6(view16(palette,0)),0x20u,0,4,5,true};
@@ -1409,8 +1462,11 @@ void render_survivor_line(LineJob& job, LineScratch& sc) {
         if(wide)hud_x=nds_gpu2d_adaptive_hud_x(x,out_width,job.survivor_anchor,job.survivor_center_width);
         const uint8_t wx=wide?nds_gpu2d_adaptive_window_x(x,extra,hud_x):uint8_t(x);
         const uint8_t mask=nds_gpu2d_window_mask(windows,wx,uint8_t(job.y),object_window[x]!=0);
-        int bg_x=hud_x;
-        if(wide&&job.survivor_gap_fill)bg_x=nds_gpu2d_adaptive_hud_x(x,out_width,job.survivor_anchor,job.survivor_center_width,true);
+        int bg_x=hud_x,gap_side=-1;
+        if(wide&&job.survivor_gap_fill) {
+            bg_x=nds_gpu2d_adaptive_hud_x(x,out_width,job.survivor_anchor,job.survivor_center_width,true,job.survivor_gap.source[0],job.survivor_gap.source[1]);
+            if(hud_x<0)gap_side=nds_gpu2d_adaptive_hud_gap_side(x,out_width,job.survivor_anchor,job.survivor_center_width);
+        }
         Pixel top=backdrop,below=backdrop;
         auto push=[&](const Pixel& p){
             auto ahead=[](const Pixel& a,const Pixel& b){return a.priority<b.priority||(a.priority==b.priority&&a.order<b.order);};
@@ -1418,7 +1474,8 @@ void render_survivor_line(LineJob& job, LineScratch& sc) {
         };
         const bool preserve=wide&&hud_x<0&&objects[x].valid&&(mask&0x10u);
         if(bg_x>=0&&bg_x<256&&!preserve)for(unsigned i=0;i<count;++i) {
-            const auto& bg=sc.bg_lines[i];const uint16_t color=bg.color[bg_x];
+            const auto& bg=sc.bg_lines[i];
+            const uint16_t color=gap_side>=0&&sc.gap_lines[i].flat[gap_side]?sc.gap_lines[i].color[gap_side]:bg.color[bg_x];
             if((color&0x8000u)&&(mask&(1u<<bgs[i])))push(Pixel{rgb6(color&0x7FFFu),bg.target,0,bg.prio,bg.order,true});
         }
         if(objects[x].valid&&(mask&0x10u))push(objects[x]);
@@ -1856,6 +1913,7 @@ void latch_line(int y, LineJob& job) {
         job.survivor_anchor=g_adaptive_hud_anchor;
         job.survivor_gap_fill=g_adaptive_hud_gap_fill;
         job.survivor_center_width=g_adaptive_hud_center_width;
+        job.survivor_gap=g_adaptive_hud_gap;
         auto* row=frame.row(y);const Unit& u=job.unit[0];
         const unsigned width=g_survivor_widths[job.screen[0]];
         const bool needs=!line_forceblank(job,0)&&((u.dispcnt>>16)&3u)==1u&&job.bg0_3d;
@@ -2415,11 +2473,51 @@ void nds_gpu2d_stop(){
             frame.fill(0u);
 }
 uint32_t nds_gpu2d_read(uint32_t addr,uint32_t width){const int e=(addr&0x1000u)?1:0;return reg_read(g_unit[e],addr&0xFFFu,width);}
-void nds_gpu2d_write(uint32_t addr,uint32_t value,uint32_t width){
-    const int e=(addr&0x1000u)?1:0;Unit&u=g_unit[e];const uint32_t off=addr&0xFFFu;
+namespace {
+std::array<NdsGpu2dRegChange, NDS_GPU2D_REG_CHANGE_RING> g_reg_changes{};
+uint64_t g_reg_change_total = 0;
+
+void apply_reg_write(Unit& u, int e, uint32_t off, uint32_t value,
+                     uint32_t width) {
     if(width==4){if(off==0){u.dispcnt=value;if(e)u.dispcnt&=0xC0B1FFF7u;return;}if(off==0x64){u.capture=value&0xEF3F1F1Fu;return;}reg_write16(u,e,off,value);reg_write16(u,e,off+2,value>>16);return;}
     if(width==2){reg_write16(u,e,off,value);return;}
     reg_write8(u, e, off, static_cast<uint8_t>(value));
+}
+}  // namespace
+
+uint64_t nds_gpu2d_reg_change_total() { return g_reg_change_total; }
+
+uint32_t nds_gpu2d_reg_changes(uint64_t from_seq, uint32_t max,
+                               NdsGpu2dRegChange* out) {
+    if (!out || max == 0u) return 0u;
+    const uint64_t total = g_reg_change_total;
+    const uint64_t oldest = total > NDS_GPU2D_REG_CHANGE_RING
+        ? total - NDS_GPU2D_REG_CHANGE_RING : 0u;
+    uint32_t count = 0;
+    for (uint64_t seq = std::max(from_seq, oldest);
+         seq < total && count < max; ++seq)
+        out[count++] = g_reg_changes[seq % NDS_GPU2D_REG_CHANGE_RING];
+    return count;
+}
+
+void nds_gpu2d_write(uint32_t addr,uint32_t value,uint32_t width){
+    const int e=(addr&0x1000u)?1:0;Unit&u=g_unit[e];const uint32_t off=addr&0xFFFu;
+    // Compare the whole latched unit image so the change ring covers every
+    // register, including write-only scroll and the 3D render X position's
+    // engine-side copy, without duplicating the decoder below.
+    unsigned char before[sizeof(Unit)];
+    std::memcpy(before, &u, sizeof(Unit));
+    apply_reg_write(u, e, off, value, width);
+    if (std::memcmp(before, &u, sizeof(Unit)) == 0) return;
+    NdsGpu2dRegChange& c =
+        g_reg_changes[g_reg_change_total % NDS_GPU2D_REG_CHANGE_RING];
+    c.seq = g_reg_change_total++;
+    c.frame = nds_io_display_frame();
+    c.line = nds_io_vcount();
+    c.offset = static_cast<uint16_t>(off);
+    c.engine = static_cast<uint8_t>(e);
+    c.width = static_cast<uint8_t>(width);
+    c.value = value;
 }
 std::atomic<uint32_t> nds_gpu2d_jobs_outstanding{0};
 std::atomic<uint32_t> nds_gpu2d_staged_captures{0};
@@ -2757,8 +2855,7 @@ bool nds_gpu2d_requires_3d_readback() {
         g_frame_capture_active)
         return true;
     if(g_survivors_enabled)return false;
-    return !g_direct_frame_active &&
-           !nds_gpu3d_display_readback_latency();
+    return !g_direct_frame_active;
 }
 
 void nds_gpu2d_force_cpu_frames(uint32_t frames) {
@@ -2780,6 +2877,17 @@ void nds_gpu2d_set_adaptive_hud_anchor(bool enabled,
     g_adaptive_hud_gap_fill = enabled && fill_gaps;
     g_adaptive_hud_center_width =
         std::clamp<int>(center_width, 8, 256);
+}
+
+void nds_gpu2d_set_adaptive_hud_gap(const NdsGpu2dHudGap& gap) {
+    drain_pool(NDS_GPU2D_FENCE_FRAME);
+    g_adaptive_hud_gap = {};
+    for (int side = 0; side < 2; ++side)
+        if (gap.source[side] >= 0 && gap.source[side] < 256)
+            g_adaptive_hud_gap.source[side] = gap.source[side];
+    for (int bg = 0; bg < 4; ++bg)
+        if (gap.scroll_x[bg] >= 0 && gap.scroll_x[bg] < 512)
+            g_adaptive_hud_gap.scroll_x[bg] = gap.scroll_x[bg];
 }
 
 void nds_gpu2d_set_adaptive_center_native(bool enabled) {
@@ -2807,6 +2915,7 @@ struct AdaptiveScratch {
     std::array<int16_t, kMaxAdaptiveWidth> black_run{};
     std::array<uint32_t, kMaxAdaptiveWidth> repaired_3d{};
     std::array<BgLine, 3> hud_bg_lines{};
+    std::array<HudGapLine, 3> hud_gap_lines{};
 };
 
 // Loop-invariant state for one adaptive frame. Snapshotted on the calling
@@ -2826,6 +2935,7 @@ struct AdaptiveCtx {
     NdsGpu2dWindowState window_state{};
     int hud_bgs[3]{};
     size_t hud_bg_count = 0;
+    NdsGpu2dHudGap hud_gap{};
     bool snapshot_matches = false;
     bool emit_hd = false;
     // Native-aspect HD returns the canonical scanline framebuffer, so only
@@ -2861,12 +2971,19 @@ void composite_adaptive_line(const AdaptiveCtx& c, int y,
     auto& black_run = sc.black_run;
     auto& repaired_3d = sc.repaired_3d;
     auto& hud_bg_lines = sc.hud_bg_lines;
+    auto& hud_gap_lines = sc.hud_gap_lines;
     (void)extra;
     render_obj_line(u, 0, y, obj.data(), output_width,
                     oam, palette, *vram, obj_window.data());
-    for (size_t i = 0; i < hud_bg_count; ++i)
+    for (size_t i = 0; i < hud_bg_count; ++i) {
         decode_bg_line(u, 0, hud_bgs[i], y, palette, *vram,
                        hud_bg_lines[i]);
+        hud_gap_lines[i] = g_adaptive_hud_gap_fill
+            ? adaptive_hud_gap_line(u, 0, hud_bgs[i], y, palette, *vram,
+                                    hud_bg_lines[i],
+                                    g_adaptive_hud_center_width, c.hud_gap)
+            : HudGapLine{};
+    }
     const uint32_t* const line3d = c.metadata_only ? nullptr : snapshot_matches
         ? g_wide_3d_frame[c.front].data() +
               static_cast<size_t>(y) * output_width
@@ -2989,8 +3106,14 @@ void composite_adaptive_line(const AdaptiveCtx& c, int y,
             obj_window[x] != 0u);
         const int bg_hud_x = g_adaptive_hud_gap_fill
             ? nds_gpu2d_adaptive_hud_x(x, output_width, g_adaptive_hud_anchor,
-                                      g_adaptive_hud_center_width, true)
+                                      g_adaptive_hud_center_width, true,
+                                      c.hud_gap.source[0], c.hud_gap.source[1])
             : hud_x;
+        const int gap_side = hud_x < 0 && g_adaptive_hud_gap_fill
+            ? nds_gpu2d_adaptive_hud_gap_side(x, output_width,
+                                              g_adaptive_hud_anchor,
+                                              g_adaptive_hud_center_width)
+            : -1;
         // Authored OBJ panels can cross the edge of an anchored band. Keep
         // their original stack in those pixels instead of covering them with
         // a newly introduced, higher-priority decorative BG seam.
@@ -2998,7 +3121,10 @@ void composite_adaptive_line(const AdaptiveCtx& c, int y,
                                   (window_mask & 0x10u);
         if (bg_hud_x >= 0 && !preserve_obj) {
             for (size_t i = 0; i < hud_bg_count; ++i) {
-                const uint16_t c = hud_bg_lines[i].color[bg_hud_x];
+                const uint16_t c =
+                    gap_side >= 0 && hud_gap_lines[i].flat[gap_side]
+                        ? hud_gap_lines[i].color[gap_side]
+                        : hud_bg_lines[i].color[bg_hud_x];
                 if (!(c & 0x8000u) ||
                     !(window_mask & (1u << hud_bgs[i])))
                     continue;
@@ -3352,6 +3478,7 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
     ctx.hud_bgs[1] = hud_bgs[1];
     ctx.hud_bgs[2] = hud_bgs[2];
     ctx.hud_bg_count = hud_bg_count;
+    ctx.hud_gap = g_adaptive_hud_gap;
     ctx.snapshot_matches = snapshot_matches;
     ctx.emit_hd = emit_hd;
     ctx.metadata_only = emit_hd && output_width == 256;

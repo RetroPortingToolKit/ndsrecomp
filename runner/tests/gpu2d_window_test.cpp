@@ -649,6 +649,175 @@ bool test_adaptive_hud_gap_fill() {
            require(nds_gpu2d_adaptive_hud_x(319, 384, true, 128, true) == 192);
 }
 
+// beads-lqa.63: a title-declared seam column per side fills each invented gap
+// with one flat colour per row, and the old two-column stretch (two
+// rectangles per side) is gone for such titles. Invalid declarations fall back.
+bool test_adaptive_hud_gap_source_mapping() {
+    for (int width : {256, 320, 384, 448}) {
+        for (int x = 0; x < width; ++x) {
+            const int band = nds_gpu2d_adaptive_hud_x(x, width, true, 128);
+            const int side = nds_gpu2d_adaptive_hud_gap_side(x, width, true, 128);
+            const int fill = nds_gpu2d_adaptive_hud_x(x, width, true, 128, true, 62, 193);
+            if (!require((band < 0) == (side >= 0))) return false;
+            if (band >= 0 && !require(fill == band)) return false;
+            if (side == 0 && !require(fill == 62)) return false;
+            if (side == 1 && !require(fill == 193)) return false;
+            if (!require(nds_gpu2d_adaptive_hud_gap_side(x, width, false, 128) == -1))
+                return false;
+        }
+    }
+    // Old behaviour: the left gap's inner half sampled the centered band's
+    // first column (64) and the right gap's outer half the right band's 192.
+    if (!require(nds_gpu2d_adaptive_hud_x(127, 448, true, 128, true) == 64) ||
+        !require(nds_gpu2d_adaptive_hud_x(127, 448, true, 128, true, 62, 193) == 62) ||
+        !require(nds_gpu2d_adaptive_hud_x(340, 448, true, 128, true, 62, 193) == 193))
+        return false;
+    // A source outside its outer band is not a continuation of that band.
+    if (!require(!nds_gpu2d_adaptive_hud_gap_source_valid(0, 64, 128)) ||
+        !require(!nds_gpu2d_adaptive_hud_gap_source_valid(1, 191, 128)) ||
+        !require(nds_gpu2d_adaptive_hud_gap_source_valid(0, 63, 128)) ||
+        !require(nds_gpu2d_adaptive_hud_gap_source_valid(1, 192, 128)) ||
+        !require(nds_gpu2d_adaptive_hud_x(127, 448, true, 128, true, 64, 191) == 64) ||
+        !require(nds_gpu2d_adaptive_hud_x(100, 448, true, 128, true, 64, 191) == 63))
+        return false;
+    return true;
+}
+
+// HUD sway fixture: BG1 is a 512x256 text map whose 8-pixel tile columns use
+// distinct palette entries, scrolled like MPH's helmet layer (HOFS 128 at rest).
+struct SwayRun {
+    AdaptiveRun cpu;
+    std::vector<uint32_t> survivor;  // wide_layers, 4 words per pixel
+};
+
+void run_sway_frame(SwayRun& out, uint16_t hofs, const NdsGpu2dHudGap& gap,
+                    bool fill) {
+    static std::array<uint8_t, 0x4000> bg_vram{};
+    bg_vram.fill(0);
+    for (int t = 1; t < 16; ++t)
+        std::fill_n(bg_vram.begin() + t * 32, 32, static_cast<uint8_t>(t | (t << 4)));
+    for (int row = 0; row < 32; ++row)
+        for (int col = 0; col < 64; ++col) {
+            const uint16_t tile = static_cast<uint16_t>(1 + col % 15);
+            const size_t at = 0x1000u + (col / 32) * 0x800u + row * 64u + (col % 32) * 2u;
+            bg_vram[at] = static_cast<uint8_t>(tile);
+            bg_vram[at + 1] = static_cast<uint8_t>(tile >> 8);
+        }
+    auto scene = [&](Unit& u) {
+        g_view = {};
+        g_view.bg[0] = bg_vram.data();
+        u.bgcnt[1] = 0x4201u;  // 512x256, map base 0x1000, priority 1
+        u.bgx[1] = hofs;
+        u.bgy[1] = 0;
+        // Keep the OBJ fixture out of the seam rows under test.
+        g_oam.fill(0);
+        for (unsigned n = 0; n < 128; ++n) set_obj(n, 0x0200u, 0, 0);
+    };
+    g_scene_tweak = scene;
+    nds_gpu2d_set_adaptive_workers(0);
+    nds_gpu2d_set_adaptive_center_max_polygons(0);
+    nds_gpu2d_set_adaptive_hud_anchor(true, 128, fill);
+    nds_gpu2d_set_adaptive_hud_gap(gap);
+    run_adaptive_frame(out.cpu, 448);
+
+    // The survivor transport must agree with the CPU composite in the gaps.
+    namespace s = nds_survivors;
+    nds_gpu2d_reset();
+    g_test_powercontrol = 0x8202;
+    g_3d_output_width = 448;
+    g_3d_render_xpos = 0;
+    g_3d_visible = true;
+    Unit& u = g_unit[0];
+    u.dispcnt = 0x00010000u | 0x8u | 0x100u | 0x200u | 0x1000u;
+    u.bgcnt[0] = 0;
+    scene(u);
+    g_adaptive_center_native = false;
+    g_adaptive_skybox_fill = false;
+    nds_gpu2d_set_survivor_widths(448, 448);
+    nds_gpu2d_set_survivors(true);
+    nds_gpu2d_set_threaded(true, 2);
+    nds_gpu2d_start_frame();
+    for (int y = 0; y < 192; ++y) nds_gpu2d_render_scanline(y);
+    nds_gpu2d_vblank();
+    nds_gpu2d_start_frame();
+    nds_gpu2d_finish_frame();
+    const auto* frame = nds_gpu2d_survivor_current();
+    out.survivor.clear();
+    if (frame) out.survivor.assign(frame->wide_layers.begin(), frame->wide_layers.end());
+    nds_gpu2d_set_survivors(false);
+    nds_gpu2d_set_threaded(false, 1);
+    g_scene_tweak = {};
+    g_test_powercontrol = 0x8002;
+    g_3d_output_width = 256;
+}
+
+uint32_t palette_rgb6(int index) {
+    return rgb6(static_cast<uint16_t>((index * 0x0421u) & 0x7FFFu));
+}
+
+// beads-lqa.63: MPH sways its helmet/visor BGs through BGxHOFS (up to +-8
+// px) while aiming. The gap filler sampled the live seam columns, so
+// different frame art slid under the stretched rectangles and they changed
+// colour. A declared reference scroll pins the flat filler to one art column
+// while the authored bands still sway, identically in the CPU composite, its
+// HD layer surfaces and the survivor transport.
+bool test_adaptive_hud_gap_ignores_hud_sway() {
+    NdsGpu2dHudGap pinned{};
+    pinned.source[0] = 62;
+    pinned.source[1] = 193;
+    pinned.scroll_x[1] = 128;
+    NdsGpu2dHudGap live = pinned;
+    live.scroll_x[1] = -1;
+    const int width = 448, y = 40;
+    auto at = [&](int x) { return static_cast<size_t>(y) * width + x; };
+    // Art column 62+128=190 -> tile column 23 -> entry 9; 193+128=321 ->
+    // tile column 40 -> entry 11, whatever the live HOFS is.
+    const uint32_t left = palette_rgb6(9), right = palette_rgb6(11);
+    SwayRun rest{};
+    run_sway_frame(rest, 128, pinned, true);
+    if (!require(rest.cpu.hd_valid && rest.cpu.width == width)) return false;
+    if (!require(rest.survivor.size() >= static_cast<size_t>(192) * nds_survivors::MaxWidth * 4u))
+        return false;
+    for (uint16_t hofs : {128, 132, 120, 136}) {
+        SwayRun swayed{};
+        run_sway_frame(swayed, hofs, pinned, true);
+        for (int x = 0; x < width; ++x) {
+            const int side = nds_gpu2d_adaptive_hud_gap_side(x, width, true, 128);
+            const size_t hd = at(x) * 2u;
+            const size_t sv = (static_cast<size_t>(y) * nds_survivors::MaxWidth + x) * 4u;
+            if (side < 0) continue;
+            const uint32_t expected = side ? right : left;
+            if (!require(swayed.cpu.hd_top[hd] == expected)) return false;
+            if (!require(swayed.cpu.surface[at(x)] == rest.cpu.surface[at(x)])) return false;
+            if (!require(swayed.survivor[sv] == expected)) return false;
+            if (!require(swayed.survivor[sv + 2] == swayed.cpu.hd_below[hd])) return false;
+        }
+        // The authored band itself still sways with the guest scroll.
+        if (hofs != 128 && !require(swayed.cpu.hd_top[at(60) * 2u] != rest.cpu.hd_top[at(60) * 2u]))
+            return false;
+    }
+    // Old behaviour (live scroll): the filler colour follows the sway.
+    SwayRun live_rest{}, live_swayed{};
+    run_sway_frame(live_rest, 128, live, true);
+    run_sway_frame(live_swayed, 132, live, true);
+    if (!require(live_rest.cpu.hd_top[at(100) * 2u] == left)) return false;
+    if (!require(live_swayed.cpu.hd_top[at(100) * 2u] != left)) return false;
+    // Old behaviour (no declared source): two different rectangles per side.
+    SwayRun stretch{};
+    run_sway_frame(stretch, 128, NdsGpu2dHudGap{}, true);
+    if (!require(stretch.cpu.hd_top[at(70) * 2u] != stretch.cpu.hd_top[at(150) * 2u]))
+        return false;
+    // Without gap fill the declaration is inert: gaps keep their 3D/backdrop.
+    SwayRun unfilled{};
+    run_sway_frame(unfilled, 128, pinned, false);
+    if (!require(unfilled.cpu.hd_top[at(100) * 2u] != left)) return false;
+    nds_gpu2d_set_adaptive_hud_gap(NdsGpu2dHudGap{});
+    nds_gpu2d_set_adaptive_hud_anchor(false, 64);
+    g_view = {};
+    std::puts("[hud gap sway] declared seam columns stay flat and static under HOFS sway in CPU, HD and survivor paths");
+    return true;
+}
+
 bool test_fixed_16_9_composition() {
     nds_gpu2d_set_adaptive_workers(0);
     nds_gpu2d_set_adaptive_center_max_polygons(0);
@@ -921,6 +1090,8 @@ bool test_adaptive_helpers_match_serial() {
 
 // Minimal device implementations required by the production renderer object.
 uint16_t nds_powercontrol9() { return g_test_powercontrol; }
+uint64_t nds_io_display_frame() { return 0; }
+uint16_t nds_io_vcount() { return 0; }
 void nds_gpu3d_sync_display_frame() {
     ++g_display_sync_requests;g_capture_copy_pending=false;
 }
@@ -950,7 +1121,6 @@ const uint32_t* nds_gpu3d_wide_attr_line(int) { ++g_attribute_line_reads; return
 bool nds_gpu3d_display_visible() { return g_3d_visible; }
 uint16_t nds_gpu3d_render_xpos() { return g_3d_render_xpos; }
 uint32_t nds_gpu3d_render_polygon_count() { return g_3d_render_polygon_count; }
-bool nds_gpu3d_display_readback_latency() { return false; }
 bool nds_gpu3d_projection_has_perspective() {
     return g_3d_projection_has_perspective;
 }
@@ -1210,6 +1380,8 @@ int main() {
     if (!test_direct_window_late_fallback()) return 21;
     if (!test_survivor_line_ownership()) return 22;
     if (!test_compact_survivor_rows()) return 23;
+    if (!test_adaptive_hud_gap_source_mapping()) return 24;
+    if (!test_adaptive_hud_gap_ignores_hud_sway()) return 25;
     return 0;
 }
 #endif

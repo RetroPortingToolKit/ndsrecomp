@@ -72,6 +72,7 @@
 #include "spu.h"
 #include "tier3.h"
 #include "title_patches.h"
+#include "vram.h"
 
 extern "C" uint32_t g_runtime_break_pc;
 
@@ -800,13 +801,15 @@ std::string handle(const std::string& line) {
             "\"submission_index\":%u,\"vertex_count\":%u,"
             "\"attr\":%u,\"tex_param\":%u,\"tex_palette\":%u,"
             "\"min_x\":%d,\"max_x\":%d,\"min_y\":%d,\"max_y\":%d,"
-            "\"min_z\":%u,\"max_z\":%u}",
+            "\"min_z\":%u,\"max_z\":%u,"
+            "\"min_s\":%d,\"max_s\":%d,\"min_t\":%d,\"max_t\":%d}",
             nds_gpu3d_render_polygon_count(),
             static_cast<unsigned long long>(index),
             polygon.submission_index, polygon.vertex_count,
             polygon.attr, polygon.tex_param, polygon.tex_palette,
             polygon.min_x, polygon.max_x, polygon.min_y, polygon.max_y,
-            polygon.min_z, polygon.max_z);
+            polygon.min_z, polygon.max_z,
+            polygon.min_s, polygon.max_s, polygon.min_t, polygon.max_t);
         return result;
     }
     if (cmd == "gx_polygons") {
@@ -832,7 +835,11 @@ std::string handle(const std::string& line) {
                 ",\"min_y\":" + std::to_string(polygon.min_y) +
                 ",\"max_y\":" + std::to_string(polygon.max_y) +
                 ",\"min_z\":" + std::to_string(polygon.min_z) +
-                ",\"max_z\":" + std::to_string(polygon.max_z) + "}";
+                ",\"max_z\":" + std::to_string(polygon.max_z) +
+                ",\"min_s\":" + std::to_string(polygon.min_s) +
+                ",\"max_s\":" + std::to_string(polygon.max_s) +
+                ",\"min_t\":" + std::to_string(polygon.min_t) +
+                ",\"max_t\":" + std::to_string(polygon.max_t) + "}";
         }
         result += "]}";
         return result;
@@ -1237,48 +1244,7 @@ std::string handle(const std::string& line) {
                ",\"cpu_main_requests\":" + std::to_string(s.cpu_main_requests) +
                ",\"cpu_overlap_ticks\":" + std::to_string(s.cpu_overlap_ticks) +
                ",\"cpu_overlap_frames\":" + std::to_string(s.cpu_overlap_frames) +
-               ",\"cpu_prefix_cycles\":" + std::to_string(s.cpu_prefix_cycles) +
-               ",\"perf_governor_stage\":" +
-               std::to_string(s.perf_governor_stage) +
-               ",\"perf_governor_over_frames\":" +
-               std::to_string(s.perf_governor_over_frames) +
-               ",\"perf_governor_under_frames\":" +
-               std::to_string(s.perf_governor_under_frames) +
-               ",\"perf_governor_held\":" +
-               std::to_string(s.perf_governor_held) +
-               ",\"perf_governor_apply_failed\":" +
-               std::to_string(s.perf_governor_apply_failed) +
-               ",\"perf_governor_transitions\":" +
-               std::to_string(s.perf_governor_transitions) + "}";
-    }
-    if (cmd == "governor_history") {
-        // Retroactive query over the always-on transition ring: every stage
-        // change since the run started (up to the ring capacity) with no
-        // arming step and no dependency on the performance log.
-        std::array<NdsPerfGovernorTransition,
-                   kNdsPerfGovernorHistoryCapacity> entries{};
-        const uint32_t count = nds_perf_governor_history(
-            entries.data(), kNdsPerfGovernorHistoryCapacity);
-        std::string out = "{\"total\":" +
-            std::to_string(nds_perf_governor_history_total()) +
-            ",\"capacity\":" +
-            std::to_string(kNdsPerfGovernorHistoryCapacity) +
-            ",\"transitions\":[";
-        for (uint32_t i = 0; i < count; ++i) {
-            const NdsPerfGovernorTransition& e = entries[i];
-            if (i) out += ",";
-            out += "{\"frame\":" + std::to_string(e.frame_index) +
-                   ",\"ts_ms\":" + std::to_string(e.ts_ms) +
-                   ",\"from_stage\":" + std::to_string(e.from_stage) +
-                   ",\"to_stage\":" + std::to_string(e.to_stage) +
-                   ",\"reason\":\"" +
-                   nds_perf_governor_reason_name(e.reason) + "\"" +
-                   ",\"held\":" + std::to_string(e.stage2_held ? 1 : 0) +
-                   ",\"apply_failed\":" +
-                   std::to_string(e.apply_failed ? 1 : 0) + "}";
-        }
-        out += "]}";
-        return out;
+               ",\"cpu_prefix_cycles\":" + std::to_string(s.cpu_prefix_cycles) + "}";
     }
     if (cmd == "title_patches") {
         const NdsTitlePatchDebugState s = nds_title_patches_debug_state();
@@ -2052,6 +2018,86 @@ std::string handle(const std::string& line) {
         return buf;
     }
 
+    // Always-on palette change ring (vram.cpp): query retained history from a
+    // sequence number; nothing is armed. Each event is
+    // [seq, frame, line, halfword index, old BGR555, new BGR555].
+    if (cmd == "palette_changes") {
+        const uint64_t from = json_u64(line, "from", 0);
+        uint32_t max = static_cast<uint32_t>(json_u64(line, "count", 1024));
+        if (max > 8192u) max = 8192u;
+        std::vector<NdsPaletteChange> ev(max);
+        const uint32_t got = nds_vram_palette_changes(from, max, ev.data());
+        const uint64_t total = nds_vram_palette_change_total();
+        const uint64_t oldest = total > NDS_PALETTE_CHANGE_RING
+            ? total - NDS_PALETTE_CHANGE_RING : 0u;
+        std::string out = "{\"total\":" + std::to_string(total) +
+            ",\"oldest\":" + std::to_string(oldest) +
+            ",\"frame\":" + std::to_string(nds_io_display_frame()) +
+            ",\"events\":[";
+        for (uint32_t i = 0; i < got; ++i) {
+            char b[96];
+            std::snprintf(b, sizeof(b), "%s[%llu,%llu,%u,%u,%u,%u]",
+                i ? "," : "", (unsigned long long)ev[i].seq,
+                (unsigned long long)ev[i].frame, ev[i].line, ev[i].index,
+                ev[i].old_value, ev[i].new_value);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    // Always-on 2D register change ring (gpu2d.cpp). Each event is
+    // [seq, frame, line, engine, offset, width, value].
+    if (cmd == "gpu2d_reg_changes") {
+        const uint64_t from = json_u64(line, "from", 0);
+        uint32_t max = static_cast<uint32_t>(json_u64(line, "count", 1024));
+        if (max > 8192u) max = 8192u;
+        std::vector<NdsGpu2dRegChange> ev(max);
+        const uint32_t got = nds_gpu2d_reg_changes(from, max, ev.data());
+        const uint64_t total = nds_gpu2d_reg_change_total();
+        const uint64_t oldest = total > NDS_GPU2D_REG_CHANGE_RING
+            ? total - NDS_GPU2D_REG_CHANGE_RING : 0u;
+        std::string out = "{\"total\":" + std::to_string(total) +
+            ",\"oldest\":" + std::to_string(oldest) +
+            ",\"frame\":" + std::to_string(nds_io_display_frame()) +
+            ",\"events\":[";
+        for (uint32_t i = 0; i < got; ++i) {
+            char b[112];
+            std::snprintf(b, sizeof(b), "%s[%llu,%llu,%u,%u,%u,%u,%u]",
+                i ? "," : "", (unsigned long long)ev[i].seq,
+                (unsigned long long)ev[i].frame, ev[i].line, ev[i].engine,
+                ev[i].offset, ev[i].width, ev[i].value);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    // Live 2D engine register latch (both units), for attributing what the
+    // compositor samples: DISPCNT, BGCNT, scroll, windows, blend, brightness.
+    if (cmd == "gpu2d_state") {
+        NdsGpu2dSaveState s{};
+        if (!gpu2d_savestate_export(&s))
+            return "{\"error\":\"gpu2d state unavailable\"}";
+        std::string out = "{\"frame\":" +
+            std::to_string(nds_io_display_frame()) + ",\"units\":[";
+        for (int e = 0; e < 2; ++e) {
+            const NdsGpu2dUnitSaveState& u = s.unit[e];
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                "%s{\"dispcnt\":%u,\"bgcnt\":[%u,%u,%u,%u],"
+                "\"bgx\":[%u,%u,%u,%u],\"bgy\":[%u,%u,%u,%u],"
+                "\"win\":[%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u],"
+                "\"bldcnt\":%u,\"bldalpha\":%u,\"master_bright\":%u}",
+                e ? "," : "", u.dispcnt, u.bgcnt[0], u.bgcnt[1], u.bgcnt[2],
+                u.bgcnt[3], u.bgx[0], u.bgx[1], u.bgx[2], u.bgx[3], u.bgy[0],
+                u.bgy[1], u.bgy[2], u.bgy[3], u.win[0], u.win[1], u.win[2],
+                u.win[3], u.win[4], u.win[5], u.win[6], u.win[7], u.win[8],
+                u.win[9], u.win[10], u.win[11], u.bldcnt, u.bldalpha,
+                u.master_bright);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
     if (cmd == "read_region") {
         BusRegion reg{};
         if (!bus_get_region(json_str(line, "region").c_str(), &reg))

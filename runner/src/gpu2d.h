@@ -65,6 +65,27 @@ void nds_gpu2d_reset();
 void nds_gpu2d_stop();
 uint32_t nds_gpu2d_read(uint32_t addr, uint32_t width);
 void nds_gpu2d_write(uint32_t addr, uint32_t value, uint32_t width);
+
+// Always-on 2D register change history. Every guest write that changes the
+// latched state of either engine (DISPCNT, BGCNT, scroll, affine, windows,
+// mosaic, blend, brightness, capture) is recorded with the display frame and
+// scanline it landed on. Rewrites of identical values are not events, so the
+// ring keeps a long window of genuine changes (HUD sway, fades, effects).
+// Offset is relative to the engine base (0x04000000 / 0x04001000). Like the
+// palette ring this is process-lifetime observer history.
+struct NdsGpu2dRegChange {
+    uint64_t seq;
+    uint64_t frame;
+    uint16_t line;
+    uint16_t offset;
+    uint8_t engine;
+    uint8_t width;
+    uint32_t value;
+};
+constexpr uint32_t NDS_GPU2D_REG_CHANGE_RING = 16384u;
+uint64_t nds_gpu2d_reg_change_total();
+uint32_t nds_gpu2d_reg_changes(uint64_t from_seq, uint32_t max,
+                               NdsGpu2dRegChange* out);
 void nds_gpu2d_render_scanline(int line);
 void nds_gpu2d_render_frame();
 void nds_gpu2d_start_frame();
@@ -83,6 +104,10 @@ void nds_gpu2d_set_adaptive_skybox_fill(bool enabled);
 // Title-audited transparent text HUD composition for wide 3D scenes.
 void nds_gpu2d_set_adaptive_hud_anchor(bool enabled,
                                        uint16_t center_width, bool fill_gaps = false);
+// Title-declared gap-fill source (gpu2d_window.h NdsGpu2dHudGap). Invalid
+// source columns or scrolls fall back to the seam stretch / live scroll.
+struct NdsGpu2dHudGap;
+void nds_gpu2d_set_adaptive_hud_gap(const NdsGpu2dHudGap& gap);
 // Title-owned escape hatch for adaptive scenes whose widened 3D projection has
 // not been audited yet. The presenter still uses the adaptive window width,
 // but the source pixels remain a centered native-width composite.

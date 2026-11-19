@@ -648,7 +648,6 @@ void nds_diagnostics_start_performance_log(const NdsFrontendOptions& options) {
         "\"adaptive_width_top\":%u,\"adaptive_width_bottom\":%u,"
         "\"internal_resolution\":%u,"
         "\"texture_upscale\":%u,\"supersampling\":%u,\"antialiasing\":%u,"
-        "\"performance_governor\":\"%s\","
         "\"relative_mouse_touch\":%s,\"virtual_stylus\":%s,"
         "\"mph_prime_controls\":%s,"
         "\"mph_prime_unified_window_focus\":%s,"
@@ -703,7 +702,6 @@ void nds_diagnostics_start_performance_log(const NdsFrontendOptions& options) {
         options.adaptive_max_width[0], options.adaptive_max_width[1],
         options.internal_resolution, options.texture_upscale,
         options.supersampling, options.antialiasing,
-        nds_perf_governor_mode_name(options.perf_governor_mode),
         options.relative_mouse_touch ? "true" : "false",
         options.virtual_stylus.enabled ? "true" : "false",
         options.mph_prime_controls ? "true" : "false",
@@ -793,9 +791,7 @@ void nds_diagnostics_maybe_write_performance_sample(
         "\"fps\":%.3f,\"ms_per_frame\":{\"emu\":%.3f,\"present\":%.3f,"
         "\"adaptive\":%.3f,\"upload\":%.3f,\"draw\":%.3f,\"swap\":%.3f,"
         "\"drain\":%.3f},\"underruns_delta\":%llu,"
-        "\"governor\":{\"stage\":%u,\"over_frames\":%u,"
-        "\"under_frames\":%u,\"held\":%s,\"apply_failed\":%s,"
-        "\"transitions\":%llu,\"compute_readback_ms\":%.3f},"
+        "\"compute_readback_ms\":%.3f,"
         "\"cycles\":{\"arm9\":%llu,\"arm7\":%llu},"
         "\"tier3_delta\":{\"arm9\":{\"entries\":%llu,"
         "\"instructions\":%llu,\"clean_ram_rejects\":%llu},"
@@ -821,13 +817,7 @@ void nds_diagnostics_maybe_write_performance_sample(
         per_frame_ms(sub_u64(stats.drain_ticks, before.drain_ticks),
                      frame_delta, stats.freq),
         (unsigned long long)sub_u64(stats.underruns, before.underruns),
-        stats.perf_governor_stage,
-        stats.perf_governor_over_frames,
-        stats.perf_governor_under_frames,
-        stats.perf_governor_held ? "true" : "false",
-        stats.perf_governor_apply_failed ? "true" : "false",
-        (unsigned long long)stats.perf_governor_transitions,
-        // The always-on readback stall: the quantity stage 1 defers.
+        // The always-on accelerated-renderer readback stall.
         frame_delta ? static_cast<double>(
                           sub_u64(gpu3d.compute_readback_ns,
                                   g_prev_gpu3d.compute_readback_ns)) /
@@ -1039,56 +1029,6 @@ void nds_diagnostics_note_savestate(const char* action, unsigned slot,
     std::fflush(g_perf);
 }
 
-void nds_diagnostics_note_perf_governor_transition(uint8_t from_stage,
-                                                   uint8_t to_stage,
-                                                   const char* reason) {
-    if (!g_perf) return;
-    std::fprintf(g_perf,
-        "{\"kind\":\"event\",\"event\":\"performance_governor_transition\","
-        "\"from_stage\":%u,\"to_stage\":%u,\"reason\":\"%s\","
-        "\"ts_ms\":%llu,\"wall\":\"%s\"}\n",
-        from_stage, to_stage,
-        json_escape(reason ? reason : "").c_str(),
-        (unsigned long long)unix_ms_now(),
-        json_escape(wall_clock_now().c_str()).c_str());
-    std::fflush(g_perf);
-}
-
-void nds_diagnostics_write_perf_governor_history() {
-    if (!g_perf) return;
-    // The ring is always-on, so this record exists even when every individual
-    // transition event above was written before the log was opened (or when a
-    // load reset the interval baselines). It is the retroactive query, not a
-    // second live feed.
-    std::array<NdsPerfGovernorTransition, kNdsPerfGovernorHistoryCapacity>
-        entries{};
-    const uint32_t count = nds_perf_governor_history(
-        entries.data(), kNdsPerfGovernorHistoryCapacity);
-    std::fprintf(g_perf,
-        "{\"kind\":\"governor_history\",\"ts_ms\":%llu,\"wall\":\"%s\","
-        "\"total\":%llu,\"capacity\":%u,\"transitions\":[",
-        (unsigned long long)unix_ms_now(),
-        json_escape(wall_clock_now().c_str()).c_str(),
-        (unsigned long long)nds_perf_governor_history_total(),
-        kNdsPerfGovernorHistoryCapacity);
-    for (uint32_t i = 0; i < count; ++i) {
-        const NdsPerfGovernorTransition& e = entries[i];
-        std::fprintf(g_perf,
-            "%s{\"frame\":%llu,\"ts_ms\":%llu,\"from_stage\":%u,"
-            "\"to_stage\":%u,\"reason\":\"%s\",\"held\":%s,"
-            "\"apply_failed\":%s}",
-            i ? "," : "",
-            (unsigned long long)e.frame_index,
-            (unsigned long long)e.ts_ms,
-            e.from_stage, e.to_stage,
-            json_escape(nds_perf_governor_reason_name(e.reason)).c_str(),
-            e.stage2_held ? "true" : "false",
-            e.apply_failed ? "true" : "false");
-    }
-    std::fprintf(g_perf, "]}\n");
-    std::fflush(g_perf);
-}
-
 void nds_diagnostics_write_hostprof_bundle() {
     if (!g_perf) return;
     // The host CPU sampler's whole resident ring plus the module map, as a
@@ -1127,10 +1067,8 @@ void nds_diagnostics_write_hostprof_bundle() {
 
 void nds_diagnostics_stop_performance_log() {
     if (!g_perf) return;
-    // Last records in the bundle: the whole always-on governor transition ring
-    // and the whole always-on host CPU sample ring, so a field report carries
-    // both histories even if the run never wrote an interval sample.
-    nds_diagnostics_write_perf_governor_history();
+    // Last record in the bundle: the whole always-on host CPU sample ring, so
+    // a field report carries it even if the run never wrote an interval sample.
     nds_diagnostics_write_hostprof_bundle();
     std::fclose(g_perf);
     g_perf = nullptr;

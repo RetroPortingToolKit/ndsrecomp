@@ -88,7 +88,43 @@ int main() {
         compare("alpha latch",r.RenderAlphaRef,n.RenderAlphaRef);
         for(unsigned i=0;i<34;++i)compare("fog density latch",r.RenderFogDensityTable[i],n.RenderFogDensityTable[i]);
         if(!equal)throw std::runtime_error("native render-state latch mismatch");
-        std::puts("native triangle raster ABI and collapsed projection passed");
+        // Texture-coordinate generation (TEXIMAGE_PARAM bits 30-31) must match
+        // the reference engine in every mode. Normal-source texgen is MPH's
+        // environment-mapped morph ball (GitHub issue 44): a short shift tiled
+        // its texture 16x. Distinct matrix terms catch transposes; distinct
+        // triangle rows keep the polygon sort order unambiguous.
+        op(0x10,{0});op(0x15);op(0x10,{2});op(0x15);
+        op(0x10,{3});op(0x16,{0x400000u,0x100000u,0,0, uint32_t(-0x200000),0x300000u,0,0,
+                              0x080000u,uint32_t(-0x180000),0,0, 0x2345u,uint32_t(-0x1234),0,0});
+        op(0x29,{0x001F10C0});
+        int row=0;
+        auto st=[](int s,int t){return uint32_t(uint16_t(s))|(uint32_t(uint16_t(t))<<16);};
+        auto tri=[&](std::initializer_list<uint32_t> normals){
+            const int y=-3600+row++*900;const int xs[3]={-1024,1024,0},ys[3]={y,y,y+400};
+            op(0x40,{0});op(0x22,{st(37,-21)});
+            auto n=normals.begin();
+            for(unsigned i=0;i<3;++i){if(n!=normals.end())op(0x21,{*n++});vertex(xs[i],ys[i],-300+int(i)*700);}
+        };
+        op(0x2A,{1u<<30});tri({});                                   // texcoord source
+        op(0x2A,{2u<<30});tri({0x0802018Cu,0x1FF7FC01u,0x3E00FE00u}); // normal source
+        op(0x2A,{3u<<30});tri({});                                   // vertex source
+        op(0x2A,{0});op(0x40,{0});                                   // vertex texgen must not leak
+        for(unsigned i=0;i<3;++i)vertex(-1024+int(i)*1024,-3600+row*900+int(i&1)*400,0);
+        op(0x50,{0});r.VBlank();service.VBlank();nds_native_3d_raster(service.Display(),n,false);
+        compare("texgen polygons",r.RenderNumPolygons,n.RenderNumPolygons);
+        if(!equal||r.RenderNumPolygons!=4)throw std::runtime_error("texgen triangles missing");
+        for(unsigned p=0;p<4;++p){
+            const auto& ra=*r.RenderPolygonRAM[p];const auto& na=*n.RenderPolygonRAM[p];
+            compare("texgen mode",int(ra.TexParam>>30),int(na.TexParam>>30));
+            for(unsigned i=0;i<3;++i)for(unsigned c=0;c<2;++c){
+                const char* what[]={"texcoord-source S","texcoord-source T","normal-source S","normal-source T",
+                                    "vertex-source S","vertex-source T","post-vertex-source S","post-vertex-source T"};
+                compare(what[(ra.TexParam>>30)==0?6+c:((ra.TexParam>>30)-1)*2+c],
+                        ra.Vertices[i]->TexCoords[c],na.Vertices[i]->TexCoords[c]);
+            }
+        }
+        if(!equal)throw std::runtime_error("native texture-coordinate generation mismatch");
+        std::puts("native triangle raster ABI, collapsed projection and texgen passed");
         return 0;
     }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}
 }

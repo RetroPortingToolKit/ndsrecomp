@@ -57,6 +57,7 @@
 #include "nds_build_id.h"
 #include "frontend.h"
 #include "gpu2d.h"
+#include "gpu2d_window.h"
 #include "gpu3d.h"
 #include "live_overlay.h"
 #include "live_overlay_platform.h"
@@ -479,7 +480,6 @@ int main(int argc, char** argv) {
     std::string cli_live_overlay_command;
     std::string cli_live_overlay_cache;
     std::string cli_savestate_dir;
-    std::string cli_perf_governor;
     uint64_t budget = 4000000ull;
     bool serve = false;
     bool interactive = false;
@@ -709,8 +709,6 @@ int main(int argc, char** argv) {
             cli_live_overlay_cache = argv[++i];
         } else if (a == "--savestate-dir" && i + 1 < argc) {
             cli_savestate_dir = argv[++i];
-        } else if (a == "--performance-governor" && i + 1 < argc) {
-            cli_perf_governor = argv[++i];
         } else if (a == "--help" || a == "-h") {
             std::fprintf(stderr,
                 "usage: %s [bios-dir] [cycle-budget] [--rom game.nds] "
@@ -780,7 +778,6 @@ int main(int argc, char** argv) {
                 "[--live-overlay-auto-delay-ms N] "
                 "[--live-overlay-auto-cooldown-ms N] "
                 "[--savestate-dir DIR] "
-                "[--performance-governor auto|off|stage1|stage2] "
                 "[--force-tier3 | NDS_FORCE_TIER3=1]\n",
                 argv[0]);
             return 0;
@@ -827,10 +824,6 @@ int main(int argc, char** argv) {
         return 2;
     }
     frontend_options.runtime_settings_path = cli_runtime_settings_path;
-    if (!nds_load_runtime_quality_setting(&frontend_options)) {
-        std::fprintf(stderr, "could not load automatic quality preference\n");
-        return 2;
-    }
     if (const char* value = std::getenv("NDS_SCREEN_LAYOUT")) {
         if (!nds_parse_screen_layout(value,
                                      &frontend_options.screen_layout)) {
@@ -899,16 +892,6 @@ int main(int argc, char** argv) {
                          "(expected 0, 2, 4, or 8)\n");
             return 2;
         }
-    }
-    if (const char* value = std::getenv("NDS_PERFORMANCE_GOVERNOR")) {
-        NdsPerfGovernorMode mode = NdsPerfGovernorMode::Invalid;
-        if (!nds_parse_perf_governor_mode(value, &mode)) {
-            std::fprintf(stderr,
-                         "invalid NDS_PERFORMANCE_GOVERNOR "
-                         "(expected auto, off, stage1, or stage2)\n");
-            return 2;
-        }
-        frontend_options.perf_governor_mode = mode;
     }
     if (const char* value = std::getenv("NDS_FRAME_INTERPOLATION")) {
         if (!nds_parse_frame_interpolation(
@@ -1032,16 +1015,6 @@ int main(int argc, char** argv) {
                      "invalid --antialiasing "
                      "(expected 0, 2, 4, or 8)\n");
         return 2;
-    }
-    if (!cli_perf_governor.empty()) {
-        NdsPerfGovernorMode mode = NdsPerfGovernorMode::Invalid;
-        if (!nds_parse_perf_governor_mode(cli_perf_governor.c_str(), &mode)) {
-            std::fprintf(stderr,
-                         "invalid --performance-governor "
-                         "(expected auto, off, stage1, or stage2)\n");
-            return 2;
-        }
-        frontend_options.perf_governor_mode = mode;
     }
     if (!cli_frame_interpolation.empty() &&
         !nds_parse_frame_interpolation(
@@ -1790,22 +1763,32 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "refusing to start: %s\n", execution_error.c_str());
         return 1;
     }
+    NdsServiceProfileRequest service_request;
+    service_request.performance = nds_performance_execution();
+    service_request.offline_arm7_env = std::getenv("NDS_OFFLINE_ARM7");
+    service_request.whole_assets_env = std::getenv("NDS_WHOLE_ASSETS");
+    service_request.network = resolved_network.enabled;
+    service_request.wfc = resolved_network.wfc_enabled;
+    service_request.local_wireless = resolved_network.local_wireless_enabled;
+    service_request.replay = resolved_network.backend == NdsNetBackendKind::Replay;
+    const NdsServiceProfile service_profile = nds_service_profile_select(service_request);
+    std::fprintf(stderr, "[execution] services: offline-arm7=%s whole-assets=%s (%s)\n",
+                 service_profile.offline_arm7 ? "requested" : "off",
+                 service_profile.whole_assets ? "requested" : "off",
+                 service_request.network || service_request.wfc ||
+                 service_request.local_wireless || service_request.replay
+                     ? "connected: original ARM7 driver" : "offline");
 #if defined(NDS_OFFLINE_ARM7)
-    const char* offline_setting=std::getenv("NDS_OFFLINE_ARM7");
-    const bool offline_requested=nds_performance_execution() &&
-        (!offline_setting || std::strcmp(offline_setting,"0")!=0) &&
-        !resolved_network.enabled && !resolved_network.wfc_enabled &&
-        !resolved_network.local_wireless_enabled &&
-        resolved_network.backend != NdsNetBackendKind::Replay;
+    // Connected profiles keep the original ARM7 wireless/WFC driver; the rest
+    // of the performance model (native ARM9/ARM7, geometry, HLE, assets) stays.
+    const bool offline_requested=service_profile.offline_arm7;
     if (!nds_offline_arm7_configure(rom_sha1,offline_requested,&execution_error) && offline_requested) {
         std::fprintf(stderr, "refusing to start offline services: %s\n", execution_error.c_str());
         return 1;
     }
 #endif
 #if defined(NDS_WHOLE_ASSETS)
-    const char* asset_setting=std::getenv("NDS_WHOLE_ASSETS");
-    if(!nds_assets::configure(rom_sha1.c_str(),offline_requested&&
-       (!asset_setting||std::strcmp(asset_setting,"0")!=0))){
+    if(!nds_assets::configure(rom_sha1.c_str(),service_profile.whole_assets)){
         std::fprintf(stderr,"refusing to start whole asset services for this image\n");return 1;
     }
 #endif
@@ -2086,6 +2069,14 @@ int main(int argc, char** argv) {
         (frontend_options.adaptive_screens & NDS_ADAPTIVE_TOP) != 0u,
         frontend_options.adaptive_hud_center_width,
         frontend_options.adaptive_hud_gap_fill);
+    {
+        NdsGpu2dHudGap hud_gap{};
+        std::copy_n(frontend_options.adaptive_hud_gap_source, 2,
+                    hud_gap.source);
+        std::copy_n(frontend_options.adaptive_hud_gap_scroll_x, 4,
+                    hud_gap.scroll_x);
+        nds_gpu2d_set_adaptive_hud_gap(hud_gap);
+    }
     nds_gpu2d_set_adaptive_center_native(
         frontend_options.adaptive_center_native &&
         (frontend_options.adaptive_screens & NDS_ADAPTIVE_TOP) != 0u);

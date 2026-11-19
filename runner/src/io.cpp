@@ -2132,6 +2132,9 @@ void nds_io_reset() {
     nds_gpu3d_reset();
 }
 
+uint64_t nds_io_display_frame() { return g_display_last / (2130u * 263u); }
+uint16_t nds_io_vcount() { return g_vcount; }
+
 void nds_io_debug_history_reset() {
     g_counts = {};
     g_dma_trace_count = 0;

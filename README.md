@@ -233,6 +233,9 @@ adaptive_width = 448               # even width from 256 through 448
 adaptive_skybox_fill = false       # optional title-audited repair
 adaptive_hud_anchor = false        # title-audited text HUD band placement
 adaptive_hud_center_width = 64     # centered source band; multiple of 8
+adaptive_hud_gap_fill = false      # extend BG frame art across the gaps
+# adaptive_hud_gap_source = [L, R]       # one seam column per outer band
+# adaptive_hud_gap_scroll_x = [-1, ...]  # BG0..BG3 rest HOFS; -1 = live
 
 [system]
 startup_mode = "preserve"          # preserve | manual | automatic
@@ -262,7 +265,14 @@ needs and audits the cylindrical-sky repair heuristic. The equivalent one-run
 into authored left, center, and right bands over the wide 3D scene; affine,
 bitmap, and windowed layouts still fail closed.
 `adaptive_hud_center_width` keeps wider centered assemblies such as location
-names and energy bars intact while the remaining bands move outward. The
+names and energy bars intact while the remaining bands move outward.
+`adaptive_hud_gap_fill` fills the gaps between those bands with background
+frame art; by default it stretches the two columns beside each seam.
+`adaptive_hud_gap_source` instead names one native column inside each outer
+band and fills that whole gap row with its colour, and
+`adaptive_hud_gap_scroll_x` samples that column at each BG's rest horizontal
+scroll, so a title that sways its HUD through BGxHOFS keeps a static filler.
+Malformed or inconsistent gap declarations fail config loading. The
 equivalent one-run
 overrides are
 `NDS_SCREEN_LAYOUT` / `NDS_ADAPTIVE_WIDESCREEN` and the

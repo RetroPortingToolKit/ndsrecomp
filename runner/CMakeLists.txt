@@ -817,7 +817,6 @@ add_executable(nds_runner
     src/host_profile.cpp
     src/guest_job_profile.cpp
     src/host_info.cpp
-    src/perf_governor.cpp
     src/profile_report.cpp
     src/scheduler.cpp
     src/debug_server.cpp
@@ -1443,11 +1442,6 @@ ndsrecomp_link_tomlpp(frontend_config_test)
   target_link_libraries(hle_mkds_stream_test PRIVATE nds_support nds_armv4t)
   add_test(NAME hle_mkds_stream_test COMMAND hle_mkds_stream_test)
 
-  add_executable(perf_governor_test
-      tests/perf_governor_test.cpp
-      src/perf_governor.cpp)
-  target_include_directories(perf_governor_test PRIVATE src)
-  add_test(NAME perf_governor_test COMMAND perf_governor_test)
 
   add_executable(frontend_bindings_test tests/frontend_bindings_test.cpp)
   target_include_directories(frontend_bindings_test PRIVATE src)

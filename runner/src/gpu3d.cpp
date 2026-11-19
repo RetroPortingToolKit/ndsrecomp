@@ -174,7 +174,6 @@ bool validate_gpu3d_device(const melonDS::GPU3D& gpu,
 constexpr uint8_t kMaxInternalScale = 12u;
 uint8_t g_internal_scale = 1u;
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
-bool g_display_readback_latency = false;
 bool g_compute_rendered_frame = false;
 bool g_compute_readback_pending = false;
 bool g_compute_frame_ready = false;
@@ -392,10 +391,8 @@ void compute_publish_display_frame() {
         glFlush();
         return;
     }
-    const bool needs_cpu = nds_gpu2d_requires_3d_readback() ||
-                           g_display_readback_latency;
-    if (needs_cpu) {
-        if (compute_readback_overlap() || g_display_readback_latency)
+    if (nds_gpu2d_requires_3d_readback()) {
+        if (compute_readback_overlap())
             compute_submit_readback();
     } else {
         glFlush();
@@ -407,9 +404,9 @@ void compute_finish_readback() {
         nds_cpu_render_main([] { compute_finish_readback(); }); return;
     }
     if (!g_compute_readback_pending) return;
-    // ALWAYS-ON: this stall is precisely the quantity governor stage 1 moves
-    // off the frame's critical path, so it cannot live behind NDS_PROFILE_GPU.
-    // One clock pair per frame is free next to the fence wait it brackets.
+    // ALWAYS-ON: the frame-latency trace reads this stall in every build, so
+    // it cannot live behind NDS_PROFILE_GPU. One clock pair per frame is free
+    // next to the fence wait it brackets.
     const auto readback_start = ProfileClock::now();
     const auto start = profiling() ? readback_start
                                    : ProfileClock::time_point{};
@@ -494,8 +491,7 @@ bool compute_native_capture_first() {
 }
 
 bool compute_native_capture_required() {
-    return compute_readback_overlap() &&
-        (nds_gpu2d_requires_3d_readback() || g_display_readback_latency);
+    return compute_readback_overlap() && nds_gpu2d_requires_3d_readback();
 }
 
 void compute_native_capture_ready() {
@@ -816,50 +812,6 @@ bool nds_gpu3d_set_internal_scale(uint8_t scale) {
     return true;
 }
 
-bool nds_gpu3d_set_runtime_internal_scale(uint8_t scale) {
-    if (scale < 1u || scale > kMaxInternalScale) return false;
-#if defined(NDS_HAVE_COMPUTE_RENDERER)
-    auto* renderer = dynamic_cast<NdsAcceleratedRenderer*>(
-        &g_nds.GPU.GPU3D.GetCurrentRenderer());
-    if (!renderer) {
-        g_internal_scale = scale;
-        return true;
-    }
-    if (renderer->GetScaleFactor() == scale) {
-        g_internal_scale = scale;
-        return true;
-    }
-    // A terminal compute failure is not something a rebuild gets to erase:
-    // nds_gpu3d_use_compute_renderer() clears g_compute_runtime_failed, and
-    // the run is already unwinding on that flag. Refuse instead, which routes
-    // the caller into its own terminal state.
-    if (g_compute_runtime_failed) return false;
-    if (!nds_compute_host_make_current()) return false;
-    const uint8_t previous = g_internal_scale;
-    if (g_compute_readback_pending) compute_finish_readback();
-    glFinish();
-    g_internal_scale = scale;
-    if (!nds_gpu3d_use_compute_renderer()) {
-        g_internal_scale = previous;
-        return false;
-    }
-    // Same sequence gpu3d_savestate_import() uses after installing a fresh
-    // renderer. Without it ComputeRenderer::RenderFrame early-returns on a
-    // static scene (!Texcache.Update() && RenderFrameIdentical), so the new
-    // renderer never writes its output and the 3D layer stays black until
-    // texture VRAM happens to be dirtied.
-    g_nds.GPU.GPU3D.GetCurrentRenderer().Reset(g_nds.GPU);
-    g_nds.GPU.GPU3D.RenderFrameIdentical = false;
-    return true;
-#else
-    // Nothing to scale: this build has no accelerated renderer, so the only
-    // raster is the native soft one. Report success so a governor stage (or a
-    // governor-off startup pass) is not turned into a fatal error.
-    (void)scale;
-    return true;
-#endif
-}
-
 uint8_t nds_gpu3d_internal_scale() {
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
     auto* renderer = dynamic_cast<NdsAcceleratedRenderer*>(
@@ -871,22 +823,6 @@ uint8_t nds_gpu3d_internal_scale() {
     return 1u;
 #else
     return 1u;
-#endif
-}
-
-void nds_gpu3d_set_display_readback_latency(bool enabled) {
-#if defined(NDS_HAVE_COMPUTE_RENDERER)
-    g_display_readback_latency = enabled;
-#else
-    (void)enabled;
-#endif
-}
-
-bool nds_gpu3d_display_readback_latency() {
-#if defined(NDS_HAVE_COMPUTE_RENDERER)
-    return g_display_readback_latency;
-#else
-    return false;
 #endif
 }
 
@@ -1066,7 +1002,14 @@ bool nds_gpu3d_render_polygon(uint32_t index,
     out->max_y = -0x7FFFFFFF;
     out->min_z = 0xFFFFFFFFu;
     out->max_z = 0u;
+    out->min_s = out->min_t = 0x7FFFFFFF;
+    out->max_s = out->max_t = -0x7FFFFFFF;
     for (uint32_t vertex = 0; vertex < polygon->NumVertices; ++vertex) {
+        const melonDS::Vertex& v = *polygon->Vertices[vertex];
+        out->min_s = std::min<int32_t>(out->min_s, v.TexCoords[0]);
+        out->max_s = std::max<int32_t>(out->max_s, v.TexCoords[0]);
+        out->min_t = std::min<int32_t>(out->min_t, v.TexCoords[1]);
+        out->max_t = std::max<int32_t>(out->max_t, v.TexCoords[1]);
         out->min_x = std::min(out->min_x,
                               polygon->Vertices[vertex]->FinalPosition[0]);
         out->max_x = std::max(out->max_x,
@@ -1236,7 +1179,6 @@ bool gpu3d_savestate_import(const NdsGpu3dSaveState& in,
     gpu.GetCurrentRenderer().Reset(g_nds.GPU);
     gpu.RenderFrameIdentical = false;
 #if defined(NDS_HAVE_COMPUTE_RENDERER)
-    g_display_readback_latency = false;
     g_compute_rendered_frame = false;
     g_compute_readback_pending = false;
     g_compute_frame_ready = false;
@@ -1584,11 +1526,6 @@ void nds_gpu3d_vcount215() {
     // See nds_gpu3d_vcount144. The compute submit/sync/map buckets in
     // NdsGpu3dProfile are a breakdown of this region, not an addend to it.
     NdsEmuScope emu_region(NDS_EMU_GPU3D_FRAME);
-#if defined(NDS_HAVE_COMPUTE_RENDERER)
-    if (g_nds.GPU.GPU3D.IsRendererAccelerated() &&
-        g_display_readback_latency && g_compute_readback_pending)
-        compute_finish_readback();
-#endif
     if (!profiling()) {
 #if defined(NDS_NATIVE_3D)
         if (!g_nds.GPU.GPU3D.AbortFrame)
@@ -1819,15 +1756,10 @@ void nds_gpu3d_start_frame() {
         // Forced overlap queues at VCount215 and pays only any unfinished
         // portion of the copy at the next frame boundary.
         const bool same_frame = nds_gpu2d_requires_3d_readback();
-        // With the display-readback latency off (stage 0 / governor off) the
-        // pending drain is unconditional, exactly as before the governor
-        // existed: holding a pending readback across a direct-present frame is
-        // only correct when the latency mode is what deferred it.
-        const bool drain_pending = same_frame || !g_display_readback_latency;
-        if (g_compute_readback_pending && drain_pending)
+        if (g_compute_readback_pending)
             compute_finish_readback();
         if (g_compute_rendered_frame) {
-            if (same_frame || g_display_readback_latency)
+            if (same_frame)
                 compute_submit_readback();
             else {
                 // Keep the current GPU surface recoverable if later visible
@@ -1836,7 +1768,7 @@ void nds_gpu3d_start_frame() {
                 g_compute_rendered_frame = false;
             }
         }
-        if (g_compute_readback_pending && drain_pending)
+        if (g_compute_readback_pending)
             compute_finish_readback();
     }
 #endif

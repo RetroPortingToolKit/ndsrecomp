@@ -300,18 +300,26 @@ void Service::MatrixOperation(uint8_t c, std::span<const uint32_t> p) {
         if (s.matrix_mode == 2 && c != 0x1B) apply(s.direction);
     }
 }
-void Service::MapTexture(std::span<const int32_t, 3> source, unsigned bits) {
-    auto& s = state_;
+// Normal (mode 2) and vertex (mode 3) texgen: the source times the texture
+// matrix discards all fraction bits of both operands (the source's and the
+// matrix's twelve) before adding to the raw 1.11.4 texcoord. Dropping only
+// eight matrix bits tiled e.g. MPH's environment-mapped morph ball 16x.
+// Same contract as the reference engine (vendor/melonds GPU3D.cpp: >>21 for
+// 9-bit normals, >>24 for 12-bit vertices).
+std::array<int16_t, 2> Service::MapTexture(std::span<const int32_t, 3> source, unsigned bits) const {
+    const auto& s = state_;
+    std::array<int16_t, 2> out{};
     for (unsigned c = 0; c < 2; ++c) {
         int64_t total = 0;
         for (unsigned i = 0; i < 3; ++i) total += int64_t{source[i]} * s.texture[i * 4 + c];
-        s.mapped_texture[c] = static_cast<int16_t>(s.raw_texture[c] + (total >> (bits + 8)));
+        out[c] = static_cast<int16_t>(s.raw_texture[c] + (total >> (bits + 12)));
     }
+    return out;
 }
 void Service::Normal(uint32_t p) {
     auto& s = state_;
     std::array<int32_t, 3> raw{Signed(p, 10), Signed(p >> 10, 10), Signed(p >> 20, 10)};
-    if ((s.texture_parameter >> 30) == 2) MapTexture(raw, 9);
+    if ((s.texture_parameter >> 30) == 2) s.mapped_texture = MapTexture(raw, 9);
     const auto normal = Transform(std::array<int32_t, 4>{raw[0], raw[1], raw[2], 0}, s.direction);
     std::array<int32_t, 3> color{int32_t(s.emission[0]), int32_t(s.emission[1]), int32_t(s.emission[2])};
     for (unsigned light = 0; light < 4; ++light) if (s.active_attributes & (1u << light)) {
@@ -381,10 +389,14 @@ void Service::SubmitVertex() {
     v.color = s.color; v.identity = s.next_identity++;
     v.viewport = s.viewport;
     v.perspective = s.projection[3] || s.projection[7] || s.projection[11];
+    // Vertex-source texgen is per vertex only; it leaves the current
+    // texcoord state untouched for later vertices in other modes.
     if ((s.texture_parameter >> 30) == 3) {
-        const std::array<int32_t, 3> p{s.vertex[0], s.vertex[1], s.vertex[2]}; MapTexture(p, 12);
+        const std::array<int32_t, 3> p{s.vertex[0], s.vertex[1], s.vertex[2]};
+        v.texture = MapTexture(p, 12);
+    } else {
+        v.texture = s.mapped_texture;
     }
-    v.texture = s.mapped_texture;
     s.primitive[s.primitive_count++] = v;
     const unsigned count = (s.primitive_type & 1) ? 4 : 3;
     if (s.primitive_count < count) return;

@@ -160,6 +160,8 @@ int main() {
                 "adaptive_guest_culling = true\n"
                 "adaptive_center_max_polygons = 64\n"
                 "adaptive_hud_center_width = 128\n"
+                "adaptive_hud_gap_source = [62, 193]\n"
+                "adaptive_hud_gap_scroll_x = [-1, 0, 128, 128]\n"
                 "supersampling = 3\n"
                 "antialiasing = 4\n"
                 "[cartridge]\n"
@@ -204,6 +206,12 @@ int main() {
         !require(options.adaptive_guest_culling) ||
         !require(options.adaptive_center_max_polygons == 64) ||
         !require(options.adaptive_hud_center_width == 128) ||
+        !require(options.adaptive_hud_gap_source[0] == 62 &&
+                 options.adaptive_hud_gap_source[1] == 193) ||
+        !require(options.adaptive_hud_gap_scroll_x[0] == -1 &&
+                 options.adaptive_hud_gap_scroll_x[1] == 0 &&
+                 options.adaptive_hud_gap_scroll_x[2] == 128 &&
+                 options.adaptive_hud_gap_scroll_x[3] == 128) ||
         !require(options.supersampling == 3) ||
         !require(options.antialiasing == 4) ||
         !require(options.cartridge_save.type ==
@@ -379,6 +387,56 @@ int main() {
     if (!require(
             !nds_load_frontend_config(path.string(), &options, &error)))
         return 12;
+    // Gap-fill source declarations: defaults when absent, and every malformed
+    // or inconsistent declaration is rejected rather than silently ignored.
+    {
+        std::ofstream file(path);
+        file << "[display]\n"
+                "adaptive_hud_anchor = true\n"
+                "adaptive_hud_gap_fill = true\n";
+    }
+    options = {};
+    if (!require(nds_load_frontend_config(path.string(), &options, &error)) ||
+        !require(options.adaptive_hud_gap_source[0] == -1 &&
+                 options.adaptive_hud_gap_source[1] == -1) ||
+        !require(options.adaptive_hud_gap_scroll_x[1] == -1))
+        return 35;
+    const char* const bad_gap[] = {
+        // Source inside the centered band (default width 64: bands end at 96).
+        "adaptive_hud_anchor = true\nadaptive_hud_gap_fill = true\n"
+        "adaptive_hud_gap_source = [96, 193]\n",
+        "adaptive_hud_anchor = true\nadaptive_hud_gap_fill = true\n"
+        "adaptive_hud_center_width = 128\nadaptive_hud_gap_source = [62, 191]\n",
+        // Wrong arity / type / range.
+        "adaptive_hud_anchor = true\nadaptive_hud_gap_fill = true\n"
+        "adaptive_hud_gap_source = [10]\n",
+        "adaptive_hud_anchor = true\nadaptive_hud_gap_fill = true\n"
+        "adaptive_hud_gap_source = [10, \"x\"]\n",
+        "adaptive_hud_anchor = true\nadaptive_hud_gap_fill = true\n"
+        "adaptive_hud_gap_source = [10, 256]\n",
+        // Requires anchoring and gap fill.
+        "adaptive_hud_anchor = true\nadaptive_hud_gap_source = [10, 250]\n",
+        "adaptive_hud_gap_fill = true\nadaptive_hud_gap_source = [10, 250]\n",
+        // Reference scroll needs a source and four values in -1..511.
+        "adaptive_hud_anchor = true\nadaptive_hud_gap_fill = true\n"
+        "adaptive_hud_gap_scroll_x = [-1, 0, 128, 128]\n",
+        "adaptive_hud_anchor = true\nadaptive_hud_gap_fill = true\n"
+        "adaptive_hud_gap_source = [10, 250]\nadaptive_hud_gap_scroll_x = [0, 128, 128]\n",
+        "adaptive_hud_anchor = true\nadaptive_hud_gap_fill = true\n"
+        "adaptive_hud_gap_source = [10, 250]\nadaptive_hud_gap_scroll_x = [0, 0, 512, 0]\n",
+    };
+    for (const char* body : bad_gap) {
+        {
+            std::ofstream file(path);
+            file << "[display]\n" << body;
+        }
+        options = {};
+        error.clear();
+        if (!require(!nds_load_frontend_config(path.string(), &options,
+                                               &error)) ||
+            !require(error.find("adaptive_hud_gap") != std::string::npos))
+            return 36;
+    }
     {
         std::ofstream file(path);
         file << "[display]\n"
@@ -427,31 +485,23 @@ int main() {
     if (!require(
             !nds_load_frontend_config(path.string(), &options, &error)))
         return 16;
-    {
-        std::ofstream file(path);
-        file << "[display]\n"
-                "automatic_quality = false\n"
-                "internal_resolution = 4\n"
-                "supersampling = 3\n";
+    // Automatic Quality is retired. A launcher configuration written by an
+    // older build may still name it, in any value form; it must neither be
+    // rejected nor change the player's selected quality.
+    for (const char* legacy : {"automatic_quality = false\n",
+                               "automatic_quality = true\n",
+                               "automatic_quality = \"off\"\n"}) {
+        {
+            std::ofstream file(path);
+            file << "[display]\n" << legacy
+                 << "internal_resolution = 4\n"
+                    "supersampling = 3\n";
+        }
+        options = {};
+        if (!require(nds_load_frontend_config(path.string(), &options, &error)) ||
+            !require(options.internal_resolution == 4 && options.supersampling == 3))
+            return 150;
     }
-    options = {};
-    if (!require(nds_load_frontend_config(path.string(), &options, &error)) ||
-        !require(options.perf_governor_mode == NdsPerfGovernorMode::Off) ||
-        !require(options.internal_resolution == 4 && options.supersampling == 3))
-        return 150;
-    {
-        std::ofstream file(path);
-        file << "[display]\nautomatic_quality = true\n";
-    }
-    if (!require(nds_load_frontend_config(path.string(), &options, &error)) ||
-        !require(options.perf_governor_mode == NdsPerfGovernorMode::Auto))
-        return 151;
-    {
-        std::ofstream file(path);
-        file << "[display]\nautomatic_quality = \"off\"\n";
-    }
-    if (!require(!nds_load_frontend_config(path.string(), &options, &error)))
-        return 152;
     {
         std::ofstream file(path);
         file << "settings_version=12\nautomatic_quality=true\n"
@@ -460,33 +510,29 @@ int main() {
                 "mouse_sensitivity=25\n";
     }
     options.runtime_settings_path = path.string();
-    options.perf_governor_mode = NdsPerfGovernorMode::Off;
     options.relative_mouse_sensitivity = 137;
-    if (!require(nds_save_runtime_settings(options, false, true))) return 153;
-    NdsFrontendOptions restarted{};
-    restarted.runtime_settings_path = path.string();
-    if (!require(nds_load_runtime_quality_setting(&restarted)) ||
-        !require(restarted.perf_governor_mode == NdsPerfGovernorMode::Off))
-        return 154;
+    // Nothing changed: the launcher-owned file is left byte-for-byte alone.
+    if (!require(nds_save_runtime_settings(options, false))) return 153;
     {
         std::ifstream file(path);
         const std::string saved((std::istreambuf_iterator<char>(file)), {});
-        for (const auto* preserved : {"widescreen_mode=off", "internal_resolution=4",
-                                      "supersampling=3", "rom_path=keep-this.nds"})
-            if (!require(saved.find(preserved) != std::string::npos)) return 155;
-        if (!require(saved.find("mouse_sensitivity=25") != std::string::npos))
-            return 156;
+        if (!require(saved.find("mouse_sensitivity=25") != std::string::npos) ||
+            !require(saved.find("automatic_quality=true") != std::string::npos))
+            return 154;
     }
-    options.perf_governor_mode = NdsPerfGovernorMode::Auto;
-    // A temporary override is not a request to persist quality when changing input.
-    if (!require(nds_save_runtime_settings(options, true, false)) ||
-        !require(nds_load_runtime_quality_setting(&restarted)) ||
-        !require(restarted.perf_governor_mode == NdsPerfGovernorMode::Off))
-        return 158;
-    if (!require(nds_save_runtime_settings(options, false, true)) ||
-        !require(nds_load_runtime_quality_setting(&restarted)) ||
-        !require(restarted.perf_governor_mode == NdsPerfGovernorMode::Auto))
-        return 157;
+    // A real change rewrites only its own key, keeps unrelated title choices
+    // and drops the retired automatic_quality key.
+    if (!require(nds_save_runtime_settings(options, true))) return 155;
+    {
+        std::ifstream file(path);
+        const std::string saved((std::istreambuf_iterator<char>(file)), {});
+        for (const auto* preserved : {"settings_version=12", "widescreen_mode=off",
+                                      "internal_resolution=4", "supersampling=3",
+                                      "rom_path=keep-this.nds", "mouse_sensitivity=137"})
+            if (!require(saved.find(preserved) != std::string::npos)) return 156;
+        if (!require(saved.find("automatic_quality") == std::string::npos))
+            return 157;
+    }
     std::filesystem::remove(path);
     return 0;
 }

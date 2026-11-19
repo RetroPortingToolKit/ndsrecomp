@@ -274,6 +274,104 @@ void inactive_player_tests(bool mph) {
   check(spu_savestate_export(&hardware));
   check(hardware.channel[8].cnt & 0x80000000u);
 }
+// MPH builds its sound-effect bank at runtime: DirectPCM (type 4) records hold
+// a SNDWaveData pointer, and each effect is a one-note sequence
+// {program, note with length 0, FIN} prepared and started on a free player.
+// LLE ARM7 voices play these as PCM from pointer+12 (retail MPH: record
+// 0x023B1238 -> SOUNDxSAD 0x023B1244).
+void direct_pcm_tests(bool mph) {
+  using namespace nds_offline_sound;
+  boot(mph);
+  const uint32_t bank = 0x02008000, wave = 0x02009400, seq = 0x02009000;
+  put<uint32_t>(bank + 0x38, 4);
+  put<uint32_t>(bank + 0x3C, (0x50u << 8) | 4);  // DirectPCM
+  put<uint32_t>(bank + 0x40, (0x5Au << 8) | 5);  // Null
+  put<uint32_t>(bank + 0x44, (0x64u << 8) | 16); // drum set of DirectPCM
+  put<uint32_t>(bank + 0x48, (0x80u << 8) | 4);  // DirectPCM, no wave data
+  const uint8_t direct[] = {0x00, 0x94, 0x00, 0x02, 60, 127, 127, 127, 125, 64};
+  std::memcpy(ptr(bank + 0x50, 10), direct, 10);
+  std::memcpy(ptr(bank + 0x5A, 10), direct, 10);
+  put<uint8_t>(bank + 0x64, 60);
+  put<uint8_t>(bank + 0x65, 60);
+  put<uint16_t>(bank + 0x66, 4);
+  std::memcpy(ptr(bank + 0x68, 10), direct, 10);
+  std::memcpy(ptr(bank + 0x80, 10), direct, 10);
+  put<uint32_t>(bank + 0x80, 0);
+  // SWAV: PCM8, one-shot, timer 0x200, 16 words of samples.
+  put<uint8_t>(wave, 0);
+  put<uint8_t>(wave + 1, 0);
+  put<uint16_t>(wave + 4, 0x200);
+  put<uint32_t>(wave + 8, 16);
+  for (unsigned i = 0; i < 64; ++i)
+    put<int8_t>(wave + 12 + i, int(i * 5) - 100);
+  for (unsigned prog = 0; prog < 4; ++prog) {
+    const uint8_t effect[] = {0x81, uint8_t(prog), 60, 127, 0, 0xFF};
+    std::memcpy(ptr(seq + prog * 6, 6), effect, 6);
+  }
+  const auto voice_active = [](unsigned ch) {
+    return nds_spu_read(0x04000400 + ch * 16, 4) & 0x80000000u;
+  };
+  // Program 0: the voice must start on the first SDK allocation channel (4)
+  // as plain PCM sourced from the DirectPCM wave pointer + 12.
+  commands({{0, 29, 0x02006000, 0, 0, 0},
+            {0, 2, 10, seq, 0, bank},
+            {0, 3, 10, 0, 0, 0}});
+  now += 174592;
+  nds_offline_sound_advance(now);
+  now += 174592;
+  nds_offline_sound_advance(now);
+  const uint32_t cnt = nds_spu_read(0x04000440, 4);
+  check(cnt & 0x80000000u);
+  check(((cnt >> 29) & 3) == 0 && ((cnt >> 27) & 3) == 2);
+  NdsSpuSaveState hardware;
+  check(spu_savestate_export(&hardware));
+  check(hardware.channel[4].src == wave + 12);
+  check(hardware.channel[4].length == 16 * 4);
+  check(hardware.channel[4].reload == 0x10000 - 0x200);
+  check(nds_offline_sound_source_overlap(ptr(wave + 12, 1), 1));
+  const auto produced = nds_spu_debug_output_produced();
+  now += 174592;
+  nds_offline_sound_advance(now);
+  const auto out = pcm(produced, 64);
+  check(std::any_of(out.begin(), out.end(), [](int16_t x) { return x != 0; }));
+  commands({{0, 33, 0x0200A000, 0, 0, 0}});
+  check(get<uint8_t>(0x0200A000 + 4 * VoiceSize + voice::Type) == 0);
+  check(get<uint32_t>(0x0200A000 + 4 * VoiceSize + voice::Source) == wave + 12);
+  // The one-shot ends; the length-0 note releases the track and the player.
+  for (unsigned i = 0; i < 8; ++i) {
+    now += 174592;
+    nds_offline_sound_advance(now);
+  }
+  check(!voice_active(4));
+  check(!(get<uint32_t>(0x02006004) & (1u << 10)));
+  check(nds_offline_sound_ready());
+  // Program 2: DirectPCM inside a drum set plays the same way.
+  commands({{0, 2, 11, seq, 12, bank}, {0, 3, 11, 0, 0, 0}});
+  now += 174592;
+  nds_offline_sound_advance(now);
+  now += 174592;
+  nds_offline_sound_advance(now);
+  check(voice_active(4));
+  check(spu_savestate_export(&hardware));
+  check(hardware.channel[4].src == wave + 12);
+  commands({{0, 1, 11, 0, 0, 0}, {0, 28, 0xFFFF, 0, 0, 0}});
+  // Null (program 1) and DirectPCM without wave data (program 3) allocate
+  // nothing, start no hardware channel and leave the service healthy.
+  for (unsigned prog : {1u, 3u}) {
+    commands({{0, 2, 12, seq + prog * 6, 0, bank}, {0, 3, 12, 0, 0, 0}});
+    now += 174592;
+    nds_offline_sound_advance(now);
+    now += 174592;
+    nds_offline_sound_advance(now);
+    for (unsigned ch = 0; ch < 16; ++ch)
+      check(!voice_active(ch));
+    commands({{0, 33, 0x0200A000, 0, 0, 0}});
+    for (unsigned ch = 0; ch < 16; ++ch)
+      check(!(get<uint8_t>(0x0200A000 + ch * VoiceSize + voice::Flags) & 1));
+    check(nds_offline_sound_ready());
+    commands({{0, 1, 12, 0, 0, 0}});
+  }
+}
 } // namespace
 bool nds_io_offline_memory(uint32_t a, uint8_t *b, uint32_t n, bool write,
                            uint64_t) {
@@ -329,6 +427,8 @@ int main() {
   pending_queue_tests(true);
   inactive_player_tests(false);
   inactive_player_tests(true);
+  direct_pcm_tests(false);
+  direct_pcm_tests(true);
   for (bool mph : {false, true}) {
     boot(mph, true);
     check(nds_offline_sound_source_overlap(ptr(0x023FFFF0, 16), 16));

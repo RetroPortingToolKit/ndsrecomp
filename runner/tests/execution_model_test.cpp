@@ -41,5 +41,46 @@ int main() {
     require(!nds_performance_execution() && error.find("CPU") != std::string::npos);
     require(nds_execution_model_select("faithful", "unknown", error));
 #endif
-    std::puts("execution model availability, ROM/CPU gates and state identity passed");
+    // Service selection inside the performance model. Connectivity decides
+    // only ARM7 driver ownership; whole assets stay on for online play.
+    {
+        NdsServiceProfileRequest r;
+        NdsServiceProfile p = nds_service_profile_select(r);
+        require(!p.offline_arm7 && !p.whole_assets);            // Faithful
+        r.network = r.wfc = true;
+        p = nds_service_profile_select(r);
+        require(!p.offline_arm7 && !p.whole_assets);            // Faithful online
+        r = {};
+        r.performance = true;
+        p = nds_service_profile_select(r);
+        require(p.offline_arm7 && p.whole_assets);              // enhanced offline
+        r.network = true; r.wfc = true;                         // launcher online
+        p = nds_service_profile_select(r);
+        require(!p.offline_arm7 && p.whole_assets);
+        r = {}; r.performance = true; r.network = true;
+        p = nds_service_profile_select(r);
+        require(!p.offline_arm7 && p.whole_assets);
+        r = {}; r.performance = true; r.wfc = true;
+        p = nds_service_profile_select(r);
+        require(!p.offline_arm7 && p.whole_assets);
+        r = {}; r.performance = true; r.local_wireless = true;
+        p = nds_service_profile_select(r);
+        require(!p.offline_arm7 && p.whole_assets);
+        r = {}; r.performance = true; r.replay = true;
+        p = nds_service_profile_select(r);
+        require(!p.offline_arm7 && p.whole_assets);
+        r = {}; r.performance = true; r.offline_arm7_env = "0";
+        p = nds_service_profile_select(r);
+        require(!p.offline_arm7 && p.whole_assets);
+        r = {}; r.performance = true; r.whole_assets_env = "0";
+        p = nds_service_profile_select(r);
+        require(p.offline_arm7 && !p.whole_assets);
+        r.network = true;
+        p = nds_service_profile_select(r);
+        require(!p.offline_arm7 && !p.whole_assets);
+        r = {}; r.performance = true; r.offline_arm7_env = "1"; r.whole_assets_env = "1";
+        p = nds_service_profile_select(r);
+        require(p.offline_arm7 && p.whole_assets);
+    }
+    std::puts("execution model availability, ROM/CPU gates, service selection and state identity passed");
 }

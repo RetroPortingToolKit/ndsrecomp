@@ -31,6 +31,8 @@ std::array<uint8_t, kTotalVram> g_vram{};
 std::array<uint8_t, kTotalVram> g_vram_written{};
 std::array<uint32_t, kExecPageCount> g_vram_generation{};
 std::array<uint8_t, 0x800> g_palette{};
+std::array<NdsPaletteChange, NDS_PALETTE_CHANGE_RING> g_palette_changes{};
+uint64_t g_palette_change_total = 0;
 std::array<uint8_t, 0x800> g_oam{};
 std::array<uint8_t, 9> g_cnt{};
 uint16_t g_lcdc = 0;
@@ -414,6 +416,23 @@ bool nds_video_address(uint32_t addr) {
 
 namespace {
 
+// Record one 16-bit palette store before it lands. Unchanged rewrites (whole
+// palette uploads of identical data) are not events, so the ring retains
+// many seconds of genuine colour animation.
+void note_palette_store(uint32_t offset, uint16_t value) {
+    const uint16_t old = static_cast<uint16_t>(
+        g_palette[offset] | (g_palette[offset + 1u] << 8));
+    if (old == value) return;
+    NdsPaletteChange& e =
+        g_palette_changes[g_palette_change_total % NDS_PALETTE_CHANGE_RING];
+    e.seq = g_palette_change_total++;
+    e.frame = nds_io_display_frame();
+    e.line = nds_io_vcount();
+    e.index = static_cast<uint16_t>(offset >> 1u);
+    e.old_value = old;
+    e.new_value = value;
+}
+
 bool exec_physical_offset(int cpu, uint32_t addr, uint32_t* physical) {
     if (!physical || (addr & 0xFF000000u) != 0x06000000u) return false;
     if (cpu == 7) {
@@ -524,8 +543,13 @@ void nds_video_write(int cpu, uint32_t addr, uint32_t value, uint32_t width) {
     if (width == 1) return; // ARM9 byte writes to palette/VRAM/OAM are ignored.
     if ((addr & 0xFF000000u) == 0x05000000u) {
         const uint16_t power = nds_powercontrol9();
-        if (power & ((addr & 0x400u) ? 0x0200u : 0x0002u))
-            store(&g_palette[addr & 0x7FFu], value, width);
+        if (power & ((addr & 0x400u) ? 0x0200u : 0x0002u)) {
+            const uint32_t offset = addr & 0x7FFu;
+            for (uint32_t half = 0; half < width; half += 2u)
+                note_palette_store(offset + half,
+                                   static_cast<uint16_t>(value >> (half * 8u)));
+            store(&g_palette[offset], value, width);
+        }
     } else if ((addr & 0xFF000000u) == 0x06000000u) {
         arm9_vram_write(addr, value, width);
     } else if ((addr & 0xFF000000u) == 0x07000000u) {
@@ -533,6 +557,21 @@ void nds_video_write(int cpu, uint32_t addr, uint32_t value, uint32_t width) {
         if (power & ((addr & 0x400u) ? 0x0200u : 0x0002u))
             store(&g_oam[addr & 0x7FFu], value, width);
     }
+}
+
+uint64_t nds_vram_palette_change_total() { return g_palette_change_total; }
+
+uint32_t nds_vram_palette_changes(uint64_t from_seq, uint32_t max,
+                                  NdsPaletteChange* out) {
+    if (!out || max == 0u) return 0u;
+    const uint64_t total = g_palette_change_total;
+    const uint64_t oldest = total > NDS_PALETTE_CHANGE_RING
+        ? total - NDS_PALETTE_CHANGE_RING : 0u;
+    uint64_t seq = std::max(from_seq, oldest);
+    uint32_t count = 0;
+    for (; seq < total && count < max; ++seq)
+        out[count++] = g_palette_changes[seq % NDS_PALETTE_CHANGE_RING];
+    return count;
 }
 
 bool nds_video_get_region(const char* name, const uint8_t** ptr, uint32_t* len) {

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <vector>
 
+#include "gpu2d_window.h"
 #include "toml.hpp"
 
 namespace {
@@ -22,29 +23,9 @@ std::string lower_ascii(std::string value) {
 
 }  // namespace
 
-bool nds_load_runtime_quality_setting(NdsFrontendOptions* options) {
-    if (!options) return false;
-    if (options->runtime_settings_path.empty()) return true;
-    std::ifstream file(options->runtime_settings_path);
-    if (!file) return !std::filesystem::exists(options->runtime_settings_path);
-    std::string line;
-    while (std::getline(file, line)) {
-        const size_t equals = line.find('=');
-        if (equals == std::string::npos || line.substr(0, equals) != "automatic_quality")
-            continue;
-        bool enabled = true;
-        std::string value = line.substr(equals + 1);
-        if (!value.empty() && value.back() == '\r') value.pop_back();
-        if (!nds_parse_on_off(value, &enabled)) return false;
-        options->perf_governor_mode = enabled ? NdsPerfGovernorMode::Auto
-                                              : NdsPerfGovernorMode::Off;
-    }
-    return !file.bad();
-}
-
 bool nds_save_runtime_settings(const NdsFrontendOptions& options,
-                                bool mouse_changed, bool quality_changed) {
-    if (!mouse_changed && !quality_changed) return true;
+                                bool mouse_changed) {
+    if (!mouse_changed) return true;
     if (options.runtime_settings_path.empty()) return false;
     const std::filesystem::path path(options.runtime_settings_path);
     std::error_code error;
@@ -54,9 +35,7 @@ bool nds_save_runtime_settings(const NdsFrontendOptions& options,
     }
     const std::string sensitivity = "mouse_sensitivity=" +
         std::to_string(options.relative_mouse_sensitivity);
-    const std::string quality = std::string("automatic_quality=") +
-        (options.perf_governor_mode == NdsPerfGovernorMode::Off ? "0" : "1");
-    bool saw_version = false, saw_sensitivity = false, saw_quality = false;
+    bool saw_version = false, saw_sensitivity = false;
     std::vector<std::string> lines;
     {
         std::ifstream file(path);
@@ -66,21 +45,19 @@ bool nds_save_runtime_settings(const NdsFrontendOptions& options,
             const size_t equals = line.find('=');
             const std::string key = line.substr(0, equals);
             if (key == "settings_version") saw_version = true;
-            if (mouse_changed && key == "mouse_sensitivity") {
+            // Retired setting: Automatic Quality was removed, so a value left
+            // by an older build is dropped whenever the file is rewritten.
+            if (key == "automatic_quality") continue;
+            if (key == "mouse_sensitivity") {
                 line = sensitivity;
                 saw_sensitivity = true;
-            }
-            if (quality_changed && key == "automatic_quality") {
-                line = quality;
-                saw_quality = true;
             }
             lines.push_back(line);
         }
         if (file.bad()) return false;
     }
     if (!saw_version) lines.insert(lines.begin(), "settings_version=12");
-    if (mouse_changed && !saw_sensitivity) lines.push_back(sensitivity);
-    if (quality_changed && !saw_quality) lines.push_back(quality);
+    if (!saw_sensitivity) lines.push_back(sensitivity);
     std::ofstream file(path, std::ios::trunc);
     if (!file) return false;
     for (const auto& line : lines) file << line << '\n';
@@ -770,6 +747,70 @@ bool nds_load_frontend_config(const std::string& path,
             options->adaptive_hud_center_width =
                 static_cast<uint16_t>(*value);
         }
+        // Exact-length integer array within [lo, hi]; false with an error
+        // naming the key when present but malformed.
+        auto int_array = [&](const char* key, size_t size, int64_t lo,
+                             int64_t hi, int16_t* out, bool* present) {
+            *present = false;
+            const toml::node* node = display->get(key);
+            if (!node) return true;
+            const toml::array* items = node->as_array();
+            bool ok = items && items->size() == size;
+            for (size_t i = 0; ok && i < size; ++i) {
+                const auto item = (*items)[i].value<int64_t>();
+                ok = item && *item >= lo && *item <= hi;
+                if (ok) out[i] = static_cast<int16_t>(*item);
+            }
+            if (!ok) {
+                if (error) {
+                    *error = std::string("display.") + key + " must be " +
+                             std::to_string(size) + " integers from " +
+                             std::to_string(lo) + " through " +
+                             std::to_string(hi);
+                }
+                return false;
+            }
+            *present = true;
+            return true;
+        };
+        bool gap_source = false, gap_scroll = false;
+        int16_t source[2] = {-1, -1};
+        int16_t scroll[4] = {-1, -1, -1, -1};
+        if (!int_array("adaptive_hud_gap_source", 2, 0, 255, source,
+                       &gap_source) ||
+            !int_array("adaptive_hud_gap_scroll_x", 4, -1, 511, scroll,
+                       &gap_scroll))
+            return false;
+        if (gap_source) {
+            const int center = options->adaptive_hud_center_width;
+            if (!options->adaptive_hud_anchor ||
+                !options->adaptive_hud_gap_fill ||
+                !nds_gpu2d_adaptive_hud_gap_source_valid(0, source[0],
+                                                         center) ||
+                !nds_gpu2d_adaptive_hud_gap_source_valid(1, source[1],
+                                                         center)) {
+                if (error) {
+                    *error =
+                        "display.adaptive_hud_gap_source needs "
+                        "adaptive_hud_anchor and adaptive_hud_gap_fill, and "
+                        "one column in each outer anchored band (left of and "
+                        "right of adaptive_hud_center_width)";
+                }
+                return false;
+            }
+            std::copy_n(source, 2, options->adaptive_hud_gap_source);
+        }
+        if (gap_scroll) {
+            if (!gap_source) {
+                if (error) {
+                    *error =
+                        "display.adaptive_hud_gap_scroll_x needs "
+                        "display.adaptive_hud_gap_source";
+                }
+                return false;
+            }
+            std::copy_n(scroll, 4, options->adaptive_hud_gap_scroll_x);
+        }
         if (options->adaptive_supported != NDS_ADAPTIVE_NONE &&
             options->expected_rom_sha1.empty()) {
             if (error) {
@@ -778,15 +819,8 @@ bool nds_load_frontend_config(const std::string& path,
             }
             return false;
         }
-        if (const auto* value = display->get("automatic_quality")) {
-            const auto enabled = value->value<bool>();
-            if (!enabled) {
-                if (error) *error = "display.automatic_quality must be true or false";
-                return false;
-            }
-            options->perf_governor_mode = *enabled ? NdsPerfGovernorMode::Auto
-                                                  : NdsPerfGovernorMode::Off;
-        }
+        // display.automatic_quality is retired. Configurations written by
+        // older launchers may still carry it; it is ignored, not rejected.
         if (const auto value =
                 (*display)["supersampling"].value<int64_t>()) {
             if (!nds_parse_supersampling(std::to_string(*value),

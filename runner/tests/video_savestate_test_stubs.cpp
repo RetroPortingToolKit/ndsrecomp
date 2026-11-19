@@ -6,6 +6,9 @@
 extern "C" unsigned long long g_runtime_cycles = 0;
 
 uint16_t nds_powercontrol9() { return 0xFFFFu; }
+// Observer timeline for the always-on palette/2D register change rings.
+uint64_t nds_io_display_frame() { return 0; }
+uint16_t nds_io_vcount() { return 0; }
 #if defined(NDS_NATIVE_3D)
 uint32_t nds_video_test_irq_flags[2]{};
 void nds_raise_irq(int cpu, uint32_t mask) { nds_video_test_irq_flags[cpu] |= mask; }
