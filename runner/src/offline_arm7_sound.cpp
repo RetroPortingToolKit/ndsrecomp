@@ -64,6 +64,24 @@ std::vector<SourceSpan> source_spans;
 uint64_t source_generation = Never;
 bool source_dirty = true;
 const char *takeover_status = "not attempted";
+// Always-on diagnostic history of executed SDK commands and of command lists
+// refused by preflight. Host observation only: never serialized, never read by
+// the service itself, bounded by a fixed ring.
+struct CommandRecord {
+  uint64_t now;
+  uint32_t id, a, b, c, d;
+};
+struct Observation {
+  std::array<CommandRecord, 256> ring{};
+  uint64_t executed = 0, lists = 0, rejected = 0;
+  std::array<uint64_t, 35> counts{}; // index 34: unknown id
+  uint32_t last_rejected = 0;
+} observed;
+void observe(uint64_t now, const uint32_t *q) {
+  observed.ring[observed.executed++ % observed.ring.size()] = {
+      now, q[1], q[2], q[3], q[4], q[5]};
+  ++observed.counts[std::min<uint32_t>(q[1], 34)];
+}
 
 bool memory(uint32_t a, void *data, uint32_t n, bool write = false) {
   if (!nds_io_offline_memory(a, static_cast<uint8_t *>(data), n, write,
@@ -373,6 +391,12 @@ void prepare(unsigned n, uint32_t base, uint32_t offset, uint32_t bank,
   } else
     b.set<uint32_t>(t::Position, base + offset);
 }
+// SDK instrument record types. DirectPCM carries a SNDWaveData pointer instead
+// of a wave-archive index; games build such banks at runtime (MPH builds its
+// whole sound-effect bank this way). Null reads successfully but plays nothing.
+namespace inst {
+enum : uint8_t { Pcm = 1, Psg = 2, Noise = 3, DirectPcm = 4, Null = 5 };
+}
 struct Instrument {
   uint8_t type = 0;
   std::array<uint8_t, 10> data{};
@@ -405,7 +429,7 @@ Instrument instrument(uint32_t bank, unsigned prog, unsigned key) {
     out.type = load<uint16_t>(addr);
     addr += 2;
   }
-  if (out.type >= 1 && out.type <= 3)
+  if (out.type >= inst::Pcm && out.type <= inst::Null)
     memory(addr, out.data.data(), 10);
   else
     out.type = 0;
@@ -471,11 +495,23 @@ void playnote(unsigned tr, unsigned pl, int key, unsigned velocity,
   if (a.flag(t::Flags, t::Tie))
     i = voiceindex(a.get<uint32_t>(t::Voices));
   if (i < 0) {
-    auto inst = instrument(player.get<uint32_t>(p::Bank),
-                           a.get<uint16_t>(t::Program), key);
-    if (!inst.type)
+    auto ins = instrument(player.get<uint32_t>(p::Bank),
+                          a.get<uint16_t>(t::Program), key);
+    unsigned mask, type;
+    switch (ins.type) {
+    case inst::Pcm:
+    case inst::DirectPcm:
+      mask = 0xFFFF, type = 0;
+      break;
+    case inst::Psg:
+      mask = 0x3F00, type = 1;
+      break;
+    case inst::Noise:
+      mask = 0xC000, type = 2;
+      break;
+    default: // invalid, Null: no voice
       return;
-    unsigned mask = inst.type == 1 ? 65535 : inst.type == 2 ? 0x3F00 : 0xC000;
+    }
     mask &= a.get<uint16_t>(t::ChannelMask);
     i = allocate_voice(mask,
                        std::min(255u, unsigned(player.byte(p::Priority)) +
@@ -486,42 +522,51 @@ void playnote(unsigned tr, unsigned pl, int key, unsigned velocity,
     auto b = g.work.voice(i);
     std::memset(b.bytes, 0, VoiceSize);
     b.byte(v::Id, i);
-    b.byte(v::Type, inst.type - 1);
+    const auto &d = ins.data;
+    b.byte(v::Type, type);
     b.byte(v::Flags, 7);
     b.byte(v::PanRange, 127);
-    b.byte(v::RootKey, inst.data[4]);
+    b.byte(v::RootKey, d[4]);
     b.byte(v::Priority, std::min(255u, unsigned(player.byte(p::Priority)) +
                                            a.byte(t::Priority)));
     b.set<uint16_t>(v::Volume, 127);
     b.set<int32_t>(v::Envelope, -92544);
     b.set<int32_t>(v::Length, a.flag(t::Flags, t::Tie) ? -1 : length);
-    b.byte(v::InitialPan, uint8_t(inst.data[9] - 64));
-    attack(b, inst.data[5]);
-    b.set<uint16_t>(v::Decay, decay(inst.data[6]));
-    b.byte(v::Sustain, inst.data[7]);
-    b.set<uint16_t>(v::Release, decay(inst.data[8] == 255 ? 0 : inst.data[8]));
-    if (inst.data[8] == 255)
+    b.byte(v::InitialPan, uint8_t(d[9] - 64));
+    attack(b, d[5]);
+    b.set<uint16_t>(v::Decay, decay(d[6]));
+    b.byte(v::Sustain, d[7]);
+    b.set<uint16_t>(v::Release, decay(d[8] == 255 ? 0 : d[8]));
+    if (d[8] == 255)
       b.set<int32_t>(v::Length, -1);
-    if (inst.type == 1) {
-      unsigned wave = inst.data[0] | (inst.data[1] << 8),
-               arc = inst.data[2] | (inst.data[3] << 8);
-      if (arc >= 4) {
+    if (type == 0) {
+      // Both PCM forms end at one SNDWaveData: a 12-byte SWAV parameter
+      // block immediately followed by the samples.
+      uint32_t wav = d[0] | (d[1] << 8) | (d[2] << 16) | (uint32_t(d[3]) << 24);
+      if (ins.type == inst::Pcm) {
+        unsigned wave = d[0] | (d[1] << 8), arc = d[2] | (d[3] << 8);
+        if (arc >= 4) {
+          kill(i, true);
+          return;
+        }
+        uint32_t bank = player.get<uint32_t>(p::Bank),
+                 war = load<uint32_t>(bank + 0x18 + arc * 8);
+        if (!war || wave >= load<uint32_t>(war + 0x38)) {
+          kill(i, true);
+          return;
+        }
+        wav = load<uint32_t>(war + 0x3C + wave * 4);
+        if (!(wav & 0xFF000000u))
+          wav += war;
+      }
+      if (!wav) { // DirectPCM without wave data
         kill(i, true);
         return;
       }
-      uint32_t bank = player.get<uint32_t>(p::Bank),
-               war = load<uint32_t>(bank + 0x18 + arc * 8);
-      if (!war || wave >= load<uint32_t>(war + 0x38)) {
-        kill(i, true);
-        return;
-      }
-      uint32_t wav = load<uint32_t>(war + 0x3C + wave * 4);
-      if (!(wav & 0xFF000000u))
-        wav += war;
       memory(wav, b.bytes + v::Wave, 12);
       b.set<uint32_t>(v::Source, wav + 12);
     } else {
-      b.byte(v::Wave, inst.data[0]);
+      b.byte(v::Wave, d[0]);
       b.set<uint16_t>(v::Wave + 4, 8006);
     }
     b.set<uint32_t>(v::Callback, g.profile.callback);
@@ -1404,6 +1449,7 @@ void process() {
       uint32_t q[6];
       if (!memory(ptr, q, sizeof q))
         break;
+      observe(g.now, q);
       command(q);
       ptr = q[0];
     }
@@ -1570,6 +1616,23 @@ std::string nds_offline_sound_json() {
       out << ',';
     out << g.work.track(i).get<uint32_t>(t::Position);
   }
+  out << "],\"lists_received\":" << observed.lists
+      << ",\"lists_refused\":" << observed.rejected
+      << ",\"last_refused_list\":" << observed.last_rejected
+      << ",\"commands_executed\":" << observed.executed
+      << ",\"weak_locked\":" << g.weaklock
+      << ",\"strong_locked\":" << g.stronglock << ",\"command_counts\":[";
+  for (unsigned i = 0; i < observed.counts.size(); ++i)
+    out << (i ? "," : "") << observed.counts[i];
+  // Oldest first: [now, id, arg0, arg1, arg2, arg3].
+  out << "],\"recent_commands\":[";
+  const uint64_t size = observed.ring.size(),
+                 first = observed.executed > size ? observed.executed - size : 0;
+  for (uint64_t n = first; n < observed.executed; ++n) {
+    const auto &r = observed.ring[n % size];
+    out << (n != first ? "," : "") << '[' << r.now << ',' << r.id << ','
+        << r.a << ',' << r.b << ',' << r.c << ',' << r.d << ']';
+  }
   out << "]}";
   return out.str();
 }
@@ -1594,6 +1657,10 @@ bool nds_offline_sound_preflight(uint32_t payload, bool error) {
   const auto fault = g.fault;
   bool valid = list_valid(payload);
   g.fault = fault;
+  if (!valid) {
+    ++observed.rejected;
+    observed.last_rejected = payload;
+  }
   return valid;
 }
 bool nds_offline_sound_can_receive(uint32_t payload, bool error) {
@@ -1607,8 +1674,10 @@ bool nds_offline_sound_receive(uint32_t payload, bool error, uint64_t now) {
   nds_offline_sound_advance(now);
   if (error)
     return true;
-  if (payload >= 0x02000000u)
+  if (payload >= 0x02000000u) {
     g.queue[g.queued++] = payload;
+    ++observed.lists;
+  }
   else if (!payload) {
     nds_tick_spu(now);
     g.in_advance = true;
