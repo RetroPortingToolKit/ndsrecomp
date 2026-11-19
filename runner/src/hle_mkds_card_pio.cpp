@@ -258,7 +258,7 @@ void run() {
                 if (when <= g_runtime_cycles || when - g_runtime_cycles < 10u) {
                     fallback();return;
                 }
-                event_bound = std::min(event_bound, when - g_runtime_cycles);
+                event_bound = std::min<uint64_t>(event_bound, when - g_runtime_cycles);
             }
             g_cpu.R[2] = load(Control);
             // An actual read can tighten a performance-window fence. In that

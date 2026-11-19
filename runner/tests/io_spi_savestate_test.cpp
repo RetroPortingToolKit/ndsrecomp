@@ -114,6 +114,10 @@ bool rejects_invalid_states() {
 }
 } // namespace
 
+// Scheduler globals referenced by io.cpp. PE section GC drops those
+// references; ELF links still need definitions.
+NdsCpu g_nds_active = NDS_ARM9;
+unsigned long long g_runtime_cycles = 0;
 void nds_gpu2d_stop() { std::abort(); }
 void nds_spu_stop() { std::abort(); }
 void bus_fast_refresh() { ++refreshes; }
