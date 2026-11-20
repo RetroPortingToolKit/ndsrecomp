@@ -683,6 +683,14 @@ def compiler_identity(args: argparse.Namespace) -> dict:
                 f"cannot identify live-shard compiler: {args.tcc} -v was silent")
         return {"compiler": "tcc", "tcc_banner": banner,
                 "tcc_sha256": file_sha256(Path(args.tcc))}
+    gcc_stem = Path(args.gcc).stem.lower()
+    if gcc_stem in ("cl", "cl.exe") or "msvc" in gcc_stem:
+        try:
+            res = subprocess.run([str(args.gcc)], capture_output=True, text=True)
+            banner = (res.stderr or res.stdout).strip().splitlines()[0]
+            return {"compiler": "msvc", "gcc_machine": "x86_64-pc-windows-msvc", "gcc_version": banner}
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise RuntimeError(f"cannot identify live-shard compiler: {error}")
     try:
         machine = subprocess.check_output(
             [str(args.gcc), "-dumpmachine"], text=True).strip()

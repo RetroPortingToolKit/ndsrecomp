@@ -2,7 +2,7 @@
 
 #include <system_error>
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 #include <unistd.h>
 #endif
 
@@ -32,7 +32,7 @@ std::string shell_quote(const std::filesystem::path& path) {
 bool is_executable_file(const std::filesystem::path& path) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec)) return false;
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     return access(path.c_str(), X_OK) == 0;
 #else
     return true;
@@ -46,6 +46,8 @@ const char* live_overlay_library_suffix() {
     return ".dll";
 #elif defined(__linux__)
     return ".so";
+#elif defined(__APPLE__)
+    return ".dylib";
 #else
     return "";
 #endif
@@ -73,7 +75,7 @@ std::string live_overlay_bundled_tcc_command(
     const auto recompiler = toolchain / "nds_recompile.exe";
     const auto tcc = toolchain / "tcc" / "tcc.exe";
     const auto runner = exe_dir / "nds_runner.exe";
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
     auto python = toolchain / "python" / "bin" / "python3";
     if (!std::filesystem::is_regular_file(python, ec)) {
         ec.clear();
@@ -83,8 +85,11 @@ std::string live_overlay_bundled_tcc_command(
     const auto tcc = toolchain / "tcc" / "tcc";
     const auto runner = exe_dir / "nds_runner";
 #else
+    (void)ec;
+    (void)toolchain;
     return {};
 #endif
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
     const auto script = toolchain / "compile_live_shards.py";
     const auto include = toolchain / "include";
     ec.clear();
@@ -104,4 +109,5 @@ std::string live_overlay_bundled_tcc_command(
         " --runner-exe " + shell_quote(runner) +
         " --compiler tcc --tcc " + shell_quote(tcc) +
         " --include-roots --min-hits 8";
+#endif
 }
