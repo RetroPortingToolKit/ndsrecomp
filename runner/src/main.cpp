@@ -515,6 +515,31 @@ int main(int argc, char** argv) {
             // the oracle gates compare RTC state, so parity runs keep the
             // deterministic power-on clock.
             g_nds_rtc_host = true;
+        } else if (a == "--capture-out" && i + 1 < argc) {
+            frontend_options.capture.out_dir = argv[++i];
+            frontend_options.capture.enabled = true;
+            interactive = true;
+        } else if (a == "--capture-size" && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%dx%d", &frontend_options.capture.width,
+                            &frontend_options.capture.height) != 2 ||
+                frontend_options.capture.width < 16 || frontend_options.capture.height < 16) {
+                std::fprintf(stderr, "bad --capture-size\n");
+                return 2;
+            }
+        } else if (a == "--capture-layout" && i + 1 < argc) {
+            frontend_options.capture.layout = argv[++i];
+        } else if (a == "--capture-from" && i + 1 < argc) {
+            frontend_options.capture.from = std::strtol(argv[++i], nullptr, 10);
+        } else if (a == "--capture-to" && i + 1 < argc) {
+            frontend_options.capture.to = std::strtol(argv[++i], nullptr, 10);
+        } else if (a == "--capture-every" && i + 1 < argc) {
+            frontend_options.capture.every = std::max(1l, std::strtol(argv[++i], nullptr, 10));
+        } else if (a == "--capture-wav" && i + 1 < argc) {
+            frontend_options.capture.wav_path = argv[++i];
+        } else if (a == "--input-script" && i + 1 < argc) {
+            frontend_options.capture.input_path = argv[++i];
+        } else if (a == "--exit-at-frame" && i + 1 < argc) {
+            frontend_options.capture.exit_at = std::strtol(argv[++i], nullptr, 10);
         } else if (a == "--port" && i + 1 < argc) {
             port = static_cast<uint16_t>(std::strtoul(argv[++i], nullptr, 0));
         } else if (a == "--rom" && i + 1 < argc) {
@@ -717,6 +742,9 @@ int main(int argc, char** argv) {
                 "[--execution-model faithful|performance] "
                 "[--diagnostics on|off] [--diagnostics-dir dir] "
                 "[--diagnostics-interval-ms ms] "
+                "[--capture-out DIR --capture-size WxH --capture-layout stacked|top-large "
+                "--capture-from N --capture-to N --capture-every K --capture-wav FILE "
+                "--input-script FILE --exit-at-frame N] (headless capture, implies --interactive) "
                 "[--runtime-settings-path FILE] "
                 "[--coverage-manifest out.json|--no-coverage-manifest] "
                 "[--firmware-path firmware.bin] "
