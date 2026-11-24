@@ -2397,10 +2397,12 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         _putenv_s("SDL_VIDEODRIVER", "dummy");
         _putenv_s("SDL_AUDIODRIVER", "dummy");
         _putenv_s("NDS_SDL_RENDER_DRIVER", "software");
+        _putenv_s("NDS_3D_RENDERER", "soft");
 #else
         setenv("SDL_VIDEODRIVER", "dummy", 1);
         setenv("SDL_AUDIODRIVER", "dummy", 1);
         setenv("NDS_SDL_RENDER_DRIVER", "software", 1);
+        setenv("NDS_3D_RENDERER", "soft", 1);
 #endif
         g_capture.opt = options.capture;
         g_capture.open(kAudioFrequency);
@@ -2421,7 +2423,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     }
 #endif
     FrontendPresentation presentation{};
-    if (!create_presentation(options, presentation)) {
+    if (!create_presentation(options, presentation, !g_capture.opt.enabled)) {
         SDL_Quit();
         return 1;
     }

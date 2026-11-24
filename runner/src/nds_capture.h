@@ -73,7 +73,9 @@ public:
         canvas_.assign(size_t(W) * H, 0xFF141414u);
         if (opt.layout == "top-large") {
             // Top screen fills the canvas height; the touch screen sits inset at the bottom-right.
-            blit(top, tw, 0, 0, std::min(W, int(double(H) * tw / 192.0)), H, true);
+            const double ts = std::min(double(W) / tw, double(H) / 192.0);
+            const int tdw = int(tw * ts), tdh = int(192 * ts);
+            blit(top, tw, (W - tdw) / 2, (H - tdh) / 2, tdw, tdh, true);
             const int bw_px = W / 4, bh_px = bw_px * 192 / std::max(bw, 1);
             blit(bottom, bw, W - bw_px - W / 64, H - bh_px - H / 36, bw_px, bh_px, false);
         } else {
