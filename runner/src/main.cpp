@@ -21,6 +21,7 @@
 #include "arm9_native.h"
 #include "scheduler.h"
 #include "direct_boot.h"
+#include "firmware_boot.h"
 #if defined(NDS_WHOLE_ASSETS)
 #include "whole_asset_service.h"
 #endif
@@ -453,6 +454,8 @@ int main(int argc, char** argv) {
     std::string cli_coverage_manifest;
     bool coverage_manifest_disabled = false;
     std::string cli_firmware_path;
+    std::string cli_bios7_path;
+    std::string cli_bios9_path;
     std::string cli_firmware_state_path;
     std::string cli_net_ring_filter;
     std::string cli_network_enabled;
@@ -537,6 +540,10 @@ int main(int argc, char** argv) {
             coverage_manifest_disabled = true;
         } else if (a == "--no-save") {
             save_disabled = true;
+        } else if (a == "--bios7-path" && i + 1 < argc) {
+            cli_bios7_path = argv[++i];
+        } else if (a == "--bios9-path" && i + 1 < argc) {
+            cli_bios9_path = argv[++i];
         } else if (a == "--firmware-path" && i + 1 < argc) {
             cli_firmware_path = argv[++i];
         } else if (a == "--firmware-state-path" && i + 1 < argc) {
@@ -720,6 +727,7 @@ int main(int argc, char** argv) {
                 "[--runtime-settings-path FILE] "
                 "[--coverage-manifest out.json|--no-coverage-manifest] "
                 "[--firmware-path firmware.bin] "
+                "[--bios7-path biosnds7.rom] [--bios9-path biosnds9.rom] "
                 "[--firmware-state-path mutable-firmware.bin] "
                 "[--config game.toml] "
                 "[--screen-layout stacked|separate|pip] "
@@ -755,7 +763,7 @@ int main(int argc, char** argv) {
                 "[--mph-bind-<action> <key-or-mouse>] "
                 "[--mph-pad-bind-<action> <pad-button|None>] "
                 "[--startup-mode preserve|manual|automatic] "
-                "[--boot lle|direct] "
+                "[--boot lle|direct|firmware] "
                 "[--generated-firmware] [--identity-mac AA:BB:CC:DD:EE:FF] "
                 "[--player-name NAME] "
                 "[--freebios] "
@@ -1178,7 +1186,7 @@ int main(int argc, char** argv) {
     }
     if (!cli_boot_mode.empty() &&
         !nds_parse_boot_mode(cli_boot_mode, &frontend_options.boot_mode)) {
-        std::fprintf(stderr, "invalid --boot (expected lle or direct)\n");
+        std::fprintf(stderr, "invalid --boot (expected lle, direct or firmware)\n");
         return 2;
     }
     if (!cli_instance_index.empty() &&
@@ -1661,8 +1669,8 @@ int main(int argc, char** argv) {
             a9.size(), gba::sha1(a9.data(), a9.size()).hex().c_str(),
             a7.size(), gba::sha1(a7.data(), a7.size()).hex().c_str());
     } else {
-        a9 = read_file(dir + "/biosnds9.rom");
-        a7 = read_file(dir + "/biosnds7.rom");
+        a9 = read_file(cli_bios9_path.empty() ? dir + "/biosnds9.rom" : cli_bios9_path);
+        a7 = read_file(cli_bios7_path.empty() ? dir + "/biosnds7.rom" : cli_bios7_path);
     }
     std::vector<uint8_t> fw;
     if (frontend_options.generated_firmware) {
@@ -2316,6 +2324,17 @@ int main(int argc, char** argv) {
 #endif
         scheduler_reset_cpu(0, 0xFFFF0000u, reset_cpsr);  // ARM9
         scheduler_reset_cpu(1, 0x00000000u, reset_cpsr);  // ARM7
+
+        if (frontend_options.boot_mode == NdsBootMode::Firmware) {
+            RunnerDirectBootMachine machine;
+            std::string error;
+            if (!rom.empty() || !nds_firmware_boot(machine, fw, a7, &error)) {
+                std::fprintf(stderr, "refusing to boot firmware: %s\n",
+                             rom.empty() ? error.c_str() : "remove the game cartridge");
+                std::exit(1);
+            }
+            std::fprintf(stderr, "[boot] host firmware bootstrap loaded original ARM9 and ARM7 stages\n");
+        }
 
         // Opt-in direct boot (beads-yjp.15): establish the post-firmware
         // machine state and start the cartridge binaries immediately. Any

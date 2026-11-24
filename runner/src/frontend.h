@@ -36,6 +36,7 @@ enum class NdsStartupMode : uint8_t {
 enum class NdsBootMode : uint8_t {
     Lle,
     Direct,
+    Firmware,
 };
 
 // "Frame interpolation (experimental)". Presentation-only: Blend presents one

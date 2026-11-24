@@ -480,6 +480,10 @@ bool nds_parse_boot_mode(const std::string& value, NdsBootMode* out) {
         *out = NdsBootMode::Direct;
         return true;
     }
+    if (value == "firmware") {
+        *out = NdsBootMode::Firmware;
+        return true;
+    }
     return false;
 }
 
@@ -529,7 +533,12 @@ const char* nds_startup_mode_name(NdsStartupMode value) {
 }
 
 const char* nds_boot_mode_name(NdsBootMode value) {
-    return value == NdsBootMode::Direct ? "direct" : "lle";
+    switch (value) {
+    case NdsBootMode::Firmware: return "firmware";
+    case NdsBootMode::Direct: return "direct";
+    case NdsBootMode::Lle: return "lle";
+    }
+    return "lle";
 }
 
 const char* nds_adaptive_screens_name(uint8_t value) {

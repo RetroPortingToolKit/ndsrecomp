@@ -158,48 +158,48 @@ uint32_t byte_swap32(uint32_t value) {
            ((value << 8u) & 0x00FF0000u) | (value << 24u);
 }
 
-uint32_t key1_f(uint32_t value) {
-    uint32_t out = g_key1_schedule[0x012u + (value >> 24u)];
-    out += g_key1_schedule[0x112u + ((value >> 16u) & 0xFFu)];
-    out ^= g_key1_schedule[0x212u + ((value >> 8u) & 0xFFu)];
-    out += g_key1_schedule[0x312u + (value & 0xFFu)];
+uint32_t key1_f(uint32_t value, const uint32_t* schedule) {
+    uint32_t out = schedule[0x012u + (value >> 24u)];
+    out += schedule[0x112u + ((value >> 16u) & 0xFFu)];
+    out ^= schedule[0x212u + ((value >> 8u) & 0xFFu)];
+    out += schedule[0x312u + (value & 0xFFu)];
     return out;
 }
 
-void key1_encrypt(uint32_t words[2]) {
+void key1_encrypt(uint32_t words[2], const uint32_t* schedule = g_key1_schedule) {
     uint32_t left = words[0];
     uint32_t right = words[1];
     for (uint32_t round = 0; round < 16u; ++round) {
-        const uint32_t mixed = right ^ g_key1_schedule[round];
-        right = key1_f(mixed) ^ left;
+        const uint32_t mixed = right ^ schedule[round];
+        right = key1_f(mixed, schedule) ^ left;
         left = mixed;
     }
-    words[0] = right ^ g_key1_schedule[16];
-    words[1] = left ^ g_key1_schedule[17];
+    words[0] = right ^ schedule[16];
+    words[1] = left ^ schedule[17];
 }
 
-void key1_decrypt(uint32_t words[2]) {
+void key1_decrypt(uint32_t words[2], const uint32_t* schedule = g_key1_schedule) {
     uint32_t left = words[0];
     uint32_t right = words[1];
     for (uint32_t round = 17; round >= 2u; --round) {
-        const uint32_t mixed = right ^ g_key1_schedule[round];
-        right = key1_f(mixed) ^ left;
+        const uint32_t mixed = right ^ schedule[round];
+        right = key1_f(mixed, schedule) ^ left;
         left = mixed;
     }
-    words[0] = right ^ g_key1_schedule[1];
-    words[1] = left ^ g_key1_schedule[0];
+    words[0] = right ^ schedule[1];
+    words[1] = left ^ schedule[0];
 }
 
-void key1_apply(uint32_t keycode[3], uint32_t modulus) {
-    key1_encrypt(&keycode[1]);
-    key1_encrypt(&keycode[0]);
+void key1_apply(uint32_t keycode[3], uint32_t modulus, uint32_t* schedule = g_key1_schedule) {
+    key1_encrypt(&keycode[1], schedule);
+    key1_encrypt(&keycode[0], schedule);
     for (uint32_t i = 0; i < 18u; ++i)
-        g_key1_schedule[i] ^= byte_swap32(keycode[i % modulus]);
+        schedule[i] ^= byte_swap32(keycode[i % modulus]);
     uint32_t block[2] = {};
     for (uint32_t i = 0; i < 0x412u; i += 2u) {
-        key1_encrypt(block);
-        g_key1_schedule[i] = block[1];
-        g_key1_schedule[i + 1u] = block[0];
+        key1_encrypt(block, schedule);
+        schedule[i] = block[1];
+        schedule[i + 1u] = block[0];
     }
 }
 
@@ -2691,6 +2691,23 @@ uint8_t nds_wramcnt() { return g_wramcnt; }
 // ── Direct-boot seams (driven by nds_direct_boot via main.cpp's machine
 // adapter). These are device-state assignments, not guest bus writes: they
 // reproduce the state the firmware's own boot code would have left behind.
+bool nds_io_firmware_key1(uint32_t identifier, const uint8_t* bios, size_t size,
+                          uint32_t schedule[0x412]) {
+    constexpr size_t key_offset = 0x30;
+    if (size < key_offset + sizeof(g_key1_base)) return false;
+    for (size_t i = 0; i < 0x412; ++i) {
+        schedule[i] = load_le32(bios + key_offset + i * 4);
+    }
+    uint32_t code[] = {identifier, identifier >> 1u, identifier << 1u};
+    key1_apply(code, 3, schedule);
+    key1_apply(code, 3, schedule);
+    return true;
+}
+
+void nds_io_firmware_decrypt(uint32_t block[2], const uint32_t schedule[0x412]) {
+    key1_decrypt(block, schedule);
+}
+
 void nds_io_set_wramcnt(uint8_t value) {
     g_wramcnt = value;
     bus_fast_refresh();

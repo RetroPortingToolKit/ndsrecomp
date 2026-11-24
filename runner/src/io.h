@@ -285,6 +285,9 @@ uint8_t nds_wramcnt();
 // adapter): device-state assignments reproducing what the firmware's own boot
 // would have left behind, plus the decrypted secure area the boot sequence
 // copies to RAM (the stored cartridge image keeps it card-side encrypted).
+bool nds_io_firmware_key1(uint32_t identifier, const uint8_t* bios, size_t size,
+                          uint32_t schedule[0x412]);
+void nds_io_firmware_decrypt(uint32_t block[2], const uint32_t schedule[0x412]);
 void nds_io_set_wramcnt(uint8_t value);
 void nds_io_set_arm7_bios_prot(uint32_t value);
 // Chip ID the live card protocol reports (0 when no cartridge is loaded).

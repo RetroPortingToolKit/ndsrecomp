@@ -826,6 +826,7 @@ add_executable(nds_runner
     src/frontend.cpp
     src/cpu_render_handoff.cpp
     src/main.cpp
+    src/firmware_boot.cpp
     src/runtime_exports.def
     "${TITLE_BANK_REGISTRY}"
     vendor/melonds/GPU3D.cpp
@@ -843,6 +844,9 @@ add_executable(nds_runner
     vendor/melonds/net/Net.cpp
     vendor/melonds/net/PacketDispatcher.cpp
     vendor/melonds/net/Net_Slirp.cpp)
+if(EXISTS "${NDS_RECOMP_UI_ROOT}/src/common/launcher_theme_overrides.c")
+    target_sources(nds_runner PRIVATE "${NDS_RECOMP_UI_ROOT}/src/common/launcher_theme_overrides.c")
+endif()
 set_target_properties(nds_runner PROPERTIES ENABLE_EXPORTS ON)
 if(NDS_3D_GEOMETRY STREQUAL "NATIVE")
     target_sources(nds_runner PRIVATE src/native_3d.cpp src/native_3d_raster.cpp)
