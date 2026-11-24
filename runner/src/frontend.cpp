@@ -1019,6 +1019,10 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
     if (g_capture.opt.enabled) {
         // Capture: the mixed output goes to the WAV, never to a device, and
         // nothing paces the loop.
+        if (owned_pcm) {
+            g_capture.audio(g_capture_frame, owned_pcm->data(), owned_pcm->size() / 2);
+            return 0;
+        }
         std::array<int16_t, 2048> out{};
         for (;;) {
             const uint32_t n = nds_spu_read_output(out.data(), 1024);
@@ -2397,15 +2401,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
         _putenv_s("SDL_VIDEODRIVER", "dummy");
         _putenv_s("SDL_AUDIODRIVER", "dummy");
         _putenv_s("NDS_SDL_RENDER_DRIVER", "software");
-        _putenv_s("NDS_3D_RENDERER", "soft");
 #else
         setenv("SDL_VIDEODRIVER", "dummy", 1);
         setenv("SDL_AUDIODRIVER", "dummy", 1);
         setenv("NDS_SDL_RENDER_DRIVER", "software", 1);
-        setenv("NDS_3D_RENDERER", "soft", 1);
 #endif
         g_capture.opt = options.capture;
-        g_capture.open(kAudioFrequency);
+        try {
+            g_capture.open(kAudioFrequency);
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "capture: %s\n", error.what());
+            return 2;
+        }
     }
     if (!sdl_init_frontend()) {
         std::fprintf(stderr, "[sdl] init failed: %s\n", SDL_GetError());
@@ -2619,12 +2626,15 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     want.callback = audio_callback;
     want.userdata = &audio_queue;
 #endif
-    NdsAudioDevice audio = open_audio_device(audio_queue, want);
-    if (!audio)
-        std::fprintf(stderr, "[sdl] audio unavailable: %s\n", SDL_GetError());
-    else
-        std::fprintf(stderr, "[sdl] audio driver: %s, output muted: %s\n",
-            SDL_GetCurrentAudioDriver(), audio_queue.output_muted ? "yes" : "no");
+    NdsAudioDevice audio{};
+    if (!g_capture.opt.enabled) {
+        audio = open_audio_device(audio_queue, want);
+        if (!audio)
+            std::fprintf(stderr, "[sdl] audio unavailable: %s\n", SDL_GetError());
+        else
+            std::fprintf(stderr, "[sdl] audio driver: %s, output muted: %s\n",
+                SDL_GetCurrentAudioDriver(), audio_queue.output_muted ? "yes" : "no");
+    }
 
     std::fprintf(stderr,
         "[sdl] controls: gamepad=Player 1 | bottom mouse=touch | "
@@ -4584,7 +4594,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
             audio_pace_floor = kAudioQueueFrames;
         uint32_t queued = audio_queue_count(audio, audio_queue);
         const uint32_t latency_queue_before_drain = queued;
-        if (turbo_active) {
+        if (turbo_active && !g_capture.opt.enabled) {
             if (!cpu_handoff) discard_spu_output();
         } else {
             queued = drain_audio(
@@ -4626,8 +4636,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
             current_gpu3d_profile.compute_readback_ns;
 
         ++shown_frames;
-        if (g_capture.opt.enabled && g_capture.opt.exit_at > 0 &&
-            static_cast<long>(shown_frames) >= g_capture.opt.exit_at)
+        if (g_capture.failed() ||
+            (g_capture.opt.enabled && g_capture.opt.exit_at > 0 &&
+             static_cast<long>(shown_frames) >= g_capture.opt.exit_at))
             running = false;
         ++fps_frames;
         g_live_stats.frames = shown_frames;
@@ -4818,6 +4829,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     if (selftest_relative_mouse)
         std::fprintf(stderr, "[sdl] relative mouse self-test: %s\n",
                      relative_mouse_selftest_failed ? "FAIL" : "PASS");
+    if (g_capture.failed()) return 2;
     return (audio_failed || menu_selftest_failed ||
             relative_mouse_selftest_failed || compute_failed) ? 1 : 0;
 }

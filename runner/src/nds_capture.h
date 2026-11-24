@@ -7,7 +7,8 @@
 //   --capture-out DIR        DIR/frame_%06d.png (composed canvas)
 //   --capture-size WxH       canvas size (default 1920x1080)
 //   --capture-layout L       stacked (as the window presents it, default) | top-large
-//   --capture-from/--capture-to N, --capture-every K   inclusive DS-frame range
+//   --capture-from/--capture-to N    inclusive DS-frame range
+//   --capture-every K        PNG sampling stride within that range
 //   --capture-wav FILE       mixed stereo output at the DS mixer rate (32728 Hz)
 //   --input-script FILE      "<frame> TOKEN[+TOKEN...]", '-' releases. Tokens: A B X Y L R
 //                            START SELECT UP DOWN LEFT RIGHT, TOUCH:x,y, AIM:dx,dy (MPH aim)
@@ -42,33 +43,45 @@ public:
     };
     NdsCaptureOptions opt;
 
+    NdsCapture() = default;
+    NdsCapture(const NdsCapture&) = delete;
+    NdsCapture& operator=(const NdsCapture&) = delete;
+    ~NdsCapture() {
+        if (wav_) std::fclose(wav_);
+    }
+
     void open(int wav_rate) {
-        std::filesystem::create_directories(opt.out_dir);
+        if (!opt.input_path.empty()) load_script();
+        if (!opt.out_dir.empty()) std::filesystem::create_directories(opt.out_dir);
         if (!opt.wav_path.empty()) {
             wav_ = std::fopen(opt.wav_path.c_str(), "wb");
-            if (!wav_) throw std::runtime_error("cannot open --capture-wav");
             rate_ = wav_rate;
-            header(0);
+            if (!wav_ || !header(0)) {
+                if (wav_) std::fclose(wav_);
+                wav_ = nullptr;
+                throw std::runtime_error("cannot start WAV '" + opt.wav_path + "'");
+            }
         }
-        if (!opt.input_path.empty()) load_script();
     }
-    bool wanted(long frame) const {
-        if (frame < opt.from || (opt.to >= 0 && frame > opt.to)) return false;
-        return (frame - std::max(1l, opt.from)) % opt.every == 0;
-    }
+    bool failed() const { return failed_; }
     Input input_for(long frame) const {
         Input held;
         for (const auto& s : steps_) { if (s.first > frame) break; held = s.second; }
         return held;
     }
     void audio(long frame, const int16_t* samples, size_t frames) {
-        if (!wav_ || !wanted(frame)) return;
-        std::fwrite(samples, 4, frames, wav_);
-        wav_frames_ += frames;
+        if (failed_ || !wav_ || frames == 0 || !in_range(frame)) return;
+        const size_t written = std::fwrite(samples, 4, frames, wav_);
+        wav_frames_ += written;
+        if (written != frames) {
+            std::fprintf(stderr, "capture: cannot write WAV '%s'\n", opt.wav_path.c_str());
+            failed_ = true;
+        }
     }
     // ARGB8888 top (tw x 192) and bottom (bw x 192) screens -> canvas -> PNG.
     void frame(long number, const uint32_t* top, int tw, const uint32_t* bottom, int bw) {
-        if (!wanted(number)) return;
+        if (failed_ || opt.out_dir.empty() || !in_range(number) ||
+            (number - std::max(1l, opt.from)) % opt.every != 0) return;
         const int W = opt.width, H = opt.height;
         canvas_.assign(size_t(W) * H, 0xFF141414u);
         if (opt.layout == "top-large") {
@@ -88,12 +101,25 @@ public:
         }
         char name[64];
         std::snprintf(name, sizeof name, "frame_%06ld.png", number);
-        png((std::filesystem::path(opt.out_dir) / name).string());
-        ++written_;
+        const std::string path = (std::filesystem::path(opt.out_dir) / name).string();
+        if (png(path)) {
+            ++written_;
+        } else {
+            std::fprintf(stderr, "capture: cannot write frame '%s'\n", path.c_str());
+            failed_ = true;
+        }
     }
     void finish(long frames) {
         if (!opt.enabled) return;
-        if (wav_) { header(wav_frames_ * 4); std::fclose(wav_); wav_ = nullptr; }
+        if (wav_) {
+            const bool finalized = header(wav_frames_ * 4);
+            const int result = std::fclose(wav_);
+            wav_ = nullptr;
+            if (!finalized || result != 0) {
+                std::fprintf(stderr, "capture: cannot finalize WAV '%s'\n", opt.wav_path.c_str());
+                failed_ = true;
+            }
+        }
         std::fprintf(stderr, "capture: %llu frames written, %llu audio samples (%d Hz), present size %dx%d (%ld simulated)\n",
             (unsigned long long)written_, (unsigned long long)wav_frames_, rate_, opt.width, opt.height, frames);
     }
@@ -103,8 +129,13 @@ private:
     std::FILE* wav_ = nullptr;
     uint64_t wav_frames_ = 0, written_ = 0;
     int rate_ = 32728;
+    bool failed_ = false;
     std::vector<uint32_t> canvas_;
     std::vector<uint8_t> z_;
+
+    bool in_range(long frame) const {
+        return frame >= std::max(1l, opt.from) && (opt.to < 0 || frame <= opt.to);
+    }
 
     static uint16_t key(const std::string& n) {
         if (n == "A") return 1u << 0;      if (n == "B") return 1u << 1;
@@ -158,13 +189,15 @@ private:
             }
         }
     }
-    void header(uint64_t data) {
+    bool header(uint64_t data) {
         uint8_t h[44]; std::memcpy(h, "RIFF", 4); uint32_t v = uint32_t(36 + data); std::memcpy(h + 4, &v, 4);
         std::memcpy(h + 8, "WAVEfmt ", 8); uint32_t len = 16, rate = uint32_t(rate_), bps = rate * 4; uint16_t pcm = 1, ch = 2, bits = 16, align = 4;
         std::memcpy(h + 16, &len, 4); std::memcpy(h + 20, &pcm, 2); std::memcpy(h + 22, &ch, 2); std::memcpy(h + 24, &rate, 4);
         std::memcpy(h + 28, &bps, 4); std::memcpy(h + 32, &align, 2); std::memcpy(h + 34, &bits, 2); std::memcpy(h + 36, "data", 4);
         uint32_t d = uint32_t(data); std::memcpy(h + 40, &d, 4);
-        std::fseek(wav_, 0, SEEK_SET); std::fwrite(h, 1, 44, wav_); std::fseek(wav_, 0, SEEK_END);
+        return std::fseek(wav_, 0, SEEK_SET) == 0 &&
+            std::fwrite(h, 1, sizeof h, wav_) == sizeof h &&
+            std::fseek(wav_, 0, SEEK_END) == 0;
     }
     static void be32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 24); p[1] = uint8_t(v >> 16); p[2] = uint8_t(v >> 8); p[3] = uint8_t(v); }
     static uint32_t crc(uint32_t c, const uint8_t* p, size_t n) {
@@ -180,8 +213,9 @@ private:
     }
     // RGB24 PNG with stored deflate blocks (no zlib); an intermediate that
     // tools/frames_to_raw.py packs into a lossless clip.
-    void png(const std::string& path) {
-        std::FILE* f = std::fopen(path.c_str(), "wb"); if (!f) throw std::runtime_error("cannot write capture frame");
+    bool png(const std::string& path) {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        if (!f) return false;
         static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 13, 10, 26, 10}; std::fwrite(sig, 1, 8, f);
         const int w = opt.width, h = opt.height;
         uint8_t ihdr[13]; be32(ihdr, uint32_t(w)); be32(ihdr + 4, uint32_t(h)); ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = ihdr[11] = ihdr[12] = 0;
@@ -197,6 +231,8 @@ private:
             z_[zo++] = v; a = (a + v) % 65521u; b = (b + a) % 65521u; --in_block; ++done;
         }
         be32(&z_[zo], (b << 16) | a); zo += 4;
-        chunk(f, "IDAT", z_.data(), zo); chunk(f, "IEND", nullptr, 0); std::fclose(f);
+        chunk(f, "IDAT", z_.data(), zo); chunk(f, "IEND", nullptr, 0);
+        const bool written = std::ferror(f) == 0;
+        return std::fclose(f) == 0 && written;
     }
 };

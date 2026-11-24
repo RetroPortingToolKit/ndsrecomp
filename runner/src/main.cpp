@@ -536,6 +536,8 @@ int main(int argc, char** argv) {
             frontend_options.capture.every = std::max(1l, std::strtol(argv[++i], nullptr, 10));
         } else if (a == "--capture-wav" && i + 1 < argc) {
             frontend_options.capture.wav_path = argv[++i];
+            frontend_options.capture.enabled = true;
+            interactive = true;
         } else if (a == "--input-script" && i + 1 < argc) {
             frontend_options.capture.input_path = argv[++i];
         } else if (a == "--exit-at-frame" && i + 1 < argc) {
@@ -1518,6 +1520,13 @@ int main(int argc, char** argv) {
                          "faithful unbounded path.\n");
     }
 
+    if (frontend_options.capture.enabled) {
+#if defined(_WIN32)
+        _putenv_s("NDS_3D_RENDERER", "soft");
+#else
+        setenv("NDS_3D_RENDERER", "soft", 1);
+#endif
+    }
     const NdsGpu3dRendererPolicy renderer_policy =
         nds_gpu3d_renderer_policy();
     if (renderer_policy == NdsGpu3dRendererPolicy::Invalid) {
