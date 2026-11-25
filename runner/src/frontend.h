@@ -7,6 +7,7 @@
 #include "cartridge_config.h"
 #include "../../launcher/nds_input_bindings.h"
 #include "screen_layout.h"
+#include "nds_capture.h"
 
 // Run the native, human-facing firmware preview. The emulation remains on the
 // same scheduler/device path used by the deterministic debug verifier; SDL is
@@ -332,6 +333,8 @@ struct NdsFrontendOptions {
     // Optional launcher-owned settings file. Runtime-only menu changes update
     // the existing key/value file when the launcher passes this path.
     std::string runtime_settings_path;
+    // Headless presented-frame capture (--capture-out ...); see nds_capture.h.
+    NdsCaptureOptions capture{};
 };
 
 // Parse [display] settings from a game TOML. Missing [display] is valid.
