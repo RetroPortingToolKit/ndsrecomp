@@ -3,4 +3,16 @@
 	url = https://github.com/mstan/freebios.git
 [submodule "external/arm-recomp-core"]
 	path = external/arm-recomp-core
-	url = https://github.com/mstan/arm-recomp-core.git
+	url = https://github.com/mstan/arm-recomp-core-candidate-20261124.git
+[submodule "external/recomp-audio-core"]
+	path = external/recomp-audio-core
+	url = https://github.com/mstan/recomp-audio-core.git
+[submodule "external/recomp-persistence-core"]
+	path = external/recomp-persistence-core
+	url = https://github.com/mstan/recomp-persistence-core-candidate-20261124.git
+[submodule "external/recomp-input-core"]
+	path = external/recomp-input-core
+	url = https://github.com/mstan/recomp-input-core-candidate-20261124.git
+[submodule "external/recomp-diagnostics-core"]
+	path = external/recomp-diagnostics-core
+	url = https://github.com/mstan/recomp-diagnostics-core-candidate-20261124.git

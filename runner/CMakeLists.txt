@@ -63,6 +63,8 @@ if(NOT MSVC)
     add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/NdsSharedRuntime.cmake")
+
 arm_recomp_core_sources(NDS_ARM_RECOMP_SOURCES armv4t)
 arm_recomp_core_include_dirs(NDS_ARM_RECOMP_INCLUDE_DIRS armv4t)
 
@@ -1924,3 +1926,8 @@ ndsrecomp_link_tomlpp(frontend_config_test)
         COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/live_compile_owner_test.py")
   endif()
+
+add_executable(shared_input_event_test tests/shared_input_event_test.cpp)
+target_include_directories(shared_input_event_test PRIVATE src)
+target_link_libraries(shared_input_event_test PRIVATE recomp-input::core)
+add_test(NAME shared_input_event_test COMMAND shared_input_event_test)

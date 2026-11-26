@@ -588,3 +588,8 @@ uint64_t nds_frontend_frame_digest_count();
 // Returns the number copied; 0 when the window has already been evicted.
 uint32_t nds_frontend_frame_digests(uint64_t from, uint32_t max,
                                     NdsFrontendFrameDigest* out);
+
+// Offline review aliases for the existing frontend pause safe point.
+bool nds_frontend_owner_review_enabled();
+bool nds_frontend_owner_review_paused();
+void nds_frontend_owner_review_pause(bool paused);

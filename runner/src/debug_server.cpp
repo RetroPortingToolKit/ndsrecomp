@@ -1,4 +1,6 @@
 #include "debug_server.h"
+#include <diagnostics_server.h>
+#include "savestate_slots.h"
 
 #include <algorithm>
 #include <array>
@@ -76,20 +78,6 @@
 
 extern "C" uint32_t g_runtime_break_pc;
 
-#ifdef _WIN32
-#  include <winsock2.h>
-#  include <ws2tcpip.h>
-using socket_t = SOCKET;
-#  define CLOSESOCK closesocket
-#else
-#  include <arpa/inet.h>
-#  include <netinet/in.h>
-#  include <sys/socket.h>
-#  include <unistd.h>
-using socket_t = int;
-#  define INVALID_SOCKET (-1)
-#  define CLOSESOCK ::close
-#endif
 
 namespace {
 
@@ -100,6 +88,7 @@ NdsSavestateIdentity g_savestate_identity;
 // rejected while the SDL frontend owns execution (psxrecomp model — query
 // the always-on rings instead of advancing the machine from a handler).
 bool g_play_mode = false;
+std::atomic<bool> g_transport_closing{false};
 
 const char HEX[] = "0123456789abcdef";
 
@@ -565,17 +554,37 @@ std::string handle(const std::string& line) {
     }
 
     if (cmd == "state_save" || cmd == "state_load") {
-        if (g_play_mode)
-            return "{\"error\":\"debug savestates require headless serve mode\"}";
+        if (g_play_mode && (!nds_frontend_owner_review_enabled() ||
+                            !nds_frontend_owner_review_paused()))
+            return "{\"ok\":false,\"error\":\"snapshot requires owner review pause\",\"code\":\"review_pause_required\"}";
+        std::string network_error;
+        if (!nds_wifi_savestate_allowed(&network_error))
+            return "{\"ok\":false,\"code\":\"network_active\",\"error\":\"" + json_escape(network_error) + "\"}";
         const std::string path = json_str(line, "path");
         if (path.empty() || g_savestate_identity.rom_sha1.empty())
-            return "{\"error\":\"savestate needs a path and a loaded ROM\"}";
+            return "{\"ok\":false,\"code\":\"invalid_snapshot_request\",\"error\":\"savestate needs a path and a loaded ROM\"}";
+        nds_savestate_wait_for_pending_save();
         std::string error;
         const bool ok = cmd == "state_save"
             ? nds_savestate_save_core(path, g_savestate_identity, &error)
             : nds_savestate_load_core(path, g_savestate_identity, &error);
-        if (!ok) return "{\"error\":\"" + json_escape(error) + "\"}";
+        if (!ok) return "{\"ok\":false,\"code\":\"snapshot_failed\",\"error\":\"" + json_escape(error) + "\"}";
+        if (cmd == "state_load") nds_savestate_reset_host_history();
         return "{\"ok\":true}";
+    }
+    if (cmd == "owner_review") {
+        if (!g_play_mode || !nds_frontend_owner_review_enabled())
+            return "{\"ok\":false,\"code\":\"review_disabled\",\"error\":\"start interactive mode with NDS_OWNER_REVIEW=1\"}";
+        const std::string action = json_str(line, "action");
+        if (action != "pause" && action != "play" && action != "status")
+            return "{\"ok\":false,\"code\":\"invalid_action\",\"error\":\"owner_review action must be pause, play or status\"}";
+        std::string error;
+        if (action == "pause" && !nds_wifi_savestate_allowed(&error))
+            return "{\"ok\":false,\"code\":\"network_active\",\"error\":\"" + json_escape(error) + "\"}";
+        if (action != "status") nds_frontend_owner_review_pause(action == "pause");
+        return std::string("{\"ok\":true,\"paused\":") +
+            (nds_frontend_owner_review_paused() ? "true" : "false") +
+            ",\"frame\":" + std::to_string(nds_event_counts().vblank9) + "}";
     }
     if (cmd == "event_counts") return counts_json();
     if (cmd == "cartridge") {
@@ -2294,16 +2303,6 @@ std::string handle(const std::string& line) {
     return "{\"error\":\"unknown cmd\"}";
 }
 
-bool send_all(socket_t s, const char* data, size_t len) {
-    while (len > 0) {
-        int n = send(s, data, (int)len, 0);
-        if (n <= 0) return false;
-        data += n;
-        len -= (size_t)n;
-    }
-    return true;
-}
-
 }  // namespace
 
 void debug_set_reset_fn(std::function<void()> fn) { g_reset_fn = std::move(fn); }
@@ -2312,182 +2311,100 @@ void debug_set_savestate_identity(const std::string& build_id,
     g_savestate_identity = {build_id, rom_sha1};
 }
 
+namespace {
+constexpr size_t kDebugLineLimit = 16u * 1024u * 1024u;
+constexpr size_t kDebugResponseLimit = 64u * 1024u * 1024u;
+void debug_framing_error(void*, DiagServer* server, const char* reason) {
+    if (g_transport_closing.load(std::memory_order_relaxed)) return;
+    const std::string response = "{\"error\":\"" + json_escape(reason) + "\"}";
+    diag_server_reply(server, response.c_str());
+}
+DiagServer* debug_server_create(uint16_t port, DiagCommand dispatch) {
+    DiagServer* server = diag_server_create(port);
+    if (!server) return nullptr;
+    if (!diag_server_protocol(server, kDebugLineLimit, kDebugResponseLimit,
+                              debug_framing_error, nullptr) ||
+        !diag_server_raw_handler(server, dispatch, nullptr)) {
+        diag_server_destroy(server);
+        return nullptr;
+    }
+    return server;
+}
+bool g_serve_failed = false;
+void serve_dispatch(void*, DiagServer* server, const char* line) {
+    if (g_transport_closing.load(std::memory_order_relaxed)) return;
+    const std::string response = handle(line);
+    diag_server_reply(server, response.c_str());
+    g_serve_failed = nds_gpu3d_compute_runtime_failed();
+    if (g_serve_failed) g_transport_closing.store(true, std::memory_order_relaxed);
+}
+} // namespace
+
 void debug_serve(uint16_t port) {
-#ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        std::fprintf(stderr, "[debug] WSAStartup failed\n");
-        return;
-    }
-#endif
-
-    socket_t listener = socket(AF_INET, SOCK_STREAM, 0);
-    if (listener == INVALID_SOCKET) {
-        std::fprintf(stderr, "[debug] socket() failed\n");
-        return;
-    }
-    int yes = 1;
-    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(listener, (sockaddr*)&addr, sizeof(addr)) != 0) {
-        std::fprintf(stderr, "[debug] bind() failed on port %u\n", port);
-        return;
-    }
-    if (listen(listener, 1) != 0) {
-        std::fprintf(stderr, "[debug] listen() failed\n");
+    g_transport_closing.store(false, std::memory_order_relaxed);
+    DiagServer* server = debug_server_create(port, serve_dispatch);
+    if (!server) {
+        std::fprintf(stderr, "[debug] listen failed on port %u\n", port);
         return;
     }
     std::fprintf(stderr, "[debug] listening on 127.0.0.1:%u\n", port);
-
-    bool fatal_backend_failure = false;
-    while (!fatal_backend_failure) {
-        socket_t client = accept(listener, nullptr, nullptr);
-        if (client == INVALID_SOCKET) continue;
-
-        std::string buf;
-        char chunk[65536];
-        bool open = true;
-        while (open) {
-            int n = recv(client, chunk, sizeof(chunk), 0);
-            if (n <= 0) break;
-            buf.append(chunk, (size_t)n);
-            size_t nl;
-            while ((nl = buf.find('\n')) != std::string::npos) {
-                std::string req = buf.substr(0, nl);
-                buf.erase(0, nl + 1);
-                std::string resp = handle(req);
-                const bool request_failed =
-                    nds_gpu3d_compute_runtime_failed();
-                resp.push_back('\n');
-                if (!send_all(client, resp.data(), resp.size())) {
-                    fatal_backend_failure = request_failed;
-                    open = false;
-                    break;
-                }
-                // Preserve the response that observed the terminal failure,
-                // then unwind serve mode so forced-compute automation receives
-                // a nonzero process status from main.
-                if (request_failed) {
-                    fatal_backend_failure = true;
-                    open = false;
-                    break;
-                }
-            }
-        }
-        CLOSESOCK(client);
+    g_serve_failed = false;
+    while (diag_server_poll(server)) {
+        if (g_serve_failed && !diag_server_pending_output(server)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    CLOSESOCK(listener);
-#ifdef _WIN32
-    WSACleanup();
-#endif
+    diag_server_destroy(server);
 }
 
-// ── Play-mode pump (psxrecomp handoff model) ────────────────────────────
-// A dedicated I/O thread owns accept/recv/send on the same line-JSON
-// protocol; each complete request line is handed to the frontend thread,
-// which executes it inside debug_pump() between frames — the emu state is
-// only ever touched by its owning thread, so no emulator locking exists.
-// The mutex/condvar below protect ONLY the request/response handoff pair.
-
+// The shared server owns transport/framing; guest requests still execute only
+// at the frontend's between-frame safe point. Ping remains an I/O fast path.
 namespace {
-
 enum class PumpIo { Idle, Req, Resp };
 std::thread g_pump_thread;
 std::mutex g_pump_mutex;
 std::condition_variable g_pump_resp_cv;
 PumpIo g_pump_state = PumpIo::Idle;
-std::string g_pump_req;
-std::string g_pump_resp;
+std::string g_pump_req, g_pump_resp;
 std::atomic<bool> g_pump_shutdown{false};
-socket_t g_pump_listener = INVALID_SOCKET;
-std::atomic<socket_t> g_pump_client{INVALID_SOCKET};
+DiagServer* g_pump_server = nullptr;
 
+void pump_dispatch(void*, DiagServer* server, const char* line) {
+    if (g_transport_closing.load(std::memory_order_relaxed) ||
+        g_pump_shutdown.load(std::memory_order_relaxed)) return;
+    if (json_str(line, "cmd") == "ping") {
+        diag_server_reply(server, "{\"pong\":true}");
+        return;
+    }
+    std::unique_lock<std::mutex> lock(g_pump_mutex);
+    g_pump_req = line;
+    g_pump_state = PumpIo::Req;
+    g_pump_resp_cv.wait(lock, [] {
+        return g_pump_state == PumpIo::Resp ||
+               g_pump_shutdown.load(std::memory_order_relaxed);
+    });
+    if (g_pump_state == PumpIo::Resp)
+        diag_server_reply(server, g_pump_resp.c_str());
+    g_pump_state = PumpIo::Idle;
+}
 void pump_io_thread() {
-    while (!g_pump_shutdown.load(std::memory_order_relaxed)) {
-        socket_t client = accept(g_pump_listener, nullptr, nullptr);
-        if (client == INVALID_SOCKET) {
-            if (g_pump_shutdown.load(std::memory_order_relaxed)) break;
-            continue;
-        }
-        g_pump_client.store(client, std::memory_order_relaxed);
-        std::string buf;
-        char chunk[65536];
-        bool open = true;
-        while (open && !g_pump_shutdown.load(std::memory_order_relaxed)) {
-            int n = recv(client, chunk, sizeof(chunk), 0);
-            if (n <= 0) break;
-            buf.append(chunk, (size_t)n);
-            size_t nl;
-            while ((nl = buf.find('\n')) != std::string::npos) {
-                std::string req = buf.substr(0, nl);
-                buf.erase(0, nl + 1);
-                std::string resp;
-                if (json_str(req, "cmd") == "ping") {
-                    // Liveness fast path answered on the I/O thread: ping
-                    // works even while the frontend thread is buried in a
-                    // slow frame (freeze diagnosis).
-                    resp = "{\"pong\":true}";
-                } else {
-                    std::unique_lock<std::mutex> lock(g_pump_mutex);
-                    g_pump_req = req;
-                    g_pump_state = PumpIo::Req;
-                    if (g_pump_resp_cv.wait_for(
-                            lock, std::chrono::seconds(30),
-                            [] { return g_pump_state == PumpIo::Resp; })) {
-                        resp = g_pump_resp;
-                    } else {
-                        resp = "{\"error\":\"frontend busy or frozen\"}";
-                    }
-                    g_pump_state = PumpIo::Idle;
-                }
-                resp.push_back('\n');
-                if (!send_all(client, resp.data(), resp.size())) {
-                    open = false;
-                    break;
-                }
-            }
-        }
-        // Exchange-then-close so shutdown and this thread never both close
-        // the same handle.
-        const socket_t mine =
-            g_pump_client.exchange(INVALID_SOCKET, std::memory_order_relaxed);
-        if (mine != INVALID_SOCKET) CLOSESOCK(mine);
+    while (!g_pump_shutdown.load(std::memory_order_relaxed) &&
+           diag_server_poll(g_pump_server))
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    // Shutdown callbacks are gated; drain only already-produced replies. A
+    // disconnected peer clears the shared stream's pending bytes on poll.
+    while (diag_server_connected(g_pump_server) &&
+           diag_server_pending_output(g_pump_server)) {
+        if (!diag_server_poll(g_pump_server)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
-
-}  // namespace
+} // namespace
 
 bool debug_pump_start(uint16_t port) {
-#ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        std::fprintf(stderr, "[debug] WSAStartup failed\n");
-        return false;
-    }
-#endif
-    g_pump_listener = socket(AF_INET, SOCK_STREAM, 0);
-    if (g_pump_listener == INVALID_SOCKET) {
-        std::fprintf(stderr, "[debug] socket() failed\n");
-        return false;
-    }
-    int yes = 1;
-    setsockopt(g_pump_listener, SOL_SOCKET, SO_REUSEADDR,
-               (const char*)&yes, sizeof(yes));
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(g_pump_listener, (sockaddr*)&addr, sizeof(addr)) != 0 ||
-        listen(g_pump_listener, 1) != 0) {
-        std::fprintf(stderr,
-                     "[debug] play-mode surface unavailable (port %u busy)\n",
-                     port);
-        CLOSESOCK(g_pump_listener);
-        g_pump_listener = INVALID_SOCKET;
+    g_transport_closing.store(false, std::memory_order_relaxed);
+    g_pump_server = debug_server_create(port, pump_dispatch);
+    if (!g_pump_server) {
+        std::fprintf(stderr, "[debug] play-mode surface unavailable on port %u\n", port);
         return false;
     }
     g_play_mode = true;
@@ -2506,55 +2423,34 @@ void debug_pump() {
         g_reset_fn();
     }
 #endif
-    if (g_pump_listener == INVALID_SOCKET) return;
+    if (!g_pump_server) return;
     std::unique_lock<std::mutex> lock(g_pump_mutex, std::try_to_lock);
     if (!lock.owns_lock() || g_pump_state != PumpIo::Req) return;
     const std::string req = g_pump_req;
     lock.unlock();
-    std::string resp = handle(req);   // frontend thread: the safe point
+    std::string response = handle(req);
+    if (json_str(req, "cmd") == "frontend_exit" &&
+        json_u64(response, "requested", 0) == 1)
+        g_transport_closing.store(true, std::memory_order_relaxed);
     lock.lock();
-    g_pump_resp = std::move(resp);
+    g_pump_resp = std::move(response);
     g_pump_state = PumpIo::Resp;
     lock.unlock();
     g_pump_resp_cv.notify_one();
 }
 
 void debug_pump_stop() {
-    if (g_pump_listener == INVALID_SOCKET) return;
-    g_pump_shutdown.store(true, std::memory_order_relaxed);
-
-    // Closing a listening socket from another thread does not reliably wake a
-    // blocking accept() on every host. Connect a short-lived loopback client
-    // first so the I/O thread observes the shutdown flag and leaves accept.
-    sockaddr_in listener_addr{};
-    socklen_t listener_addr_len = sizeof(listener_addr);
-    if (getsockname(g_pump_listener,
-                    reinterpret_cast<sockaddr*>(&listener_addr),
-                    &listener_addr_len) == 0) {
-        socket_t wake = socket(AF_INET, SOCK_STREAM, 0);
-        if (wake != INVALID_SOCKET) {
-            connect(wake, reinterpret_cast<sockaddr*>(&listener_addr),
-                    sizeof(listener_addr));
-            CLOSESOCK(wake);
-        }
+    if (!g_pump_server) return;
+    g_transport_closing.store(true, std::memory_order_relaxed);
+    {
+        // The wait predicate and notification share the handoff mutex so
+        // shutdown cannot be lost between predicate inspection and waiting.
+        std::lock_guard<std::mutex> lock(g_pump_mutex);
+        g_pump_shutdown.store(true, std::memory_order_relaxed);
     }
-#ifdef _WIN32
-    shutdown(g_pump_listener, SD_BOTH);
-#else
-    shutdown(g_pump_listener, SHUT_RDWR);
-#endif
-    CLOSESOCK(g_pump_listener);
-    g_pump_listener = INVALID_SOCKET;
-    const socket_t client =
-        g_pump_client.exchange(INVALID_SOCKET, std::memory_order_relaxed);
-    if (client != INVALID_SOCKET) {
-#ifdef _WIN32
-        shutdown(client, SD_BOTH);
-#else
-        shutdown(client, SHUT_RDWR);
-#endif
-        CLOSESOCK(client);  // unblocks recv()
-    }
+    g_pump_resp_cv.notify_all();
     if (g_pump_thread.joinable()) g_pump_thread.join();
+    diag_server_destroy(g_pump_server);
+    g_pump_server = nullptr;
     g_play_mode = false;
 }
