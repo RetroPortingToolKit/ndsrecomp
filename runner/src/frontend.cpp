@@ -1,4 +1,6 @@
 #include "frontend.h"
+#include "shared_input_event.h"
+#include <recomp_audio_native_queue.hpp>
 #include "host_profile.h"
 #include "frontend_window_size.h"
 #include "arm9_native.h"
@@ -733,15 +735,13 @@ constexpr uint32_t kAudioStartFrames = 57344;
 constexpr uint32_t kAudioFrameBytes = 2u * sizeof(int16_t);
 constexpr uint32_t kAudioCapacityFrames = 65536;
 
-struct AudioQueue {
+struct AudioQueue
+#if !defined(NDS_HAVE_SDL3)
+    : recomp_audio_native::StereoRing<kAudioCapacityFrames>
+#endif
+{
     // Host output only. Consumption, guest mixing and pacing remain active.
     bool output_muted = false;
-#if !defined(NDS_HAVE_SDL3)
-    std::array<int16_t, kAudioCapacityFrames * 2> samples{};
-    uint32_t read = 0;
-    uint32_t write = 0;
-    uint32_t count = 0;
-#endif
     std::atomic<uint64_t> underruns{0};
     std::atomic<bool> started{false};
 };
@@ -789,16 +789,7 @@ void SDLCALL audio_callback(void* userdata, Uint8* stream, int len) {
     std::memset(stream, 0, static_cast<size_t>(len));
     if (!queue || len <= 0) return;
     const uint32_t requested = static_cast<uint32_t>(len) / kAudioFrameBytes;
-    const uint32_t take = std::min(requested, queue->count);
-    auto* output = reinterpret_cast<int16_t*>(stream);
-    const uint32_t first = std::min(take, kAudioCapacityFrames - queue->read);
-    std::memcpy(output, queue->samples.data() + queue->read * 2u,
-                first * kAudioFrameBytes);
-    if (first < take)
-        std::memcpy(output + first * 2u, queue->samples.data(),
-                    (take - first) * kAudioFrameBytes);
-    queue->read = (queue->read + take) % kAudioCapacityFrames;
-    queue->count -= take;
+    const uint32_t take = queue->pull(reinterpret_cast<int16_t*>(stream), requested);
     if (queue->output_muted)
         std::memset(stream, 0, static_cast<size_t>(len));
     if (take < requested && queue->started.load(std::memory_order_relaxed)) {
@@ -934,24 +925,6 @@ SDL_JoystickID sdl_controller_id(SDL_GameController* controller) {
 #endif
 }
 
-uint16_t controller_bit(SDL_GameControllerButton button) {
-    switch (button) {
-        case SDL_CONTROLLER_BUTTON_A:             return 1u << 0;
-        case SDL_CONTROLLER_BUTTON_B:             return 1u << 1;
-        case SDL_CONTROLLER_BUTTON_BACK:          return 1u << 2;
-        case SDL_CONTROLLER_BUTTON_START:         return 1u << 3;
-        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:    return 1u << 4;
-        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:     return 1u << 5;
-        case SDL_CONTROLLER_BUTTON_DPAD_UP:       return 1u << 6;
-        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:     return 1u << 7;
-        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return 1u << 8;
-        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return 1u << 9;
-        case SDL_CONTROLLER_BUTTON_X:             return 1u << 10;
-        case SDL_CONTROLLER_BUTTON_Y:             return 1u << 11;
-        default:                                  return 0;
-    }
-}
-
 SDL_GameController* open_first_controller() {
 #if defined(NDS_HAVE_SDL3)
     int count = 0;
@@ -1013,6 +986,31 @@ uint32_t audio_queue_count(const NdsAudioDevice& device, AudioQueue& queue) {
 NdsCapture g_capture;
 long g_capture_frame = 0;
 
+struct NativeAudioSink {
+    const NdsAudioDevice& device;
+    AudioQueue& queue;
+    bool pacing = false;
+    uint32_t count() { return audio_queue_count(device, queue); }
+    void wait() {
+        // Source exhaustion begins pacing slack; full-block waits remain idle.
+        if (!pacing || !nds_arm9_native_prepare_idle(1000)) SDL_Delay(1);
+    }
+    recomp_audio_native::Push try_push(const int16_t* samples, uint32_t frames) {
+#if defined(NDS_HAVE_SDL3)
+        if (kAudioCapacityFrames - count() < frames)
+            return recomp_audio_native::Push::Full;
+        return SDL_PutAudioStreamData(device.stream, samples,
+            static_cast<int>(frames * kAudioFrameBytes))
+                ? recomp_audio_native::Push::Done : recomp_audio_native::Push::Failed;
+#else
+        SDL_LockAudioDevice(device);
+        const bool pushed = queue.push(samples, frames);
+        SDL_UnlockAudioDevice(device);
+        return pushed ? recomp_audio_native::Push::Done : recomp_audio_native::Push::Full;
+#endif
+    }
+};
+
 uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
                      bool throttle, uint32_t pace_floor, bool& queue_error,
                      const std::vector<int16_t>* owned_pcm = nullptr) {
@@ -1032,73 +1030,24 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
         return 0;
     }
     if (!device) return 0;
-    std::array<int16_t, 2048> samples{};
-    size_t pcm_offset=0;
-    for (;;) {
-        const uint32_t frames = owned_pcm
-            ? static_cast<uint32_t>(std::min<size_t>(1024,(owned_pcm->size()-pcm_offset)/2u))
-            : nds_spu_read_output(samples.data(), 1024);
-        if (!frames) break;
+    NativeAudioSink sink{device, queue};
+    size_t pcm_offset = 0;
+    auto source = [&](int16_t* output, uint32_t capacity) {
+        uint32_t frames;
         if (owned_pcm) {
-            std::copy_n(owned_pcm->data()+pcm_offset,frames*2u,samples.data());
-            pcm_offset+=frames*2u;
+            frames = static_cast<uint32_t>(std::min<size_t>(capacity,
+                (owned_pcm->size() - pcm_offset) / 2u));
+            if (frames != 0u) {
+                std::copy_n(owned_pcm->data() + pcm_offset, frames * 2u, output);
+                pcm_offset += frames * 2u;
+            }
+        } else {
+            frames = nds_spu_read_output(output, capacity);
         }
-        bool pushed = false;
-        while (!pushed) {
-#if defined(NDS_HAVE_SDL3)
-            const uint32_t queued = audio_queue_count(device, queue);
-            if (kAudioCapacityFrames - queued >= frames) {
-                if (SDL_PutAudioStreamData(device.stream, samples.data(),
-                                           static_cast<int>(
-                                               frames * kAudioFrameBytes))) {
-                    pushed = true;
-                } else {
-                    queue_error = true;
-                    return audio_queue_count(device, queue);
-                }
-            }
-#else
-            SDL_LockAudioDevice(device);
-            if (kAudioCapacityFrames - queue.count >= frames) {
-                const uint32_t first = std::min(
-                    frames, kAudioCapacityFrames - queue.write);
-                std::memcpy(queue.samples.data() + queue.write * 2u,
-                            samples.data(), first * kAudioFrameBytes);
-                if (first < frames)
-                    std::memcpy(queue.samples.data(),
-                                samples.data() + first * 2u,
-                                (frames - first) * kAudioFrameBytes);
-                queue.write = (queue.write + frames) % kAudioCapacityFrames;
-                queue.count += frames;
-                pushed = true;
-            }
-            SDL_UnlockAudioDevice(device);
-#endif
-            if (!pushed) {
-                if (!throttle) {
-                    queue_error = true;
-                    return audio_queue_count(device, queue);
-                }
-                SDL_Delay(1);
-            }
-        }
-    }
-    // Audio is the host's real-time clock. Never drop a produced block: if the
-    // emulator is faster than the DS cadence, let SDL consume the backlog
-    // before emulating another frame. pace_floor is the current allowance:
-    // kAudioQueueFrames in steady state, temporarily higher right after the
-    // boot prebuffer (the caller decays it a fixed step per frame). The sleep
-    // only stops the queue RISING above the floor — it never forces the queue
-    // down while the emulator is running behind, so a slow stretch spends the
-    // buffered runway instead of having it slept away.
-    uint32_t queued = audio_queue_count(device, queue);
-    while (throttle && queued > pace_floor) {
-        // Spend existing audio pacing slack preparing qualified native code.
-        // Guest CPUs remain paused; under load/no slack demand execution wins.
-        if (!nds_arm9_native_prepare_idle(1000)) SDL_Delay(1);
-        queued = audio_queue_count(device, queue);
-    }
-    return queued;
+        sink.pacing = frames == 0;
+        return frames;
+    };
+    return recomp_audio_native::drain(sink, source, throttle, pace_floor, queue_error);
 }
 
 void clear_audio_queue(const NdsAudioDevice& device, AudioQueue& queue) {
@@ -1108,9 +1057,7 @@ void clear_audio_queue(const NdsAudioDevice& device, AudioQueue& queue) {
     (void)queue;
 #else
     SDL_LockAudioDevice(device);
-    queue.read = 0;
-    queue.write = 0;
-    queue.count = 0;
+    queue.reset();
     SDL_UnlockAudioDevice(device);
 #endif
 }
@@ -2388,6 +2335,8 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
 int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
     g_frontend_thread = std::this_thread::get_id();
     NdsFrontendOptions options = initial_options;
+    if (nds_frontend_owner_review_enabled()) options.start_paused = true;
+    NdsSharedInputEvents input_events;
     SDL_SetMainReady();
     // SDL_INIT_TIMER matters on Windows: it raises the OS timer resolution
     // to 1 ms (SDL_HINT_TIMER_RESOLUTION default). Without it SDL_Delay(1)
@@ -3626,7 +3575,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 } else if (mph_prime_active()) {
                     // Prime Controls replaces the normal keyboard keypad map;
                     // unbound keys must not leak through as DS buttons.
-                } else if (const uint16_t bit = nds_binding_mask(options.keyboard_bindings, scancode)) {
+                } else if (const uint16_t bit = input_events.keyboard(options.keyboard_bindings, scancode)) {
                     ++host_key_presses;
                     keyboard_pressed |= bit;
                     publish_keys();
@@ -3645,7 +3594,7 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 } else if (mph_prime_active()) {
                     // See keydown path: ignore generic keyboard bindings
                     // while the Prime Controls capture owns the keyboard.
-                } else if (const uint16_t bit = nds_binding_mask(options.keyboard_bindings, scancode)) {
+                } else if (const uint16_t bit = input_events.keyboard(options.keyboard_bindings, scancode)) {
                     keyboard_pressed &= static_cast<uint16_t>(~bit);
                     publish_keys();
                 }
@@ -3700,9 +3649,8 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 } else if (process_mph_prime_pad(MphPadInputKind::Button, button,
                                           true)) {
                     // Consumed by Prime Controls.
-                } else if (const uint16_t bit = options.custom_gamepad_bindings
-                        ? nds_binding_mask(options.gamepad_bindings, button + 1)
-                        : controller_bit(button)) {
+                } else if (const uint16_t bit = input_events.gamepad(options.custom_gamepad_bindings
+                        ? options.gamepad_bindings : kNdsDefaultPad, button)) {
                     controller_pressed |= bit;
                     publish_keys();
                 }
@@ -3716,9 +3664,8 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                 } else if (process_mph_prime_pad(MphPadInputKind::Button, button,
                                           false)) {
                     // Consumed by Prime Controls.
-                } else if (const uint16_t bit = options.custom_gamepad_bindings
-                        ? nds_binding_mask(options.gamepad_bindings, button + 1)
-                        : controller_bit(button)) {
+                } else if (const uint16_t bit = input_events.gamepad(options.custom_gamepad_bindings
+                        ? options.gamepad_bindings : kNdsDefaultPad, button)) {
                     controller_pressed &= static_cast<uint16_t>(~bit);
                     publish_keys();
                 }
@@ -5114,3 +5061,10 @@ uint32_t nds_frontend_frame_digests(uint64_t from, uint32_t max,
     if (after - from > kFrameDigestRing) return 0;
     return copied;
 }
+
+bool nds_frontend_owner_review_enabled() {
+    const char* value = std::getenv("NDS_OWNER_REVIEW");
+    return value && std::strcmp(value, "1") == 0;
+}
+bool nds_frontend_owner_review_paused() { return nds_frontend_paused(); }
+void nds_frontend_owner_review_pause(bool paused) { nds_frontend_set_paused(paused); }

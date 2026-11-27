@@ -1,4 +1,5 @@
 #include "battery_save.h"
+#include <recomp_persistence/atomic_file.h>
 
 #include <cerrno>
 #include <cstring>
@@ -79,38 +80,9 @@ bool nds_battery_save_write_atomic(
         }
     }
 
-    std::filesystem::path temporary = save_path;
-    temporary += ".tmp";
-    {
-        std::ofstream output(
-            temporary, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            set_error(error, "cannot open temporary save file");
-            return false;
-        }
-        output.write(reinterpret_cast<const char*>(data),
-                     static_cast<std::streamsize>(size));
-        output.flush();
-        if (!output) {
-            set_error(error, "cannot write temporary save file");
-            return false;
-        }
-    }
-
-#if defined(_WIN32)
-    if (!MoveFileExW(
-            temporary.c_str(), save_path.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        set_error(error, "cannot replace save file (Windows error " +
-                         std::to_string(GetLastError()) + ")");
+    if (!recomp_atomic_file_store(path.c_str(), data, size)) {
+        set_error(error, "cannot atomically publish battery save");
         return false;
     }
-#else
-    if (std::rename(temporary.c_str(), save_path.c_str()) != 0) {
-        set_error(error, "cannot replace save file: " +
-                         std::string(std::strerror(errno)));
-        return false;
-    }
-#endif
     return true;
 }

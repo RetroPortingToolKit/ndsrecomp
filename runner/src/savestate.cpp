@@ -1,4 +1,5 @@
 #include "savestate.h"
+#include <recomp_persistence/atomic_file.h>
 
 #include <algorithm>
 #include <array>
@@ -1012,81 +1013,11 @@ bool atomic_write_file(const std::string& path,
                        const std::vector<uint8_t>& bytes,
                        std::string* error) {
     const std::filesystem::path dst(path);
-    const std::filesystem::path tmp =
-        dst.string() + ".tmp-" + std::to_string(
-            std::chrono::steady_clock::now().time_since_epoch().count());
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            set_error(error, "failed to open temporary savestate file");
-            return false;
-        }
-        out.write(reinterpret_cast<const char*>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
-        out.flush();
-        if (!out) {
-            set_error(error, "failed to write temporary savestate file");
-            std::error_code ec;
-            std::filesystem::remove(tmp, ec);
-            return false;
-        }
-    }
-    auto flush_file_to_disk = [&](const std::filesystem::path& file) {
-#if defined(_WIN32)
-        HANDLE h = CreateFileA(file.string().c_str(),
-                               GENERIC_READ | GENERIC_WRITE,
-                               FILE_SHARE_READ,
-                               nullptr,
-                               OPEN_EXISTING,
-                               FILE_ATTRIBUTE_NORMAL,
-                               nullptr);
-        if (h == INVALID_HANDLE_VALUE) {
-            set_error(error, "failed to reopen temporary savestate file");
-            return false;
-        }
-        const BOOL ok = FlushFileBuffers(h);
-        CloseHandle(h);
-        if (!ok) {
-            set_error(error, "failed to flush temporary savestate file");
-            return false;
-        }
-        return true;
-#else
-        const int fd = open(file.c_str(), O_RDONLY);
-        if (fd < 0) {
-            set_error(error, "failed to reopen temporary savestate file");
-            return false;
-        }
-        const bool ok = fsync(fd) == 0;
-        close(fd);
-        if (!ok) {
-            set_error(error, "failed to flush temporary savestate file");
-            return false;
-        }
-        return true;
-#endif
-    };
-    if (!flush_file_to_disk(tmp)) {
-        std::error_code ec;
-        std::filesystem::remove(tmp, ec);
+    if (!recomp_atomic_file_store(path.c_str(), bytes.data(), bytes.size())) {
+        set_error(error, "failed to atomically publish savestate file");
         return false;
     }
-#if defined(_WIN32)
-    if (!MoveFileExA(tmp.string().c_str(), path.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        set_error(error, "failed to atomically replace savestate file");
-        std::error_code ec;
-        std::filesystem::remove(tmp, ec);
-        return false;
-    }
-#else
-    std::error_code ec;
-    std::filesystem::rename(tmp, dst, ec);
-    if (ec) {
-        set_error(error, "failed to atomically replace savestate file");
-        std::filesystem::remove(tmp, ec);
-        return false;
-    }
+#if !defined(_WIN32)
     const std::filesystem::path parent =
         dst.parent_path().empty() ? std::filesystem::path(".")
                                   : dst.parent_path();
