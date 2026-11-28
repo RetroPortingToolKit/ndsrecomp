@@ -6,6 +6,7 @@ import tempfile
 import threading
 import types
 import unittest
+from unittest.mock import patch
 from nds_tools import cartridge, debug, release
 
 
@@ -49,8 +50,36 @@ class SharedToolTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'remains running'):
             debug.finish_owned(Process(), TimeoutError())
 
+    def test_nested_pe_dependencies_require_packaged_files(self):
+        files = {"Runtime/player.exe": Path("player.exe"), "Runtime/SDL3.dll": Path("SDL3.dll")}
+        with patch("nds_tools.release.subprocess.check_output", return_value="DLL Name: KERNEL32.dll\nDLL Name: SDL3.dll\n"):
+            release.check_pe_dependencies(files, "objdump")
+        with patch("nds_tools.release.subprocess.check_output", return_value="DLL Name: missing.dll\n"):
+            with self.assertRaisesRegex(ValueError, "missing.dll"):
+                release.check_pe_dependencies(files, "objdump")
+        with patch("nds_tools.release.subprocess.check_output", return_value="DLL Name: python313.dll\n"):
+            with self.assertRaisesRegex(ValueError, "python313.dll"):
+                release.check_pe_dependencies(files, "objdump")
+            release.check_pe_dependencies(files, "objdump", embedded_python=True)
+
+    def test_runtime_dll_staging_is_complete_before_copy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            runtime, stage = root / "runtime", root / "stage"
+            runtime.mkdir(); stage.mkdir()
+            names = ("SDL2.dll", "SDL3.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll", "libiconv-2.dll")
+            for name in names[:-1]:
+                (runtime / name).write_bytes(name.encode())
+            with self.assertRaisesRegex(ValueError, "libiconv"):
+                release.stage_runtime_dlls(stage, runtime, ("SDL2", "SDL3"))
+            self.assertEqual(list(stage.iterdir()), [])
+            (runtime / names[-1]).write_bytes(names[-1].encode())
+            self.assertEqual(set(release.stage_runtime_dlls(stage, runtime, ("SDL2", "SDL3"))), set(names))
+            for name in names:
+                self.assertEqual((stage / name).read_bytes(), (runtime / name).read_bytes())
+
     def test_archive_checks_payload_and_contents(self):
-        for name in ('../bad', '/bad', 'C:/bad', 'bad\\name', 'game.nds', 'generated/a.c', 'save.sav'):
+        for name in ('../bad', '/bad', 'C:/bad', 'bad\\name', 'game.nds', 'generated/a.c', 'Generated/a.c', 'save.sav', 'scene.ndss'):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 release.validate_name(name)
         with tempfile.TemporaryDirectory() as folder:

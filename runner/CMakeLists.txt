@@ -146,7 +146,13 @@ if(NDS_ARM9_DYNARMIC_ROOT)
         set(DYNARMIC_FRONTENDS A32 CACHE STRING "" FORCE)
         set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
         set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
+        # The SDK and its exported libraries do not consume DS runtime services.
+        # Keep the fixture-wide runtime linkage out of their directory scope.
+        get_directory_property(_nds_sdk_parent_links LINK_LIBRARIES)
+        set_property(DIRECTORY PROPERTY LINK_LIBRARIES "")
         add_subdirectory("${NDS_ARM9_DYNARMIC_ROOT}" "${CMAKE_BINARY_DIR}/optional/dynarmic" EXCLUDE_FROM_ALL)
+        set_property(DIRECTORY PROPERTY LINK_LIBRARIES "${_nds_sdk_parent_links}")
+        unset(_nds_sdk_parent_links)
         set(NDS_ARM9_DYNARMIC_ENABLED ON)
     else()
         message(STATUS "Optional ARM9 native host unavailable; retaining portable faithful execution")
@@ -771,6 +777,11 @@ add_library(nds_armv4t STATIC ${NDS_ARM_RECOMP_SOURCES})
 target_include_directories(nds_armv4t PUBLIC
     ${NDS_ARM_RECOMP_INCLUDE_DIRS})
 
+set(NDS_RUNTIME_UI_THEME_SOURCE "")
+if(EXISTS "${NDS_RECOMP_UI_ROOT}/src/common/launcher_theme_overrides.c")
+    set(NDS_RUNTIME_UI_THEME_SOURCE
+        "${NDS_RECOMP_UI_ROOT}/src/common/launcher_theme_overrides.c")
+endif()
 add_executable(nds_runner
     src/arm9_native.cpp
     src/runtime_arm.cpp
@@ -825,6 +836,7 @@ add_executable(nds_runner
     src/frontend_config.cpp
     src/relative_mouse_touch.cpp
     "${NDS_RECOMP_UI_ROOT}/src/common/recomp_runtime_ui.c"
+    ${NDS_RUNTIME_UI_THEME_SOURCE}
     src/frontend.cpp
     src/cpu_render_handoff.cpp
     src/main.cpp

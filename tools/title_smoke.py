@@ -37,7 +37,7 @@ class DebugClient(CaptureClient):
     def advance_to(self, target: int) -> None:
         # run_to_event caps at max_rounds and can return part way with
         # exhausted=True; resume until the target is actually reached.
-        for _ in range(400):
+        while True:
             reply = self.cmd("run_to_event", event="vblank9", count=target,
                              max_rounds=50_000_000)
             if reply.get("terminal"):
@@ -48,7 +48,6 @@ class DebugClient(CaptureClient):
                 raise RuntimeError(f"stalled before vblank9 {target}")
             if self.vblank() >= target:
                 return
-        raise RuntimeError(f"could not reach vblank9 {target}")
 
     def advance(self, frames: int) -> None:
         self.advance_to(self.vblank() + frames)

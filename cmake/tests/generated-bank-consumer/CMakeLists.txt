@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(nds_generated_bank_consumer_contract LANGUAGES C CXX)
+get_filename_component(NDSRECOMP_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+include("${NDSRECOMP_ROOT}/cmake/NdsJobPools.cmake")
+include("${NDSRECOMP_ROOT}/cmake/NdsGeneratedBanks.cmake")
+add_library(generated_bank_abi OBJECT bank.c)
+ndsrecomp_target_generated_banks(generated_bank_abi)
