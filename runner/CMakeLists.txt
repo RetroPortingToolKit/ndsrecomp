@@ -82,12 +82,12 @@ option(NDS_LEAN_DIAGNOSTICS "Experiment: diagnostic sampling is explicitly armed
 option(NDS_CAPTURE_VIEW_REUSE "Experiment: reuse unchanged immutable capture texture views" OFF)
 option(NDS_GX_COMMAND_CACHE
     "Use guarded Main-RAM FIFO ingress and exact integer projection reuse" OFF)
-set(NDS_3D_GEOMETRY "REFERENCE" CACHE STRING "Geometry service: REFERENCE or NATIVE")
+set(NDS_3D_GEOMETRY "NATIVE" CACHE STRING "Geometry service: REFERENCE or NATIVE")
 set_property(CACHE NDS_3D_GEOMETRY PROPERTY STRINGS REFERENCE NATIVE)
 if(NOT NDS_3D_GEOMETRY MATCHES "^(REFERENCE|NATIVE)$")
     message(FATAL_ERROR "NDS_3D_GEOMETRY must be REFERENCE or NATIVE")
 endif()
-set(NDS_MKDS_MODEL_IMPLEMENTATION "LLE" CACHE STRING "MKDS simple-model drawing: LLE or HLE")
+set(NDS_MKDS_MODEL_IMPLEMENTATION "HLE" CACHE STRING "MKDS simple-model drawing: LLE or HLE")
 set_property(CACHE NDS_MKDS_MODEL_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
 if(NOT NDS_MKDS_MODEL_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
     message(FATAL_ERROR "NDS_MKDS_MODEL_IMPLEMENTATION must be LLE or HLE")
@@ -146,7 +146,13 @@ if(NDS_ARM9_DYNARMIC_ROOT)
         set(DYNARMIC_FRONTENDS A32 CACHE STRING "" FORCE)
         set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
         set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
+        # The SDK and its exported libraries do not consume DS runtime services.
+        # Keep the fixture-wide runtime linkage out of their directory scope.
+        get_directory_property(_nds_sdk_parent_links LINK_LIBRARIES)
+        set_property(DIRECTORY PROPERTY LINK_LIBRARIES "")
         add_subdirectory("${NDS_ARM9_DYNARMIC_ROOT}" "${CMAKE_BINARY_DIR}/optional/dynarmic" EXCLUDE_FROM_ALL)
+        set_property(DIRECTORY PROPERTY LINK_LIBRARIES "${_nds_sdk_parent_links}")
+        unset(_nds_sdk_parent_links)
         set(NDS_ARM9_DYNARMIC_ENABLED ON)
     else()
         message(STATUS "Optional ARM9 native host unavailable; retaining portable faithful execution")
@@ -164,13 +170,13 @@ option(NDS_ENABLE_PCAP_BACKEND
 option(NDS_PROFILE_HLE_HEAT
     "Build candidate-only sampled leaf heat instrumentation"
     OFF)
-set(NDS_MPH_MATH_IMPLEMENTATION "LLE" CACHE STRING
+set(NDS_MPH_MATH_IMPLEMENTATION "HLE" CACHE STRING
     "Developer build choice for MPH vector math: LLE or HLE (no runtime switch)")
 set_property(CACHE NDS_MPH_MATH_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
 if(NOT NDS_MPH_MATH_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
     message(FATAL_ERROR "NDS_MPH_MATH_IMPLEMENTATION must be LLE or HLE")
 endif()
-set(NDS_MPH_SUBMIT_IMPLEMENTATION "LLE" CACHE STRING
+set(NDS_MPH_SUBMIT_IMPLEMENTATION "HLE" CACHE STRING
     "Developer build choice for MPH geometry submission: LLE or HLE")
 set_property(CACHE NDS_MPH_SUBMIT_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
 if(NOT NDS_MPH_SUBMIT_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
@@ -179,7 +185,7 @@ endif()
 option(NDS_PROFILE_MEM_TIMING
     "Build candidate-only runtime memory-timing census instrumentation"
     OFF)
-set(NDS_MKDS_IMPLEMENTATION "LLE" CACHE STRING
+set(NDS_MKDS_IMPLEMENTATION "HLE" CACHE STRING
     "Developer build choice for MKDS vector math: LLE or HLE")
 set_property(CACHE NDS_MKDS_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
 set(NDS_MKDS_HLE_GROUPS "VECTOR" CACHE STRING
@@ -188,7 +194,7 @@ if(NOT NDS_MKDS_HLE_GROUPS STREQUAL "VECTOR")
     message(FATAL_ERROR "Only VECTOR HLE is integrated; MATH and SUBMIT remain draft work")
 endif()
 set(NDS_MKDS_HLE_GROUP_MASK 1)
-set(NDS_MKDS_STREAM_IMPLEMENTATION "LLE" CACHE STRING
+set(NDS_MKDS_STREAM_IMPLEMENTATION "HLE" CACHE STRING
     "Build choice for the complete MKDS streaming LZ job: LLE or HLE")
 set_property(CACHE NDS_MKDS_STREAM_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
 if(NOT NDS_MKDS_STREAM_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
@@ -200,7 +206,7 @@ if(NDS_MKDS_STREAM_IMPLEMENTATION STREQUAL "HLE")
     endif()
     set(NDS_MKDS_HLE_GROUP_MASK 9)
 endif()
-set(NDS_MKDS_CARD_PIO_IMPLEMENTATION "LLE" CACHE STRING
+set(NDS_MKDS_CARD_PIO_IMPLEMENTATION "HLE" CACHE STRING
     "Build choice for the complete MKDS CPU card PIO reader: LLE or HLE")
 set_property(CACHE NDS_MKDS_CARD_PIO_IMPLEMENTATION PROPERTY STRINGS LLE HLE)
 if(NOT NDS_MKDS_CARD_PIO_IMPLEMENTATION MATCHES "^(LLE|HLE)$")
@@ -771,6 +777,11 @@ add_library(nds_armv4t STATIC ${NDS_ARM_RECOMP_SOURCES})
 target_include_directories(nds_armv4t PUBLIC
     ${NDS_ARM_RECOMP_INCLUDE_DIRS})
 
+set(NDS_RUNTIME_UI_THEME_SOURCE "")
+if(EXISTS "${NDS_RECOMP_UI_ROOT}/src/common/launcher_theme_overrides.c")
+    set(NDS_RUNTIME_UI_THEME_SOURCE
+        "${NDS_RECOMP_UI_ROOT}/src/common/launcher_theme_overrides.c")
+endif()
 add_executable(nds_runner
     src/arm9_native.cpp
     src/runtime_arm.cpp
@@ -825,6 +836,7 @@ add_executable(nds_runner
     src/frontend_config.cpp
     src/relative_mouse_touch.cpp
     "${NDS_RECOMP_UI_ROOT}/src/common/recomp_runtime_ui.c"
+    ${NDS_RUNTIME_UI_THEME_SOURCE}
     src/frontend.cpp
     src/cpu_render_handoff.cpp
     src/main.cpp

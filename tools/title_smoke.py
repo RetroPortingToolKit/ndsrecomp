@@ -28,38 +28,16 @@ import sys
 import time
 from pathlib import Path
 
-KEY_BITS = {"a": 0, "b": 1, "select": 2, "start": 3, "right": 4, "left": 5,
-            "up": 6, "down": 7, "r": 8, "l": 9, "x": 10, "y": 11}
-# Active-low; the server default of 0x3FF would leave X and Y held down.
-RELEASED = 0x0FFF
+from nds_tools.debug import CaptureClient, wait_for_server, finish_owned
 
-
-class DebugClient:
-    def __init__(self, port: int, timeout: float = 1800.0) -> None:
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
-        self.buf = b""
-
-    def cmd(self, name: str, **args: object) -> dict:
-        args["cmd"] = name
-        self.sock.sendall((json.dumps(args) + "\n").encode())
-        while b"\n" not in self.buf:
-            chunk = self.sock.recv(1 << 16)
-            if not chunk:
-                raise RuntimeError("debug server closed the connection")
-            self.buf += chunk
-        line, self.buf = self.buf.split(b"\n", 1)
-        reply = json.loads(line)
-        if isinstance(reply, dict) and "error" in reply:
-            raise RuntimeError(f"{name}: {reply['error']}")
-        return reply
-
+class DebugClient(CaptureClient):
     def vblank(self) -> int:
         return int(self.cmd("event_counts")["vblank9"])
 
     def advance_to(self, target: int) -> None:
         # run_to_event caps at max_rounds and can return part way with
         # exhausted=True; resume until the target is actually reached.
-        for _ in range(400):
+        while True:
             reply = self.cmd("run_to_event", event="vblank9", count=target,
                              max_rounds=50_000_000)
             if reply.get("terminal"):
@@ -70,7 +48,6 @@ class DebugClient:
                 raise RuntimeError(f"stalled before vblank9 {target}")
             if self.vblank() >= target:
                 return
-        raise RuntimeError(f"could not reach vblank9 {target}")
 
     def advance(self, frames: int) -> None:
         self.advance_to(self.vblank() + frames)
@@ -93,6 +70,13 @@ class DebugClient:
         combined.save(path)
         grey = combined.convert("L").resize((32, 48))
         return sum(grey.getdata()) / (32 * 48)
+
+KEY_BITS = {"a": 0, "b": 1, "select": 2, "start": 3, "right": 4, "left": 5,
+            "up": 6, "down": 7, "r": 8, "l": 9, "x": 10, "y": 11}
+# Active-low; the server default of 0x3FF would leave X and Y held down.
+RELEASED = 0x0FFF
+
+
 
 
 def main() -> int:
@@ -128,18 +112,11 @@ def main() -> int:
     report: dict = {"label": args.label, "runner": str(args.runner),
                     "rom": args.rom.name, "checkpoints": [], "failures": []}
     luminance: list[float] = []
+    failure = None
+    client = None
     try:
-        client = None
-        for _ in range(240):
-            if proc.poll() is not None:
-                raise SystemExit(f"runner exited early rc={proc.returncode}")
-            try:
-                client = DebugClient(args.port)
-                break
-            except OSError:
-                time.sleep(0.5)
-        if client is None:
-            raise RuntimeError("debug server never came up")
+        wait_for_server(args.port, proc)
+        client = DebugClient(args.port)
         client.cmd("reset")
 
         # Attract: let the title run untouched and sample it.
@@ -193,14 +170,13 @@ def main() -> int:
         except RuntimeError as exc:
             report["coverage_manifest"] = {"unavailable": str(exc)}
     except Exception as exc:  # noqa: BLE001 - the failure IS the result
+        failure = exc
         report["failures"].append(str(exc))
         print(f"  FAILURE: {exc}")
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        if client is not None:
+            client.close()
+        finish_owned(proc, failure)
 
     misses_after = misses.stat().st_size if misses.exists() else 0
     if misses_after > misses_before:
