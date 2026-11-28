@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from nds_tools.debug import DebugClient
+
 """Shared TCP client for the ndsrecomp debug protocol (see ../TCP.md).
 
 Speaks line-delimited JSON to either the native runtime (port 19842) or
@@ -9,48 +14,6 @@ import json
 import socket
 
 
-class DebugClient:
-    def __init__(self, host="127.0.0.1", port=19842, timeout=30.0):
-        self.sock = socket.create_connection((host, port), timeout=timeout)
-        self.buf = b""
-
-    def cmd(self, name, **args):
-        args["cmd"] = name
-        self.sock.sendall((json.dumps(args) + "\n").encode())
-        while b"\n" not in self.buf:
-            chunk = self.sock.recv(65536)
-            if not chunk:
-                raise ConnectionError("debug server closed the connection")
-            self.buf += chunk
-        line, self.buf = self.buf.split(b"\n", 1)
-        resp = json.loads(line)
-        if isinstance(resp, dict) and resp.get("error"):
-            raise RuntimeError(f"{name}: {resp['error']}")
-        return resp
-
-    # convenience wrappers
-    def ping(self):
-        return self.cmd("ping")
-
-    def run_to_event(self, event, count):
-        return self.cmd("run_to_event", event=event, count=count)
-
-    def read_region(self, region):
-        r = self.cmd("read_region", region=region)
-        return bytes.fromhex(r["hex"] if isinstance(r, dict) else r)
-
-    def framebuffer(self, engine, adaptive=False):
-        r = self.cmd("framebuffer", engine=engine, adaptive=adaptive)
-        return r["w"], r["h"], bytes.fromhex(r["rgb"])
-
-    def event_counts(self):
-        return self.cmd("event_counts")
-
-    def close(self):
-        try:
-            self.sock.close()
-        except OSError:
-            pass
 
 
 def parse_event(spec):
